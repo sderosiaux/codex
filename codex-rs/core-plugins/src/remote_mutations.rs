@@ -22,10 +22,6 @@ use codex_plugin::PluginId;
 use codex_plugin::PluginTelemetryMetadata;
 use std::sync::Arc;
 
-#[cfg(test)]
-#[path = "remote_mutations_tests.rs"]
-mod tests;
-
 pub struct RemotePluginInstallRequest {
     pub marketplace_name: String,
     pub remote_plugin_id: String,

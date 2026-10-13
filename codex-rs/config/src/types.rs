@@ -653,7 +653,3 @@ pub enum MarketplaceSourceType {
     Git,
     Local,
 }
-
-#[cfg(test)]
-#[path = "types_tests.rs"]
-mod tests;

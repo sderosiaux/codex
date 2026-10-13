@@ -118,10 +118,3 @@ impl ModelProviderSharedState {
         Some(recovery)
     }
 }
-
-#[cfg(test)]
-#[path = "shared_state_tests.rs"]
-mod tests;
-
-#[path = "shared_state_test_support.rs"]
-pub(crate) mod test_support;

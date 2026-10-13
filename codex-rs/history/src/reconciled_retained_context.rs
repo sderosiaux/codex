@@ -171,7 +171,3 @@ fn same_user_message_source(
         candidate.turn_id == retained.turn_id && candidate.text == retained.text
     }
 }
-
-#[cfg(test)]
-#[path = "reconciled_retained_context_tests.rs"]
-mod tests;

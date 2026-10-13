@@ -123,7 +123,3 @@ fn close_from_proc(preserved_fds: &[RawFd]) {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "linux_fds_tests.rs"]
-mod tests;

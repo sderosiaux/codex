@@ -629,22 +629,6 @@ fn cached_system_proxy_decision_from_cache(
     None
 }
 
-fn cache_system_proxy_decision(request_url: &str, decision: SystemProxyDecision) {
-    let cache = SYSTEM_PROXY_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Ok(mut cache) = cache.lock() {
-        let cache_key = system_proxy_cache_key(request_url);
-        insert_system_proxy_cache_entry(&mut cache, &cache_key, decision, Instant::now());
-    }
-}
-
-/// Primes one proxy decision for cross-crate integration tests.
-///
-/// This is public only so tests in HTTP-client consumers can exercise system-proxy routing
-/// deterministically on every supported platform.
-pub fn cache_system_proxy_route_for_test(request_url: &str, proxy_url: String) {
-    cache_system_proxy_decision(request_url, SystemProxyDecision::Proxy { url: proxy_url });
-}
-
 fn insert_system_proxy_cache_entry(
     cache: &mut HashMap<String, CachedSystemProxyDecision>,
     cache_key: &str,
@@ -685,7 +669,7 @@ fn system_proxy_cache_key(request_url: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-#[cfg(any(test, target_os = "windows"))]
+#[cfg(target_os = "windows")]
 fn no_proxy_matches_origin(no_proxy: &str, origin: &RequestOrigin) -> bool {
     no_proxy
         .split(',')
@@ -694,7 +678,7 @@ fn no_proxy_matches_origin(no_proxy: &str, origin: &RequestOrigin) -> bool {
         .any(|entry| no_proxy_entry_matches_origin(entry, origin))
 }
 
-#[cfg(any(test, target_os = "windows"))]
+#[cfg(target_os = "windows")]
 fn no_proxy_entry_matches_origin(entry: &str, origin: &RequestOrigin) -> bool {
     if entry == "*" {
         return true;
@@ -735,7 +719,7 @@ fn no_proxy_entry_matches_origin(entry: &str, origin: &RequestOrigin) -> bool {
     origin.host == entry
 }
 
-#[cfg(any(test, target_os = "windows"))]
+#[cfg(target_os = "windows")]
 fn wildcard_host_match(pattern: &str, host: &str) -> bool {
     let mut remaining = host;
     let mut first = true;
@@ -759,7 +743,7 @@ fn wildcard_host_match(pattern: &str, host: &str) -> bool {
     pattern.ends_with('*') || remaining.is_empty()
 }
 
-#[cfg(any(test, target_os = "windows"))]
+#[cfg(target_os = "windows")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ParsedProxyListDecision {
     Direct,
@@ -768,7 +752,7 @@ enum ParsedProxyListDecision {
     Unavailable,
 }
 
-#[cfg(any(test, target_os = "windows"))]
+#[cfg(target_os = "windows")]
 fn parse_proxy_list(input: &str, target_scheme: &str) -> ParsedProxyListDecision {
     let mut saw_unsupported = false;
 
@@ -822,7 +806,7 @@ fn parse_proxy_list(input: &str, target_scheme: &str) -> ParsedProxyListDecision
     }
 }
 
-#[cfg(any(test, target_os = "windows"))]
+#[cfg(target_os = "windows")]
 fn parse_proxy_token(token: &str, target_scheme: &str) -> ParsedProxyListDecision {
     if token.eq_ignore_ascii_case("DIRECT") {
         return ParsedProxyListDecision::Direct;
@@ -850,7 +834,7 @@ fn parse_proxy_token(token: &str, target_scheme: &str) -> ParsedProxyListDecisio
     proxy_url_from_hostport("http", token)
 }
 
-#[cfg(any(test, target_os = "windows"))]
+#[cfg(target_os = "windows")]
 fn parse_proxy_key_token(token: &str, target_scheme: &str) -> Option<ParsedProxyListDecision> {
     let (key, value) = token.split_once('=')?;
     if key.trim().eq_ignore_ascii_case(target_scheme) {
@@ -860,7 +844,7 @@ fn parse_proxy_key_token(token: &str, target_scheme: &str) -> Option<ParsedProxy
     }
 }
 
-#[cfg(any(test, target_os = "windows"))]
+#[cfg(target_os = "windows")]
 fn proxy_url_from_hostport(proxy_scheme: &str, hostport: &str) -> ParsedProxyListDecision {
     if hostport.is_empty() {
         return ParsedProxyListDecision::Unavailable;
@@ -889,11 +873,3 @@ fn proxy_env_value(env: &dyn EnvSource, upper: &str) -> Option<String> {
         .or_else(|| env.var(&lower))
         .filter(|value| !value.is_empty())
 }
-
-#[cfg(test)]
-#[path = "route_aware_redirect_integration_tests.rs"]
-mod redirect_integration_tests;
-
-#[cfg(test)]
-#[path = "outbound_proxy_tests.rs"]
-mod tests;

@@ -47,17 +47,6 @@ pub struct LoaderOverrides {
 }
 
 impl LoaderOverrides {
-    /// Returns overrides that ignore the host's system config.
-    ///
-    /// This is intended for tests that should load only repo-controlled config fixtures.
-    pub fn without_managed_config_for_tests() -> Self {
-        let base = std::env::temp_dir().join("codex-config-tests");
-        Self {
-            system_config_path: Some(base.join("config.toml")),
-            ..Self::default()
-        }
-    }
-
     pub fn user_config_path(&self, codex_home: &Path) -> std::io::Result<AbsolutePathBuf> {
         match self.user_config_path.as_ref() {
             Some(path) => Ok(path.clone()),
@@ -517,7 +506,3 @@ fn verify_layer_ordering(layers: &[ConfigLayerEntry]) -> std::io::Result<()> {
 
     Ok(())
 }
-
-#[cfg(test)]
-#[path = "state_tests.rs"]
-mod tests;

@@ -32,10 +32,6 @@ use uuid::Uuid;
 
 mod queries;
 
-#[cfg(test)]
-#[path = "in_memory_tests.rs"]
-mod tests;
-
 /// Shares board state across a tree while giving each agent its own host handle.
 #[derive(Default)]
 pub struct InMemoryMessageBoards {

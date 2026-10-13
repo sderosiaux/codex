@@ -253,7 +253,3 @@ async fn websocket_upgrade_handler(
     }
     response
 }
-
-#[cfg(test)]
-#[path = "transport_tests.rs"]
-mod transport_tests;

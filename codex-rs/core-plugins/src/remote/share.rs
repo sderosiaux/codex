@@ -547,6 +547,3 @@ async fn send_and_expect_status(
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests;

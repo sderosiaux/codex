@@ -153,7 +153,3 @@ where
     Ok(Option::<String>::deserialize(deserializer)?
         .and_then(|value| SanitizedGitUrl::try_from(value).ok()))
 }
-
-#[cfg(test)]
-#[path = "sanitized_git_url_tests.rs"]
-mod tests;

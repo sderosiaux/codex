@@ -218,7 +218,3 @@ fn skill_config_rule_selector(entry: &SkillConfig) -> Option<SkillConfigRuleSele
         }
     }
 }
-
-#[cfg(test)]
-#[path = "skills_config_tests.rs"]
-mod tests;

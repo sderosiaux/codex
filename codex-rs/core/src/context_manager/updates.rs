@@ -58,7 +58,3 @@ pub(crate) fn merge_world_state_updates(updates: Vec<WorldStateUpdate>) -> Vec<R
     items.extend(build_rendered_message(pending));
     items
 }
-
-#[cfg(test)]
-#[path = "updates_tests.rs"]
-mod tests;

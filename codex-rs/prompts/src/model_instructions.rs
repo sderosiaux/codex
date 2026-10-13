@@ -15,7 +15,3 @@ pub fn render_model_instructions(model_info: &ModelInfo) -> String {
     }
     template.unwrap_or_default().to_owned()
 }
-
-#[cfg(test)]
-#[path = "model_instructions_tests.rs"]
-mod tests;

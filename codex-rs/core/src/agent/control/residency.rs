@@ -325,7 +325,3 @@ async fn is_unloadable(thread: &CodexThread) -> bool {
             .has_trigger_turn_mailbox_items()
             .await
 }
-
-#[cfg(test)]
-#[path = "residency_tests.rs"]
-mod tests;

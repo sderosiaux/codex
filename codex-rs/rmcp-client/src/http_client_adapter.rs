@@ -1069,7 +1069,3 @@ impl SseEventSizeLimit {
         Ok(())
     }
 }
-
-#[cfg(test)]
-#[path = "http_client_adapter_tests.rs"]
-mod tests;

@@ -8,6 +8,7 @@ version.workspace = true
 name = "codex_protocol"
 path = "src/lib.rs"
 doctest = false
+test = false
 
 [lints]
 workspace = true
@@ -48,12 +49,6 @@ ts-rs = { workspace = true, features = [
 ] }
 uuid = { workspace = true, features = ["serde", "v7", "v4"] }
 wildmatch = { workspace = true }
-
-[dev-dependencies]
-anyhow = { workspace = true }
-pretty_assertions = { workspace = true }
-tempfile = { workspace = true }
-tokio = { workspace = true, features = ["test-util"] }
 
 [package.metadata.cargo-shear]
 # Required because:

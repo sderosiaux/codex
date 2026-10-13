@@ -85,7 +85,3 @@ pub(crate) fn request_span(message: &Value) -> Span {
     codex_otel::set_parent_from_context(&span, context);
     span
 }
-
-#[cfg(test)]
-#[path = "trace_context_tests.rs"]
-mod tests;

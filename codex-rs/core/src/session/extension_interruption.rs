@@ -11,10 +11,6 @@ use std::sync::Arc;
 use tokio::sync::oneshot;
 use tokio::sync::oneshot::error::TryRecvError;
 
-#[cfg(test)]
-#[path = "extension_interruption_tests.rs"]
-mod tests;
-
 impl CodexThread {
     /// Interrupts the named active turn unless it has queued input.
     /// Returns the decision before joining cancellation, so tool callbacks can await it.

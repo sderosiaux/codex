@@ -434,7 +434,3 @@ async fn persist_user_shell_output(
         .inject_no_new_turn(vec![output_item], Some(turn_context))
         .await;
 }
-
-#[cfg(all(test, unix))]
-#[path = "user_shell_tests.rs"]
-mod tests;

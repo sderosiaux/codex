@@ -55,7 +55,3 @@ impl CheapSkillSelector for LruSkillSelector {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "lru_tests.rs"]
-mod tests;

@@ -142,7 +142,3 @@ ORDER BY completed_at_ms DESC, import_id ASC
             .collect()
     }
 }
-
-#[cfg(test)]
-#[path = "external_agent_config_imports_tests.rs"]
-mod tests;

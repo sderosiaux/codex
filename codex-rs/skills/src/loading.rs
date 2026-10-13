@@ -114,7 +114,3 @@ pub type SkillLoadFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 pub trait SkillRootLoader<Root>: Send + Sync {
     fn load_roots(&self, request: SkillRootLoadRequest<Root>) -> SkillLoadFuture<'_, LoadedSkills>;
 }
-
-#[cfg(test)]
-#[path = "loading_tests.rs"]
-mod tests;

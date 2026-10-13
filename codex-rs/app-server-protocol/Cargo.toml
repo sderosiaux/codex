@@ -8,6 +8,7 @@ license.workspace = true
 name = "codex_app_server_protocol"
 path = "src/lib.rs"
 doctest = false
+test = false
 
 [lints]
 workspace = true
@@ -34,14 +35,3 @@ rmcp = { workspace = true, default-features = false, features = [
 inventory = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true, features = ["serde", "v7"] }
-
-[dev-dependencies]
-pretty_assertions = { workspace = true }
-rmcp = { workspace = true, default-features = false, features = [
-    "base64",
-    "macros",
-    "schemars",
-    "server",
-] }
-schemars = { workspace = true }
-ts-rs = { workspace = true }

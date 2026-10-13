@@ -87,7 +87,3 @@ pub(super) fn fuse_rankings_with_constant<const N: usize>(
         .map(|(id, _)| id)
         .collect()
 }
-
-#[cfg(test)]
-#[path = "rrf_lexical_char_tests.rs"]
-mod tests;

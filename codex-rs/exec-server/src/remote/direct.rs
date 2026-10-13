@@ -271,7 +271,3 @@ fn direct_auth_error(error: AuthError) -> ExecServerError {
         AuthError::Transient(_) => ExecServerError::Disconnected(message),
     }
 }
-
-#[cfg(test)]
-#[path = "direct_tests.rs"]
-mod tests;

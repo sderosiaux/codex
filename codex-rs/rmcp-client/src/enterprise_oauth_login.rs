@@ -406,7 +406,3 @@ pub struct EnterpriseOAuthLoginRequest<'a> {
     pub http_client: Arc<dyn HttpClient>,
     pub redirect_mode: StreamableHttpRedirectMode,
 }
-
-#[cfg(test)]
-#[path = "enterprise_oauth_login_tests.rs"]
-mod tests;

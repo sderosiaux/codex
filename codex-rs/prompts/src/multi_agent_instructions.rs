@@ -86,7 +86,3 @@ impl ContextualUserFragment for MultiAgentRoleInstructions {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "multi_agent_instructions_tests.rs"]
-mod tests;

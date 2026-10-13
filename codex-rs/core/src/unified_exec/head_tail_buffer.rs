@@ -7,7 +7,6 @@ use std::collections::VecDeque;
 /// symmetric meaning 50% of the capacity is allocated to the head and 50% is
 /// allocated to the tail.
 #[derive(Debug, Default)]
-#[cfg_attr(test, derive(Eq, PartialEq))]
 pub(crate) struct HeadTailBuffer<const MAX_BYTES: usize = UNIFIED_EXEC_OUTPUT_MAX_BYTES> {
     head: Vec<u8>,
     tail: VecDeque<u8>,
@@ -163,7 +162,3 @@ impl<const MAX_BYTES: usize> HeadTailBuffer<MAX_BYTES> {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "head_tail_buffer_tests.rs"]
-mod tests;

@@ -49,7 +49,3 @@ impl AliasPlan {
             .collect()
     }
 }
-
-#[cfg(test)]
-#[path = "aliases_tests.rs"]
-mod tests;

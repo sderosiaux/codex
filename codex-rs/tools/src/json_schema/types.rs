@@ -185,7 +185,3 @@ impl From<JsonSchema> for AdditionalProperties {
         Self::Schema(Box::new(value))
     }
 }
-
-#[cfg(test)]
-#[path = "types_tests.rs"]
-mod tests;

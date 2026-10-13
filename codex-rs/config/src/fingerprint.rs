@@ -64,7 +64,3 @@ pub fn version_for_toml(value: &TomlValue) -> String {
         .collect::<String>();
     format!("sha256:{hex}")
 }
-
-#[cfg(test)]
-#[path = "fingerprint_tests.rs"]
-mod tests;

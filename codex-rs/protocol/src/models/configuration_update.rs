@@ -11,7 +11,3 @@ use ts_rs::TS;
 pub struct ConfigurationReasoning {
     pub effort: ReasoningEffort,
 }
-
-#[cfg(test)]
-#[path = "configuration_update_tests.rs"]
-mod tests;

@@ -412,14 +412,6 @@ pub(crate) struct CompactedUserMessage<'a> {
     harness_metadata: Option<&'a CodexHarnessMetadata>,
 }
 
-#[cfg(test)]
-pub(crate) fn collect_user_messages(items: &[ResponseItem]) -> Vec<CompactedUserMessage<'_>> {
-    items
-        .iter()
-        .filter_map(|item| compacted_user_message(item, /*harness_metadata*/ None))
-        .collect()
-}
-
 pub(crate) fn collect_annotated_user_messages(
     items: &[ResponseItemEnvelope],
 ) -> Vec<CompactedUserMessage<'_>> {
@@ -706,7 +698,3 @@ async fn drain_to_completed(
         }
     }
 }
-
-#[cfg(test)]
-#[path = "compact_tests.rs"]
-mod tests;

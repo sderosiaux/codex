@@ -4,10 +4,6 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-[[example]]
-name = "generate-proto"
-path = "examples/generate-proto.rs"
-
 [lints]
 workspace = true
 
@@ -51,13 +47,6 @@ windows-sys = { workspace = true, features = [
     "Win32_UI_Shell",
 ] }
 
-[dev-dependencies]
-pretty_assertions = { workspace = true }
-tempfile = { workspace = true }
-tokio = { workspace = true, features = ["full"] }
-tokio-stream = { workspace = true, features = ["net"] }
-tonic = { workspace = true, features = ["router", "transport"] }
-tonic-prost-build = { version = "=0.14.3", default-features = false, features = ["transport"] }
-
 [lib]
 doctest = false
+test = false

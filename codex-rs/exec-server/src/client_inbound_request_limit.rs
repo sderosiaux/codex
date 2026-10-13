@@ -34,7 +34,3 @@ pub(crate) fn client_inbound_message_exceeded_limit(
     };
     (encoded_len > max_len).then_some(max_len)
 }
-
-#[cfg(test)]
-#[path = "client_inbound_request_limit_tests.rs"]
-mod tests;

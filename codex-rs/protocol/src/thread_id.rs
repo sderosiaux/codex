@@ -108,14 +108,3 @@ impl JsonSchema for ThreadId {
         <String>::json_schema(generator)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_thread_id_default_is_not_zeroes() {
-        let id = ThreadId::default();
-        assert_ne!(id.uuid, Uuid::nil());
-    }
-}

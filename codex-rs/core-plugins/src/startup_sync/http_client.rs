@@ -26,11 +26,6 @@ impl StartupSyncHttpClient {
         Self(Arc::new(http_clients))
     }
 
-    #[cfg(test)]
-    pub(super) fn route_aware(http_clients: Arc<dyn HttpClientSelector>) -> Self {
-        Self(http_clients)
-    }
-
     pub(super) fn request(&self, method: Method, url: &str) -> RequestBuilder {
         self.0.request(method, url)
     }

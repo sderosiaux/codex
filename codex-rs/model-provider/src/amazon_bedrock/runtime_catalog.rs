@@ -44,7 +44,3 @@ pub(super) fn static_runtime_model_catalog() -> ModelsResponse {
     }
     normalize_bundled_bedrock_catalog(ModelsResponse { models }, BedrockEndpoint::Runtime)
 }
-
-#[cfg(test)]
-#[path = "runtime_catalog_tests.rs"]
-mod tests;

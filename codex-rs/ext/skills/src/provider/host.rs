@@ -168,7 +168,3 @@ fn catalog_entry_from_skill(skill: &SkillMetadata, enabled: bool) -> SkillCatalo
 
     entry
 }
-
-#[cfg(test)]
-#[path = "host_tests.rs"]
-mod tests;

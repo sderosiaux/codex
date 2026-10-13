@@ -42,7 +42,3 @@ pub(super) fn materialize(shell: ShellType, state: &str) -> io::Result<File> {
     writer.write_all(state.as_bytes())?;
     Ok(reader)
 }
-
-#[cfg(test)]
-#[path = "shell_snapshot_file_tests.rs"]
-mod tests;

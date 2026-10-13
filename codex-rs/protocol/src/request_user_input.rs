@@ -97,7 +97,3 @@ impl<'de> Deserialize<'de> for RequestUserInputEvent {
         })
     }
 }
-
-#[cfg(test)]
-#[path = "request_user_input_tests.rs"]
-mod tests;

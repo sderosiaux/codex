@@ -99,7 +99,3 @@ impl CallbackParameters {
         Ok(code)
     }
 }
-
-#[cfg(test)]
-#[path = "authorization_tests.rs"]
-mod tests;

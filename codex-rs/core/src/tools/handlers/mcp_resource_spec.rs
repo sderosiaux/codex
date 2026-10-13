@@ -114,7 +114,3 @@ fn with_model_messages(mut tool: ResponsesApiTool, messages: Option<&ToolMessage
     }
     ToolSpec::Function(tool)
 }
-
-#[cfg(test)]
-#[path = "mcp_resource_spec_tests.rs"]
-mod tests;

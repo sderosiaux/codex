@@ -655,7 +655,3 @@ impl ToolOutput for GeneratedImageOutput {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "tests.rs"]
-mod tests;

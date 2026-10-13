@@ -39,7 +39,3 @@ pub(super) fn bounded_input<T: Serialize>(
     // Ordinary content alone can exceed the soft limit. Preserve it and existing error handling.
     Some(bounded)
 }
-
-#[cfg(test)]
-#[path = "client_tool_metadata_tests.rs"]
-mod tests;

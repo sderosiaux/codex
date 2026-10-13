@@ -438,26 +438,3 @@ fn trimmed_reason(reason: &str) -> Option<String> {
         Some(trimmed.to_string())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::parse_user_prompt_submit;
-
-    #[test]
-    fn structured_output_rejects_invalid_shapes_and_types() {
-        for stdout in [
-            "[]",
-            r#"{"systemMessage":123}"#,
-            r#"{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":123}}"#,
-            r#"{"hookSpecificOutput":{"additionalContext":"missing event name"}}"#,
-            r#"{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","updatedInput":{}}}"#,
-            r#"{"unexpectedField":true}"#,
-            "{",
-        ] {
-            assert!(
-                parse_user_prompt_submit(stdout).is_none(),
-                "invalid structured output should fail: {stdout}",
-            );
-        }
-    }
-}

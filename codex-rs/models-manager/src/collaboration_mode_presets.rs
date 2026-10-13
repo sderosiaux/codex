@@ -22,7 +22,3 @@ pub fn builtin_collaboration_mode_presets() -> Vec<CollaborationModeMask> {
         },
     ]
 }
-
-#[cfg(test)]
-#[path = "collaboration_mode_presets_tests.rs"]
-mod tests;

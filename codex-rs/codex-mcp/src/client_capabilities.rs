@@ -44,7 +44,3 @@ pub fn client_mcp_extensions(
     }
     ClientMcpExtensions::new(selected)
 }
-
-#[cfg(test)]
-#[path = "client_capabilities_tests.rs"]
-mod tests;

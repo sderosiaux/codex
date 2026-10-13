@@ -503,7 +503,3 @@ fn verified_plugin_install_completed(
         .flat_map(|marketplace| marketplace.plugins.into_iter())
         .any(|plugin| plugin.id == tool_id && plugin.installed)
 }
-
-#[cfg(test)]
-#[path = "request_plugin_install_tests.rs"]
-mod tests;

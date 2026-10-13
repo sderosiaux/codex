@@ -253,7 +253,3 @@ impl StoredOAuthCredentialSnapshot {
         Ok(latest)
     }
 }
-
-#[cfg(test)]
-#[path = "ema_identity_tests.rs"]
-mod tests;

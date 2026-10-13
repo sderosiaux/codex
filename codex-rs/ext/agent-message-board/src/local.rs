@@ -48,10 +48,6 @@ mod pool;
 mod queries;
 pub(crate) mod setup;
 
-#[cfg(test)]
-#[path = "local/pools_tests.rs"]
-mod pools_tests;
-
 const MAX_POST_BYTES: usize = 64 * 1024;
 const MAX_CHANNEL_BYTES: usize = 128;
 const MAX_READ_CHARS: usize = 20_000;

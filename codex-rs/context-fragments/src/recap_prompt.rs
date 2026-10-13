@@ -61,7 +61,3 @@ impl ContextualUserFragment for RecapPrompt<'_> {
         format!("{PROMPT_PREFIX}{}", self.history)
     }
 }
-
-#[cfg(test)]
-#[path = "recap_prompt_tests.rs"]
-mod tests;

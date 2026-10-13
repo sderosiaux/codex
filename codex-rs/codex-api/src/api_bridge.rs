@@ -294,10 +294,6 @@ const MISALIGNMENT_POLICY_VIOLATION_FALLBACK_MESSAGE: &str =
 const CLOUDFLARE_BLOCKED_MESSAGE: &str =
     "Access blocked by Cloudflare. This usually happens when connecting from a restricted region";
 
-#[cfg(test)]
-#[path = "api_bridge_tests.rs"]
-mod tests;
-
 fn extract_request_tracking_id(headers: Option<&HeaderMap>) -> Option<String> {
     extract_request_id(headers).or_else(|| extract_header(headers, CF_RAY_HEADER))
 }

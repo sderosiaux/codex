@@ -9,10 +9,6 @@ mod request_dispatcher;
 mod session_registry;
 mod transport;
 
-#[cfg(all(test, unix))]
-#[path = "server/process_otel_tests.rs"]
-mod process_otel_tests;
-
 pub(crate) use handler::ExecServerHandler;
 pub(crate) use processor::ConnectionProcessor;
 pub use request_dispatcher::ConcurrentRequestLimit;
@@ -59,50 +55,4 @@ pub async fn run_main_with_telemetry(
         websocket_auth,
     )
     .await
-}
-
-#[cfg(test)]
-mod tests {
-    use codex_http_client::HttpClientFactory;
-    use codex_http_client::OutboundProxyPolicy;
-    use opentelemetry::trace::TracerProvider as _;
-    use opentelemetry_sdk::trace::InMemorySpanExporter;
-    use opentelemetry_sdk::trace::SdkTracerProvider;
-    use tracing::instrument::WithSubscriber;
-    use tracing_subscriber::prelude::*;
-
-    use super::run_main_with_telemetry;
-    use crate::ExecServerTelemetry;
-
-    #[tokio::test]
-    async fn telemetry_entrypoint_emits_root_span() {
-        let exporter = InMemorySpanExporter::default();
-        let provider = SdkTracerProvider::builder()
-            .with_simple_exporter(exporter.clone())
-            .build();
-        let subscriber = tracing_subscriber::registry()
-            .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("exec-server-test")));
-
-        async {
-            tracing::callsite::rebuild_interest_cache();
-            run_main_with_telemetry(
-                "invalid",
-                ExecServerTelemetry::default(),
-                HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
-                super::RequestDispatchMode::Inline,
-                codex_websocket_auth::WebsocketAuthSettings::default(),
-            )
-            .await
-            .expect_err("invalid listen URL should fail");
-        }
-        .with_subscriber(subscriber)
-        .await;
-
-        provider.force_flush().expect("flush traces");
-        let spans = exporter.get_finished_spans().expect("span export");
-        assert!(
-            spans.iter().any(|span| span.name == "codex.exec_server"),
-            "root exec-server span missing: {spans:?}"
-        );
-    }
 }

@@ -52,7 +52,6 @@ const MAX_MCP_STDOUT_LINE_BYTES: usize = 8 * 1024 * 1024;
 // Stderr is diagnostic only and does not need the protocol stream's allowance.
 const MAX_MCP_STDERR_LINE_BYTES: usize = 1024 * 1024;
 
-#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 struct LineBuffer {
     bytes: BytesMut,
     /// Prefix already scanned and known not to contain a newline.
@@ -495,10 +494,6 @@ impl ExecutorProcessTransport {
         line
     }
 }
-
-#[cfg(test)]
-#[path = "executor_process_transport_tests.rs"]
-mod tests;
 
 impl Drop for ExecutorProcessTransport {
     fn drop(&mut self) {

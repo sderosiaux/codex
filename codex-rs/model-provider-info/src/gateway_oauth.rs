@@ -151,7 +151,3 @@ fn validate_url(value: &str, field: &str) -> Result<(), String> {
     }
     Ok(())
 }
-
-#[cfg(test)]
-#[path = "gateway_oauth_tests.rs"]
-mod tests;

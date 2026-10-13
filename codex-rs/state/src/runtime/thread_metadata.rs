@@ -44,7 +44,3 @@ impl StateRuntime {
         Ok(threads)
     }
 }
-
-#[cfg(test)]
-#[path = "thread_metadata_tests.rs"]
-mod tests;

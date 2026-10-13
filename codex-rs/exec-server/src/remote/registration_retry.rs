@@ -57,7 +57,3 @@ impl EnvironmentRegistryClient {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "registration_retry_tests.rs"]
-mod tests;

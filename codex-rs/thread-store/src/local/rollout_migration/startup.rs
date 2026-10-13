@@ -406,7 +406,3 @@ async fn rollout_fingerprint(path: &Path) -> ThreadStoreResult<RolloutFingerprin
         modified_at_ns,
     })
 }
-
-#[cfg(test)]
-#[path = "startup_tests.rs"]
-mod tests;

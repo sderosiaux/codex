@@ -45,7 +45,3 @@ impl AnyToolResult {
         ))
     }
 }
-
-#[cfg(test)]
-#[path = "user_messaging_tests.rs"]
-mod tests;

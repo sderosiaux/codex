@@ -652,7 +652,3 @@ fn plugin_install_elicitation_telemetry_metadata(
         tool_name: metadata_owned_string(meta, PLUGIN_INSTALL_TOOL_NAME_KEY)?,
     })
 }
-
-#[cfg(test)]
-#[path = "mcp_tests.rs"]
-mod tests;

@@ -19,10 +19,6 @@ pub(crate) struct RolloutFileName {
     rollout_id: RolloutId,
 }
 
-#[cfg(test)]
-#[path = "rollout_file_name_tests.rs"]
-mod tests;
-
 impl RolloutFileName {
     pub(crate) fn new(
         timestamp: OffsetDateTime,

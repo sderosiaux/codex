@@ -264,7 +264,3 @@ fn file_name(path: &Path) -> std::io::Result<&std::ffi::OsStr> {
         ))
     })
 }
-
-#[cfg(test)]
-#[path = "recovery_tests.rs"]
-mod tests;

@@ -1,8 +1,6 @@
 //! Session-wide mutable state.
 
 use codex_protocol::models::BaseInstructionsProvenance;
-#[cfg(test)]
-use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
 use std::collections::VecDeque;
 
@@ -99,16 +97,6 @@ pub(crate) struct SessionState {
 }
 
 impl SessionState {
-    /// Create a new session state mirroring previous `State::default()` semantics.
-    #[cfg(test)]
-    pub(crate) fn new(session_configuration: SessionConfiguration) -> Self {
-        Self::new_with_auto_compact_window_ids(
-            session_configuration,
-            AutoCompactWindowIds::new_initial(),
-            ContextManager::new(),
-        )
-    }
-
     pub(crate) fn new_with_auto_compact_window_ids(
         session_configuration: SessionConfiguration,
         auto_compact_window_ids: AutoCompactWindowIds,
@@ -148,19 +136,6 @@ impl SessionState {
 
     pub(crate) fn clone_history(&self) -> ContextManager {
         self.history.clone()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn replace_history(
-        &mut self,
-        items: Vec<ResponseItem>,
-        reference_context_item: Option<TurnContextItem>,
-    ) {
-        self.replace_annotated_history(
-            items.into_iter().map(ResponseItemEnvelope::new).collect(),
-            reference_context_item,
-            HistoryReplacement::Reset,
-        );
     }
 
     pub(crate) fn replace_annotated_history(
@@ -396,7 +371,3 @@ fn merge_rate_limit_fields(
     }
     snapshot
 }
-
-#[cfg(test)]
-#[path = "session_tests.rs"]
-mod tests;

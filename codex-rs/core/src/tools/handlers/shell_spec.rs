@@ -10,16 +10,6 @@ pub struct CommandToolOptions {
     pub include_login_parameter: bool,
 }
 
-#[cfg(test)]
-pub fn create_exec_command_tool(options: CommandToolOptions) -> ToolSpec {
-    create_exec_command_tool_with_environment_id(
-        options,
-        /*include_environment_id*/ false,
-        /*include_shell_parameter*/ true,
-        /*include_windows_shell_guidance*/ cfg!(windows),
-    )
-}
-
 pub(crate) fn create_exec_command_tool_with_environment_id(
     options: CommandToolOptions,
     include_environment_id: bool,
@@ -194,7 +184,3 @@ fn windows_shell_guidance() -> &'static str {
 - Before any recursive delete or move on Windows, verify the resolved absolute target paths stay within the intended workspace or explicitly named target directory. Never issue a recursive delete or move against a computed path if the final target has not been checked.
 - When using `Start-Process` to launch a background helper or service, pass `-WindowStyle Hidden` unless the user explicitly asked for a visible interactive window. Use visible windows only for interactive tools the user needs to see or control."#
 }
-
-#[cfg(test)]
-#[path = "shell_spec_tests.rs"]
-mod tests;

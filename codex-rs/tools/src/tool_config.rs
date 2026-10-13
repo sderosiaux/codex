@@ -34,7 +34,3 @@ impl ToolEnvironmentMode {
         !matches!(self, Self::None)
     }
 }
-
-#[cfg(test)]
-#[path = "tool_config_tests.rs"]
-mod tests;

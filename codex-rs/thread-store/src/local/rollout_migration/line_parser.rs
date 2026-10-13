@@ -176,7 +176,3 @@ fn event_type(value: &Value) -> Option<&str> {
 fn payload_object_mut(value: &mut Value) -> Option<&mut Map<String, Value>> {
     value.get_mut("payload").and_then(Value::as_object_mut)
 }
-
-#[cfg(test)]
-#[path = "line_parser_tests.rs"]
-mod tests;

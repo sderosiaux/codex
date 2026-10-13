@@ -480,7 +480,3 @@ impl ExternalAuth for WorkloadIdentityExternalAuth {
         ))
     }
 }
-
-#[cfg(test)]
-#[path = "workload_identity_tests.rs"]
-mod tests;

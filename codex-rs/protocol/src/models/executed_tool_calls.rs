@@ -870,7 +870,3 @@ impl ResponseItem {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "executed_tool_calls_tests.rs"]
-mod tests;

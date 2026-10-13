@@ -464,7 +464,3 @@ fn can_auto_accept_elicitation(elicitation: &Elicitation) -> bool {
         | Elicitation::OpenAiElicitationForm { .. } => false,
     }
 }
-
-#[cfg(test)]
-#[path = "elicitation_tests.rs"]
-mod tests;

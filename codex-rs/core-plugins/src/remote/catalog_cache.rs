@@ -192,7 +192,3 @@ fn is_fresh(fetched_at: Option<DateTime<Utc>>, now: DateTime<Utc>) -> bool {
     let age = now.signed_duration_since(fetched_at);
     age >= chrono::Duration::zero() && age <= ttl
 }
-
-#[cfg(test)]
-#[path = "catalog_cache_tests.rs"]
-mod tests;

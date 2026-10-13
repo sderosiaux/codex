@@ -265,24 +265,6 @@ impl LocalAgentControl {
         }
     }
 
-    /// Spawn a new agent thread and submit the initial prompt.
-    #[cfg(test)]
-    pub(crate) async fn spawn_agent(
-        &self,
-        config: Config,
-        initial_input: Vec<UserInput>,
-        session_source: Option<SessionSource>,
-    ) -> CodexResult<ThreadId> {
-        let (spawned_agent, _) = Box::pin(self.spawn_agent_internal(
-            config,
-            SpawnInitialInput::UserInput(initial_input),
-            session_source,
-            SpawnAgentOptions::default(),
-        ))
-        .await?;
-        Ok(spawned_agent.thread_id)
-    }
-
     fn validate_loaded_v2_child(
         &self,
         thread: &CodexThread,

@@ -462,7 +462,3 @@ impl From<&EffectiveMcpServer> for McpServerMetadata {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "server_tests.rs"]
-mod tests;

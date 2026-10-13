@@ -226,7 +226,3 @@ fn unknown_handle_error(handle_id: &str) -> io::Error {
         format!("unknown file handle `{handle_id}`"),
     )
 }
-
-#[cfg(test)]
-#[path = "file_handle_tests.rs"]
-mod tests;

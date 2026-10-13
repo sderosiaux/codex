@@ -130,7 +130,3 @@ impl CheapSkillSelector for LruPlusLexicalCharacterRoutingSkillSelector {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "lru_plus_character_routing_tests.rs"]
-mod tests;

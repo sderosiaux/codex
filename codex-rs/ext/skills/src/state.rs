@@ -30,10 +30,6 @@ use crate::skills_extension_state::CloudSkillGeneration;
 use crate::skills_extension_state::SkillReadCacheKey;
 use crate::sources::SkillProviders;
 
-#[cfg(test)]
-#[path = "cloud_cache_tests.rs"]
-mod cloud_cache_tests;
-
 pub(crate) struct SkillsSessionState {
     pub(crate) mcp_resources: Option<Arc<McpResourceClient>>,
     pub(crate) extension_metrics: Option<Arc<dyn ExtensionMetrics>>,

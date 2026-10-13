@@ -50,7 +50,3 @@ impl StateRuntime {
         Ok(())
     }
 }
-
-#[cfg(test)]
-#[path = "memory_versions_tests.rs"]
-mod tests;

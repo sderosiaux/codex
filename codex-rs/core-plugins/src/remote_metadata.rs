@@ -71,7 +71,3 @@ pub fn remote_catalog_metadata_eq(
                 })
         })
 }
-
-#[cfg(test)]
-#[path = "remote_metadata_tests.rs"]
-mod tests;

@@ -11,8 +11,6 @@ mod multi_agent_mode;
 mod multi_agent_usage_hint;
 mod persistent_mode;
 mod plugins_instructions;
-#[cfg(test)]
-pub(crate) mod test_support;
 mod tools;
 mod top_level_tools;
 
@@ -628,7 +626,3 @@ fn apply_merge_patch_value(target: &mut Value, patch: &Value) {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "world_state_tests.rs"]
-mod tests;

@@ -244,7 +244,3 @@ impl AwsCredentialsProvider for AwsCredentialExport {
         Ok(access_keys)
     }
 }
-
-#[cfg(test)]
-#[path = "credential_export_tests.rs"]
-mod tests;

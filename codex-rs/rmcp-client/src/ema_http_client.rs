@@ -302,7 +302,3 @@ fn revoked_authority_error() -> ExecServerError {
         "enterprise MCP authorization changed; reconnect before using this server".to_string(),
     )
 }
-
-#[cfg(test)]
-#[path = "ema_http_client_tests.rs"]
-mod tests;

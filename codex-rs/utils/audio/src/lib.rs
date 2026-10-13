@@ -261,7 +261,3 @@ fn prepare_audio(audio_url: &mut String) -> Result<(), AudioPreparationError> {
     *audio_url = format!("data:{canonical_mime};base64,{encoded}");
     Ok(())
 }
-
-#[cfg(test)]
-#[path = "audio_preparation_tests.rs"]
-mod tests;

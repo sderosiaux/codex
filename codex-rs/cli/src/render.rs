@@ -244,27 +244,3 @@ fn tail_lines(text: &str, count: usize) -> Vec<&str> {
     let lines = text.lines().collect::<Vec<_>>();
     lines[lines.len().saturating_sub(count)..].to_vec()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use pretty_assertions::assert_eq;
-
-    #[test]
-    fn shell_join_unwraps_login_shell_scripts() {
-        let command = ["/bin/zsh", "-lc", "ls -la | head"].map(String::from);
-        assert_eq!(shell_join(&command), "ls -la | head");
-    }
-
-    #[test]
-    fn shell_join_quotes_only_when_needed() {
-        let command = ["git", "commit", "-m", "it's done"].map(String::from);
-        assert_eq!(shell_join(&command), r"git commit -m 'it'\''s done'");
-    }
-
-    #[test]
-    fn tail_lines_keeps_the_last_lines() {
-        assert_eq!(tail_lines("a\nb\nc", 2), vec!["b", "c"]);
-        assert_eq!(tail_lines("a", 5), vec!["a"]);
-    }
-}

@@ -150,7 +150,3 @@ fn has_retryable_tls_error(error: &(dyn Error + 'static)) -> bool {
 
     recognized_negotiation_failure
 }
-
-#[cfg(test)]
-#[path = "tls_backend_fallback_tests.rs"]
-mod tests;

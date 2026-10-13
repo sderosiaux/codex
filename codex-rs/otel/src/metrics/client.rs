@@ -367,8 +367,7 @@ impl MetricsClient {
                         .ok()
                         .as_deref(),
                 );
-                let exporter =
-                    build_otlp_metric_exporter(exporter, temporality)?;
+                let exporter = build_otlp_metric_exporter(exporter, temporality)?;
                 build_provider(resource, exporter, export_interval, runtime_reader.clone())
             }
         };

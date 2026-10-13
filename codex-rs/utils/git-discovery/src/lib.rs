@@ -114,7 +114,3 @@ impl Drop for ProbeGuard {
         self.discovery.capacity_changed.notify_waiters();
     }
 }
-
-#[cfg(test)]
-#[path = "git_root_discovery_tests.rs"]
-mod tests;

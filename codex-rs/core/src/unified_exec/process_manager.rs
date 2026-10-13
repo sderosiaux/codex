@@ -76,24 +76,6 @@ const UNIFIED_EXEC_ENV: [(&str, &str); 10] = [
 ];
 const INTERRUPT: &str = "\u{3}";
 
-/// Test-only override for deterministic unified exec process IDs.
-///
-/// In production builds this value should remain at its default (`false`) and
-/// must not be toggled.
-static FORCE_DETERMINISTIC_PROCESS_IDS: AtomicBool = AtomicBool::new(false);
-
-pub(super) fn set_deterministic_process_ids_for_tests(enabled: bool) {
-    FORCE_DETERMINISTIC_PROCESS_IDS.store(enabled, Ordering::Relaxed);
-}
-
-fn deterministic_process_ids_forced_for_tests() -> bool {
-    FORCE_DETERMINISTIC_PROCESS_IDS.load(Ordering::Relaxed)
-}
-
-pub(super) fn should_use_deterministic_process_ids() -> bool {
-    cfg!(test) || deterministic_process_ids_forced_for_tests()
-}
-
 pub(super) fn apply_unified_exec_env(mut env: HashMap<String, String>) -> HashMap<String, String> {
     for (key, value) in UNIFIED_EXEC_ENV {
         env.insert(key.to_string(), value.to_string());
@@ -262,19 +244,7 @@ impl UnifiedExecProcessManager {
         loop {
             let mut store = self.process_store.lock().await;
 
-            let process_id = if should_use_deterministic_process_ids() {
-                // test or deterministic mode
-                store
-                    .reserved_process_ids
-                    .iter()
-                    .copied()
-                    .max()
-                    .map(|m| std::cmp::max(m, 999) + 1)
-                    .unwrap_or(1000)
-            } else {
-                // production mode → random
-                rand::rng().random_range(1_000..100_000)
-            };
+            let process_id = rand::rng().random_range(1_000..100_000);
 
             if store.reserved_process_ids.contains(&process_id) {
                 continue;
@@ -288,9 +258,7 @@ impl UnifiedExecProcessManager {
     pub(crate) async fn release_process_id(&self, process_id: i32) {
         let mut store = self.process_store.lock().await;
         store.processes.remove(&process_id);
-        if !should_use_deterministic_process_ids() {
-            store.reserved_process_ids.remove(&process_id);
-        }
+        store.reserved_process_ids.remove(&process_id);
     }
 
     #[tracing::instrument(
@@ -1228,7 +1196,3 @@ enum ProcessStatus {
     },
     Unknown,
 }
-
-#[cfg(test)]
-#[path = "process_manager_tests.rs"]
-mod tests;

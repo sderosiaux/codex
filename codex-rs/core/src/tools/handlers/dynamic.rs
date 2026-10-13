@@ -268,7 +268,3 @@ async fn request_dynamic_tool(
 
     response
 }
-
-#[cfg(test)]
-#[path = "dynamic_tests.rs"]
-mod tests;

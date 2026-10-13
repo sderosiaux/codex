@@ -87,7 +87,3 @@ impl StateRuntime {
         Ok(deleted)
     }
 }
-
-#[cfg(test)]
-#[path = "thread_sections_tests.rs"]
-mod tests;

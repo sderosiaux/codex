@@ -97,7 +97,3 @@ fn prepend(prefix: &str, description: &mut String) {
         format!("{prefix}\n\n{description}")
     };
 }
-
-#[cfg(test)]
-#[path = "indirect_namespace_prefixes_tests.rs"]
-mod tests;

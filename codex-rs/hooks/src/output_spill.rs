@@ -129,7 +129,3 @@ fn spilled_hook_output_preview(text: &str, path: &AbsolutePathBuf, token_limit: 
         TruncationPolicy::Tokens(token_limit.saturating_sub(approx_token_count(&footer)));
     format!("{}{footer}", formatted_truncate_text(text, preview_policy))
 }
-
-#[cfg(test)]
-#[path = "output_spill_tests.rs"]
-mod tests;

@@ -133,7 +133,3 @@ fn parse_completed(
         completion_order: 0,
     }
 }
-
-#[cfg(test)]
-#[path = "session_end_tests.rs"]
-mod tests;

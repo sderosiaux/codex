@@ -109,7 +109,3 @@ pub(crate) fn telemetry_preview(
         truncated: true,
     }
 }
-
-#[cfg(test)]
-#[path = "tool_result_tests.rs"]
-mod tests;

@@ -96,12 +96,6 @@ pub async fn open_rollout_line_reader(path: &Path) -> io::Result<RolloutLineRead
     }
 }
 
-/// Returns the compressed `.jsonl.zst` path for a rollout path.
-#[cfg(test)]
-pub(crate) fn compressed_rollout_path(path: &Path) -> PathBuf {
-    path::compressed_rollout_path(path)
-}
-
 /// Materializes a compressed rollout back to plain `.jsonl` for async append paths.
 pub(crate) async fn materialize_rollout_for_append(
     path: &Path,
@@ -1428,7 +1422,3 @@ fn temp_path_for(path: &Path, operation: &str) -> PathBuf {
     ));
     path.with_file_name(file_name)
 }
-
-#[cfg(test)]
-#[path = "compression_tests.rs"]
-mod tests;

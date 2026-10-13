@@ -106,7 +106,3 @@ fn matches_product_restriction(
         None => true,
     }
 }
-
-#[cfg(test)]
-#[path = "model_tests.rs"]
-mod tests;

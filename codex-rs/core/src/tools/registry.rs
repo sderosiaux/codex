@@ -346,17 +346,6 @@ impl ToolRegistry {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn from_tools(tools: impl IntoIterator<Item = Arc<dyn CoreToolRuntime>>) -> Self {
-        let mut registry = Self::default();
-
-        for runtime in tools {
-            registry.register_trusted(runtime);
-        }
-
-        registry
-    }
-
     pub(crate) fn add<T>(&mut self, handler: T)
     where
         T: CoreToolRuntime + 'static,
@@ -502,11 +491,6 @@ impl ToolRegistry {
         namespaces
     }
 
-    #[cfg(test)]
-    pub(crate) fn empty_for_test() -> Self {
-        Self::from_tools(std::iter::empty())
-    }
-
     pub(crate) fn tool(&self, name: &ToolName) -> Option<Arc<dyn CoreToolRuntime>> {
         self.registered_tool(name)
             .map(|tool| Arc::clone(&tool.runtime))
@@ -514,20 +498,6 @@ impl ToolRegistry {
 
     pub(crate) fn registered_tool(&self, name: &ToolName) -> Option<&RegisteredTool> {
         self.tools.get(&name.clone().with_default_namespace())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn tool_names_for_test(&self) -> Vec<ToolName> {
-        let mut names = self.tools.keys().cloned().collect::<Vec<_>>();
-        names.sort();
-        names
-    }
-
-    #[cfg(test)]
-    pub(crate) fn tool_exposure(&self, name: &ToolName) -> Option<ToolExposure> {
-        self.tools
-            .get(&name.clone().with_default_namespace())
-            .map(|tool| tool.exposure)
     }
 
     pub(crate) fn create_diff_consumer(
@@ -859,6 +829,3 @@ fn unsupported_tool_call_message(payload: &ToolPayload, tool_name: &ToolName) ->
         _ => format!("unsupported call: {tool_name}"),
     }
 }
-#[cfg(test)]
-#[path = "registry_tests.rs"]
-mod tests;

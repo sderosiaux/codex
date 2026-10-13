@@ -8,6 +8,7 @@ version.workspace = true
 doctest = false
 name = "codex_model_provider"
 path = "src/lib.rs"
+test = false
 
 [lints]
 workspace = true
@@ -26,7 +27,6 @@ codex-models-manager = { workspace = true }
 codex-otel = { workspace = true }
 codex-protocol = { workspace = true }
 codex-response-debug-context = { workspace = true }
-codex-secrets = { workspace = true }
 http = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
@@ -34,12 +34,3 @@ sha2 = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "process", "sync", "time"] }
 tracing = { workspace = true, features = ["log"] }
 url = { workspace = true }
-
-[dev-dependencies]
-base64 = { workspace = true }
-codex-utils-cargo-bin = { workspace = true }
-codex-utils-redacted-string = { workspace = true }
-pretty_assertions = { workspace = true }
-tempfile = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
-wiremock = { workspace = true }

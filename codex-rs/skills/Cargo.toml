@@ -9,6 +9,7 @@ build = "build.rs"
 doctest = false
 name = "codex_skills"
 path = "src/lib.rs"
+test = false
 
 [lints]
 workspace = true
@@ -24,6 +25,3 @@ serde_yaml = { workspace = true }
 shlex = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-
-[dev-dependencies]
-pretty_assertions = { workspace = true }

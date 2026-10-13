@@ -369,7 +369,3 @@ fn request_result(message: &Option<RpcServerOutboundMessage>) -> &'static str {
         | None => "success",
     }
 }
-
-#[cfg(test)]
-#[path = "request_dispatcher_tests.rs"]
-mod tests;

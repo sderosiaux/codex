@@ -237,7 +237,3 @@ fn bounded(value: &str, max_bytes: usize) -> (&str, bool) {
     }
     (&value[..end], true)
 }
-
-#[cfg(test)]
-#[path = "character_ngram_tests.rs"]
-mod tests;

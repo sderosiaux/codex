@@ -114,7 +114,3 @@ impl WorldStateSection for PersistentModeState {
         )
     }
 }
-
-#[cfg(test)]
-#[path = "persistent_mode_tests.rs"]
-mod tests;

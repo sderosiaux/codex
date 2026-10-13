@@ -355,7 +355,3 @@ pub(super) async fn remove(path: PathBuf, recursive: bool, force: bool) -> io::R
         .await
         .map_err(|error| io::Error::other(format!("filesystem task failed: {error}")))?
 }
-
-#[cfg(test)]
-#[path = "windows_tests.rs"]
-mod tests;

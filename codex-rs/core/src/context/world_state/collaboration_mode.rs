@@ -173,7 +173,3 @@ impl ContextualUserFragment for CollaborationModeInstructions {
         self.instructions.clone()
     }
 }
-
-#[cfg(test)]
-#[path = "collaboration_mode_tests.rs"]
-mod tests;

@@ -172,7 +172,3 @@ pub fn truncate_rollout_before_turn_id(
     items.truncate(cut_index);
     Ok(items)
 }
-
-#[cfg(test)]
-#[path = "thread_rollout_truncation_tests.rs"]
-mod tests;

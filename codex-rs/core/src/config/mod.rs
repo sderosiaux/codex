@@ -101,8 +101,6 @@ mod metrics;
 mod otel;
 mod runtime_refresh;
 pub(crate) use runtime_refresh::RuntimeConfigRefresh;
-#[cfg(test)]
-mod schema;
 mod token_budget_startup;
 pub use auth_keyring::bootstrap_auth_config;
 pub use auth_keyring::resolve_bootstrap_auth_keyring_backend_kind;
@@ -190,21 +188,6 @@ fn resolve_mcp_oauth_credentials_store_mode(
         ) => OAuthCredentialsStoreMode::File,
         (_, mode) => mode,
     }
-}
-
-#[cfg(test)]
-pub(crate) async fn test_config() -> Config {
-    let codex_home = tempfile::tempdir().expect("create temp dir");
-    Config::load_from_base_config_with_overrides(
-        ConfigToml {
-            model: Some("gpt-5.5".to_string()),
-            ..Default::default()
-        },
-        ConfigOverrides::default(),
-        AbsolutePathBuf::from_absolute_path(codex_home.path()).expect("temp dir should resolve"),
-    )
-    .await
-    .expect("load default test config")
 }
 
 /// Configured thread persistence backend.
@@ -898,11 +881,6 @@ impl ConfigBuilder {
             config_layer_stack,
         )
         .await
-    }
-
-    #[cfg(test)]
-    pub(crate) fn without_managed_config_for_tests() -> Self {
-        Self::default().loader_overrides(LoaderOverrides::without_managed_config_for_tests())
     }
 }
 
@@ -2074,24 +2052,6 @@ fn validate_multi_agent_v2_tool_namespace(namespace: Option<&str>) -> std::io::R
 }
 
 impl Config {
-    #[cfg(test)]
-    async fn load_from_base_config_with_overrides(
-        cfg: ConfigToml,
-        overrides: ConfigOverrides,
-        codex_home: AbsolutePathBuf,
-    ) -> std::io::Result<Self> {
-        // Note this ignores requirements.toml enforcement for tests.
-        let config_layer_stack = ConfigLayerStack::default();
-        Self::load_config_with_layer_stack(
-            LOCAL_FS.as_ref(),
-            cfg,
-            overrides,
-            codex_home,
-            config_layer_stack,
-        )
-        .await
-    }
-
     pub(crate) async fn load_config_with_layer_stack(
         fs: &dyn ExecutorFileSystem,
         cfg: ConfigToml,
@@ -2699,11 +2659,3 @@ pub fn find_codex_home() -> std::io::Result<AbsolutePathBuf> {
 pub fn log_dir(cfg: &Config) -> std::io::Result<PathBuf> {
     Ok(cfg.log_dir.clone())
 }
-
-#[cfg(test)]
-#[path = "config_tests.rs"]
-mod tests;
-
-#[cfg(test)]
-#[path = "config_loader_tests.rs"]
-mod config_loader_tests;

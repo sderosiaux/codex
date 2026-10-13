@@ -432,7 +432,3 @@ fn contains_numbered_argument_placeholder(template: &str) -> bool {
         .windows(2)
         .any(|window| window[0] == b'$' && window[1].is_ascii_digit())
 }
-
-#[cfg(test)]
-#[path = "command_migration_tests.rs"]
-mod tests;

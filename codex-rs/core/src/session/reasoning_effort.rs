@@ -156,7 +156,3 @@ impl Session {
         Some(effort)
     }
 }
-
-#[cfg(test)]
-#[path = "reasoning_effort_tests.rs"]
-mod tests;

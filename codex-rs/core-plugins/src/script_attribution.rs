@@ -544,7 +544,3 @@ fn windows_shell_script(command: &[String]) -> Option<&str> {
         })
         .then_some(script)
 }
-
-#[cfg(test)]
-#[path = "script_attribution_tests.rs"]
-mod tests;

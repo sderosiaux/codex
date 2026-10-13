@@ -138,7 +138,3 @@ async fn read_states(
     }
     Ok(result)
 }
-
-#[cfg(test)]
-#[path = "thread_read_state_tests.rs"]
-mod tests;

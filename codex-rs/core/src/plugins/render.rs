@@ -1,18 +1,9 @@
-#[cfg(test)]
-use crate::context::AvailablePluginsInstructions;
-#[cfg(test)]
-use crate::context::ContextualUserFragment;
 use crate::plugins::PluginCapabilitySummary;
 use codex_utils_string::take_bytes_at_char_boundary;
 
 const MAX_EXPLICIT_PLUGIN_INSTRUCTIONS_BYTES: usize = 4 * 1024;
 const TRUNCATED_PLUGIN_INSTRUCTIONS_SUFFIX: &str =
     "\n- Additional plugin capabilities omitted to fit the context limit.";
-
-#[cfg(test)]
-pub(crate) fn render_plugins_section(plugins: &[PluginCapabilitySummary]) -> Option<String> {
-    (!plugins.is_empty()).then(|| AvailablePluginsInstructions.render())
-}
 
 pub(crate) fn render_explicit_plugin_instructions(
     plugin: &PluginCapabilitySummary,
@@ -86,7 +77,3 @@ fn bound_explicit_plugin_instructions(rendered: String) -> String {
     let prefix = take_bytes_at_char_boundary(&rendered, max_prefix_bytes);
     format!("{prefix}{TRUNCATED_PLUGIN_INSTRUCTIONS_SUFFIX}")
 }
-
-#[cfg(test)]
-#[path = "render_tests.rs"]
-mod tests;

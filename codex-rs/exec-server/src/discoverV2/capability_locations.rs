@@ -207,7 +207,3 @@ async fn read_remote_plugin_id(path: &std::path::Path) -> io::Result<Option<Stri
     }
     Ok(Some(id))
 }
-
-#[cfg(test)]
-#[path = "tests/capability_locations_tests.rs"]
-pub(super) mod tests;

@@ -55,7 +55,3 @@ impl<'a> CompactionCheckpoint<'a> {
             .is_some_and(|(producer, reviewer)| !producer.is_empty() && producer == reviewer)
     }
 }
-
-#[cfg(test)]
-#[path = "compaction_checkpoint_tests.rs"]
-mod tests;

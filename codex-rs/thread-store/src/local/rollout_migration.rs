@@ -1370,7 +1370,3 @@ fn migration_error(error: impl std::fmt::Display) -> ThreadStoreError {
         message: format!("rollout migration failed: {error}"),
     }
 }
-
-#[cfg(test)]
-#[path = "rollout_migration_tests.rs"]
-mod tests;

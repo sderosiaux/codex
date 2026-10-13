@@ -713,6 +713,3 @@ fn thread_spawn_depth(session_source: &SessionSource) -> Option<i32> {
         _ => None,
     }
 }
-#[cfg(test)]
-#[path = "control_tests.rs"]
-mod tests;

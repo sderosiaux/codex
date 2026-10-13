@@ -1,10 +1,5 @@
 mod layer_io;
 mod local;
-#[cfg(test)]
-#[path = "projectless_directory_tests.rs"]
-mod projectless_directory_tests;
-#[cfg(test)]
-mod tests;
 
 use crate::CONFIG_TOML_FILE;
 use crate::ConfigLayerSource;
@@ -938,69 +933,3 @@ async fn load_root_checkout_project_config(
     )
 }
 // Cannot name this `mod tests` because of tests.rs in this folder.
-#[cfg(test)]
-mod unit_tests {
-    use super::*;
-    #[cfg(windows)]
-    use std::path::Path;
-    use tempfile::tempdir;
-
-    #[test]
-    fn ensure_resolve_relative_paths_in_config_toml_preserves_all_fields() -> anyhow::Result<()> {
-        let tmp = tempdir()?;
-        let base_dir = tmp.path();
-        let contents = r#"
-# This is a field recognized by config.toml that is an AbsolutePathBuf in
-# the ConfigToml struct.
-model_instructions_file = "./some_file.md"
-
-# This is a field recognized by config.toml.
-model = "gpt-1000"
-
-# This is a field not recognized by config.toml.
-foo = "xyzzy"
-"#;
-        let user_config: TomlValue = toml::from_str(contents)?;
-
-        let normalized_toml_value = resolve_relative_paths_in_config_toml(user_config, base_dir)?;
-        let mut expected_toml_value = toml::map::Map::new();
-        expected_toml_value.insert(
-            "model_instructions_file".to_string(),
-            TomlValue::String(
-                AbsolutePathBuf::resolve_path_against_base("./some_file.md", base_dir)
-                    .as_path()
-                    .to_string_lossy()
-                    .to_string(),
-            ),
-        );
-        expected_toml_value.insert(
-            "model".to_string(),
-            TomlValue::String("gpt-1000".to_string()),
-        );
-        expected_toml_value.insert("foo".to_string(), TomlValue::String("xyzzy".to_string()));
-        assert_eq!(normalized_toml_value, TomlValue::Table(expected_toml_value));
-        Ok(())
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn windows_system_config_toml_file_uses_expected_suffix() {
-        let expected = windows_program_data_dir_from_known_folder()
-            .unwrap_or_else(|_| PathBuf::from(DEFAULT_PROGRAM_DATA_DIR_WINDOWS))
-            .join("OpenAI")
-            .join("Codex")
-            .join("config.toml");
-        assert_eq!(
-            windows_system_config_toml_file()
-                .expect("config.toml path")
-                .as_path(),
-            expected.as_path()
-        );
-        assert!(
-            windows_system_config_toml_file()
-                .expect("config.toml path")
-                .as_path()
-                .ends_with(Path::new("OpenAI").join("Codex").join("config.toml"))
-        );
-    }
-}

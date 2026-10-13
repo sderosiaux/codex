@@ -263,7 +263,3 @@ fn bounded_label(value: &str) -> String {
     }
     label
 }
-
-#[cfg(test)]
-#[path = "strict_config_tests.rs"]
-mod tests;

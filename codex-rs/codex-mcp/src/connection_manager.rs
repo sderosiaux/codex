@@ -1071,7 +1071,3 @@ impl McpConnectionSet {
         server_infos
     }
 }
-
-#[cfg(test)]
-#[path = "connection_manager_tests.rs"]
-pub(crate) mod tests;

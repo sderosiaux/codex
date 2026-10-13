@@ -8,6 +8,7 @@ license.workspace = true
 name = "codex_uds"
 path = "src/lib.rs"
 doctest = false
+test = false
 
 [lints]
 workspace = true
@@ -23,12 +24,3 @@ async-io = { workspace = true }
 tokio-util = { workspace = true, features = ["compat"] }
 uds_windows = { workspace = true }
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_SystemServices", "Win32_Networking_WinSock", "Win32_System_IO"] }
-
-[dev-dependencies]
-pretty_assertions = { workspace = true }
-tempfile = { workspace = true }
-tokio = { workspace = true, features = [
-    "io-util",
-    "macros",
-    "rt-multi-thread",
-] }

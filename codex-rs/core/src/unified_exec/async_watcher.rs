@@ -433,7 +433,3 @@ async fn resolve_aggregated_output(
 
     String::from_utf8_lossy(&guard.transcript.to_bytes_with_omission_marker()).to_string()
 }
-
-#[cfg(test)]
-#[path = "async_watcher_tests.rs"]
-mod tests;

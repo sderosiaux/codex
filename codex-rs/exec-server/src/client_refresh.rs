@@ -308,7 +308,3 @@ impl Inner {
         fail_all_in_flight_work(self, message).await;
     }
 }
-
-#[cfg(test)]
-#[path = "client_refresh_tests.rs"]
-mod tests;

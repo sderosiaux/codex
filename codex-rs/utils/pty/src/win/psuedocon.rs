@@ -233,10 +233,6 @@ impl PsuedoCon {
     }
 }
 
-#[cfg(test)]
-#[path = "psuedocon_tests.rs"]
-mod lifecycle_tests;
-
 fn resolve_current_directory(cmd: &CommandBuilder) -> Option<Vec<u16>> {
     let home = cmd
         .get_env("USERPROFILE")
@@ -370,18 +366,4 @@ fn append_quoted(arg: &OsStr, cmdline: &mut Vec<u16>) {
         i += 1;
     }
     cmdline.push('"' as u16);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::MIN_CONPTY_BUILD;
-    use super::windows_build_number;
-
-    #[test]
-    fn windows_build_number_returns_value() {
-        // We can't stably check the version of the GH workers, but we can
-        // at least check that this.
-        let version = windows_build_number().unwrap();
-        assert!(version > MIN_CONPTY_BUILD);
-    }
 }

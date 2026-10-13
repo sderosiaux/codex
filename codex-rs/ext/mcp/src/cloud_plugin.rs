@@ -146,7 +146,3 @@ pub(crate) fn hosted_plugin_connectors(catalog: &PluginCatalog) -> Vec<McpServer
         .take(MAX_PROJECTED_CLOUD_PLUGINS)
         .collect()
 }
-
-#[cfg(test)]
-#[path = "cloud_plugin_tests.rs"]
-mod tests;

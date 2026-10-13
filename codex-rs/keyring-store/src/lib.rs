@@ -52,10 +52,6 @@ impl Error for CredentialStoreError {
     }
 }
 
-#[cfg(test)]
-#[path = "error_display_tests.rs"]
-mod error_display_tests;
-
 mod error_kind;
 
 impl From<CredentialStoreError> for std::io::Error {

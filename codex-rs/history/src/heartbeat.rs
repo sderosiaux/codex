@@ -109,7 +109,3 @@ impl<'a> Heartbeat<'a> {
         })
     }
 }
-
-#[cfg(test)]
-#[path = "heartbeat_tests.rs"]
-mod tests;

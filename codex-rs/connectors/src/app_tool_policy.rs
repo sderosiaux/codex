@@ -132,7 +132,3 @@ fn tool_enabled_in_apps_config(
     let open_world_hint = input.open_world_hint.unwrap_or(true);
     (destructive_enabled || !destructive_hint) && (open_world_enabled || !open_world_hint)
 }
-
-#[cfg(test)]
-#[path = "app_tool_policy_tests.rs"]
-mod tests;

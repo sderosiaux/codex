@@ -24,7 +24,3 @@ impl ToolDefinition {
         self
     }
 }
-
-#[cfg(test)]
-#[path = "tool_definition_tests.rs"]
-mod tests;

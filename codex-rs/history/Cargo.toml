@@ -8,6 +8,7 @@ version.workspace = true
 doctest = false
 name = "codex_history"
 path = "src/lib.rs"
+test = false
 
 [lints]
 workspace = true
@@ -17,7 +18,3 @@ codex-protocol = { workspace = true }
 schemars = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-
-[dev-dependencies]
-anyhow = { workspace = true }
-pretty_assertions = { workspace = true }

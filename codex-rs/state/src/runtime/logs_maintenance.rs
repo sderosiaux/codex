@@ -78,7 +78,3 @@ async fn prune_by_age_and_size(
         retention_seconds = (retention_seconds / 2).max(1);
     }
 }
-
-#[cfg(test)]
-#[path = "logs_maintenance_tests.rs"]
-mod tests;

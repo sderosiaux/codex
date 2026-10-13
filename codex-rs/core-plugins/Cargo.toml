@@ -8,6 +8,7 @@ version.workspace = true
 doctest = false
 name = "codex_core_plugins"
 path = "src/lib.rs"
+test = false
 
 [lints]
 workspace = true
@@ -53,13 +54,3 @@ toml = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
 zip = { workspace = true }
-
-[dev-dependencies]
-codex-exec-server-test-support = { workspace = true }
-codex-utils-cargo-bin = { workspace = true }
-libc = { workspace = true }
-pretty_assertions = { workspace = true }
-tempfile = { workspace = true }
-tracing-subscriber = { workspace = true }
-tracing-test = { workspace = true, features = ["no-env-filter"] }
-wiremock = { workspace = true }

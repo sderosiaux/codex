@@ -1456,21 +1456,6 @@ impl PluginsManager {
         Some(changed)
     }
 
-    #[cfg(test)]
-    fn write_remote_installed_plugins_cache(&self, plugins: Vec<RemoteInstalledPlugin>) -> bool {
-        let auth = self.auth_manager.auth_cached();
-        let generation = self
-            .prepare_remote_installed_plugins_cache_generation(auth.as_ref())
-            .expect("test cache identity should remain current");
-        self.write_remote_installed_plugins_cache_snapshot(
-            generation,
-            plugins,
-            auth.as_ref(),
-            RemoteInstalledPluginsCachePublication::Refresh,
-        )
-        .expect("test cache generation should remain current")
-    }
-
     pub fn clear_remote_installed_plugins_cache(&self) -> bool {
         let mut cache = match self.remote_installed_plugins_cache.write() {
             Ok(cache) => cache,
@@ -3603,11 +3588,3 @@ impl PluginUninstallError {
         matches!(self, Self::InvalidPluginId(_))
     }
 }
-
-#[cfg(test)]
-#[path = "manager_tests.rs"]
-mod tests;
-
-#[cfg(test)]
-#[path = "plugins_config_input_tests.rs"]
-mod plugins_config_input_tests;

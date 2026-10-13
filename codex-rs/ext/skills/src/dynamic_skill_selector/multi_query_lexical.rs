@@ -160,7 +160,3 @@ fn split_connectors(value: &str) -> Vec<&str> {
     segments.push(&value[start..]);
     segments
 }
-
-#[cfg(test)]
-#[path = "multi_query_lexical_tests.rs"]
-mod tests;

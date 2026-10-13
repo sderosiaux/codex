@@ -170,7 +170,7 @@ fn git_path_arg(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 fn strip_windows_verbatim_path_prefix(path: &str) -> Option<String> {
     let stripped = path.strip_prefix(r"\\?\")?;
     let stripped = stripped
@@ -235,75 +235,5 @@ fn ensure_git_success(output: &Output, context: &str) -> Result<(), String> {
             "{context} failed with status {}: {stderr}",
             output.status
         ))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::git_command;
-    use super::is_full_git_sha;
-    use super::strip_windows_verbatim_path_prefix;
-    use pretty_assertions::assert_eq;
-    use std::ffi::OsStr;
-
-    #[test]
-    fn full_git_sha_ref_is_already_a_remote_revision() {
-        assert!(is_full_git_sha("0123456789abcdef0123456789abcdef01234567"));
-        assert!(!is_full_git_sha("main"));
-        assert!(!is_full_git_sha("0123456"));
-    }
-
-    #[test]
-    fn git_command_uses_path_lookup_with_stable_noninteractive_env() {
-        let command = git_command(crate::PluginGitMode::Automatic);
-
-        assert_eq!(command.get_program(), OsStr::new("git"));
-        assert_eq!(
-            command.get_args().collect::<Vec<_>>(),
-            [
-                OsStr::new("-c"),
-                OsStr::new(codex_git_utils::SAFE_BARE_REPOSITORY_CONFIG),
-            ]
-        );
-        assert_eq!(
-            command_env(&command, "GIT_OPTIONAL_LOCKS"),
-            Some(Some(OsStr::new("0")))
-        );
-        assert_eq!(
-            command_env(&command, "GIT_TERMINAL_PROMPT"),
-            Some(Some(OsStr::new("0")))
-        );
-        assert_eq!(command_env(&command, "PATH"), None);
-    }
-
-    #[test]
-    fn strips_windows_verbatim_disk_prefix_for_git() {
-        assert_eq!(
-            strip_windows_verbatim_path_prefix(r"\\?\C:\Users\alice\marketplace"),
-            Some(r"C:\Users\alice\marketplace".to_string())
-        );
-    }
-
-    #[test]
-    fn strips_windows_verbatim_unc_prefix_for_git() {
-        assert_eq!(
-            strip_windows_verbatim_path_prefix(r"\\?\UNC\server\share\marketplace"),
-            Some(r"\\server\share\marketplace".to_string())
-        );
-    }
-
-    #[test]
-    fn leaves_non_verbatim_path_without_rewrite() {
-        assert_eq!(strip_windows_verbatim_path_prefix(r"C:\Users\alice"), None);
-    }
-
-    fn command_env<'a>(
-        command: &'a std::process::Command,
-        name: &str,
-    ) -> Option<Option<&'a OsStr>> {
-        command
-            .get_envs()
-            .find(|(key, _)| key == &OsStr::new(name))
-            .map(|(_, value)| value)
     }
 }

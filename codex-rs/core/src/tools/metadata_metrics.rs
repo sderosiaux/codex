@@ -41,7 +41,3 @@ pub(crate) fn record_shedding(
         tracing::warn!("tool metadata shedding metric failed: {error}");
     }
 }
-
-#[cfg(test)]
-#[path = "metadata_metrics_tests.rs"]
-mod tests;

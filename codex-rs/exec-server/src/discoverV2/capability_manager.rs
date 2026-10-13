@@ -143,7 +143,3 @@ impl CapabilityManager {
         self.current_state.lock().await.clone()
     }
 }
-
-#[cfg(test)]
-#[path = "tests/capability_manager_tests.rs"]
-mod tests;

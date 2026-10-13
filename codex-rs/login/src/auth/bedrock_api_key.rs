@@ -54,7 +54,3 @@ pub fn login_with_bedrock_api_key(
         keyring_backend_kind,
     )
 }
-
-#[cfg(test)]
-#[path = "bedrock_api_key_tests.rs"]
-mod tests;

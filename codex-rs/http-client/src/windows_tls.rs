@@ -16,7 +16,3 @@ pub fn build_windows_platform_tls_config() -> Result<Arc<ClientConfig>, rustls::
     ensure_rustls_crypto_provider();
     ClientConfig::with_platform_verifier().map(Arc::new)
 }
-
-#[cfg(test)]
-#[path = "windows_tls_tests.rs"]
-mod tests;

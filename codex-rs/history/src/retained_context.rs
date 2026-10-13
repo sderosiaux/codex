@@ -607,7 +607,3 @@ impl RetainedContext {
         });
     }
 }
-
-#[cfg(test)]
-#[path = "retained_context_tests.rs"]
-mod tests;

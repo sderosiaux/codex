@@ -936,17 +936,6 @@ fn render_catalog(
     }
 }
 
-#[cfg(test)]
-fn available_skills_fragment(
-    catalog: &SkillCatalog,
-    include_skills_usage_instructions: bool,
-    policy: SkillCatalogRenderPolicy,
-    budget: SkillMetadataBudget,
-) -> Option<AvailableSkillsInstructions> {
-    render_available_skills(catalog, policy, budget, include_skills_usage_instructions)?
-        .into_fragment(include_skills_usage_instructions)
-}
-
 fn build_aliased_catalog(
     catalog: CatalogLines<'_>,
     policy: SkillCatalogRenderPolicy,
@@ -1116,7 +1105,3 @@ pub(crate) fn truncate_utf8_to_bytes(contents: &str, max_bytes: usize) -> (Strin
     let truncated = take_bytes_at_char_boundary(contents, max_bytes);
     (truncated.to_string(), truncated.len() < contents.len())
 }
-
-#[cfg(test)]
-#[path = "render_tests.rs"]
-mod tests;

@@ -8,6 +8,7 @@ version.workspace = true
 doctest = false
 name = "codex_response_debug_context"
 path = "src/lib.rs"
+test = false
 
 [lints]
 workspace = true
@@ -15,8 +16,4 @@ workspace = true
 [dependencies]
 base64 = { workspace = true }
 codex-api = { workspace = true }
-http = { workspace = true }
 serde_json = { workspace = true }
-
-[dev-dependencies]
-pretty_assertions = { workspace = true }

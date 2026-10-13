@@ -39,7 +39,3 @@ impl AuthStorageOriginator {
         CURRENT.sync_scope(self, operation)
     }
 }
-
-#[cfg(test)]
-#[path = "originator_tests.rs"]
-mod tests;

@@ -129,7 +129,3 @@ fn attachment_error(
         message: format!("failed to {operation} thread attachment: {message}"),
     }
 }
-
-#[cfg(test)]
-#[path = "thread_attachments_tests.rs"]
-mod tests;

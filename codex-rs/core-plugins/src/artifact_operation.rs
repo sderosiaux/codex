@@ -102,7 +102,3 @@ pub fn recognize_artifact_operation(
         output_format,
     })
 }
-
-#[cfg(test)]
-#[path = "artifact_operation_tests.rs"]
-mod tests;

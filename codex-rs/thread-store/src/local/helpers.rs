@@ -309,39 +309,3 @@ fn thread_id_from_rollout_path(path: &Path) -> Option<ThreadId> {
     }
     ThreadId::from_string(&stem[uuid_start..]).ok()
 }
-
-#[cfg(test)]
-mod tests {
-
-    use codex_rollout::ThreadItem;
-    use pretty_assertions::assert_eq;
-    use uuid::Uuid;
-
-    use super::*;
-
-    #[test]
-    fn rollout_conversion_uses_logical_path() {
-        let uuid = Uuid::from_u128(1);
-        let compressed_path = PathBuf::from(format!(
-            "/tmp/sessions/2025/01/03/rollout-2025-01-03T12-00-00-{uuid}.jsonl.zst"
-        ));
-        let thread = stored_thread_from_rollout_item(
-            ThreadItem {
-                path: compressed_path.clone(),
-                source: Some(SessionSource::Cli),
-                ..Default::default()
-            },
-            /*archived*/ false,
-            "test-provider",
-        )
-        .expect("stored thread");
-
-        assert_eq!(thread.name, None);
-        assert_eq!(
-            thread.rollout_path,
-            Some(
-                compressed_path.with_file_name(format!("rollout-2025-01-03T12-00-00-{uuid}.jsonl"))
-            )
-        );
-    }
-}

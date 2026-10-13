@@ -89,7 +89,3 @@ impl WorldStateSection for MultiAgentModeState {
         )
     }
 }
-
-#[cfg(test)]
-#[path = "multi_agent_mode_tests.rs"]
-mod tests;

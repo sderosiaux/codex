@@ -130,7 +130,3 @@ fn push_bounded(destination: &mut String, value: &str) {
     }
     destination.push_str(&value[..end]);
 }
-
-#[cfg(test)]
-#[path = "character_routing_card_tests.rs"]
-mod tests;

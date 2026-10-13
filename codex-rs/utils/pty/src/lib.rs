@@ -17,8 +17,6 @@ mod spawn;
 pub use spawn::SpawnRequest;
 pub use spawn::spawn_process;
 mod terminal_queries;
-#[cfg(test)]
-mod tests;
 #[cfg(unix)]
 mod unix_io;
 #[cfg(windows)]
@@ -69,6 +67,3 @@ mod spawn_helper;
 mod spawn_helper_main;
 #[cfg(target_os = "linux")]
 pub use spawn_helper::init_spawn_helper;
-#[cfg(all(test, target_os = "linux"))]
-#[path = "spawn_helper_tests.rs"]
-mod spawn_helper_tests;

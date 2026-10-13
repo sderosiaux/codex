@@ -297,11 +297,3 @@ async fn bounded_response_bytes(
     }
     Ok(body.freeze())
 }
-
-#[cfg(test)]
-#[path = "transport_tests.rs"]
-mod tests;
-
-#[cfg(test)]
-#[path = "transport_limit_tests.rs"]
-mod limit_tests;

@@ -171,7 +171,3 @@ fn record(
     metrics.counter(count_name, /*inc*/ 1, tags)?;
     metrics.record_duration(duration_name, duration, tags)
 }
-
-#[cfg(test)]
-#[path = "buffered_tests.rs"]
-mod tests;

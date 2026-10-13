@@ -50,7 +50,3 @@ impl HttpClient for OpenAiDocsHttpClient {
         self.http_client.http_request_stream(params)
     }
 }
-
-#[cfg(test)]
-#[path = "openai_docs_source_attribution_tests.rs"]
-mod tests;

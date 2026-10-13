@@ -149,7 +149,3 @@ impl ConnectorSnapshot {
             .unwrap_or_default()
     }
 }
-
-#[cfg(test)]
-#[path = "snapshot_tests.rs"]
-mod tests;

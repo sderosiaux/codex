@@ -9,10 +9,6 @@ use codex_protocol::protocol::SessionSource as CoreSessionSource;
 use codex_protocol::protocol::SubAgentSource as CoreSubAgentSource;
 use codex_protocol::protocol::ThreadHistoryMode as CoreThreadHistoryMode;
 use codex_protocol::protocol::ThreadSource as CoreThreadSource;
-#[cfg(test)]
-use schemars::r#gen::SchemaGenerator;
-#[cfg(test)]
-use schemars::schema::Schema;
 use serde::Deserialize;
 use serde::Serialize;
 use std::fmt;
@@ -102,17 +98,6 @@ pub enum ThreadSource {
     Subagent,
     Feature(String),
     MemoryConsolidation,
-}
-
-#[cfg(test)]
-impl JsonSchema for ThreadSource {
-    fn schema_name() -> String {
-        "ThreadSource".to_string()
-    }
-
-    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
-        String::json_schema(generator)
-    }
 }
 
 impl TryFrom<String> for ThreadSource {

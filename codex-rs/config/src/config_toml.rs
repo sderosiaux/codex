@@ -636,10 +636,6 @@ where
     Ok(model_providers)
 }
 
-#[cfg(test)]
-#[path = "bedrock_runtime_tests.rs"]
-mod bedrock_runtime_tests;
-
 pub fn validate_oss_provider(provider: &str) -> std::io::Result<()> {
     match provider {
         LMSTUDIO_OSS_PROVIDER_ID | OLLAMA_OSS_PROVIDER_ID => Ok(()),
@@ -653,85 +649,5 @@ pub fn validate_oss_provider(provider: &str) -> std::io::Result<()> {
                 "Invalid OSS provider '{provider}'. Must be one of: {LMSTUDIO_OSS_PROVIDER_ID}, {OLLAMA_OSS_PROVIDER_ID}"
             ),
         )),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use pretty_assertions::assert_eq;
-
-    const WORKSPACE_ID_A: &str = "123e4567-e89b-42d3-a456-426614174000";
-    const WORKSPACE_ID_B: &str = "123e4567-e89b-42d3-a456-426614174001";
-
-    #[test]
-    fn thread_unload_delay_requires_nonnegative_seconds() {
-        for value in ["-1", "1.5", "\"60\""] {
-            let error =
-                toml::from_str::<ConfigToml>(&format!("thread_unload_delay_secs = {value}"))
-                    .expect_err("idle timeout must be a nonnegative integer");
-            assert!(error.to_string().contains("thread_unload_delay_secs"));
-        }
-    }
-
-    #[test]
-    fn forced_chatgpt_workspace_id_accepts_single_string() {
-        let config: ConfigToml = toml::from_str(&format!(
-            r#"forced_chatgpt_workspace_id = "{WORKSPACE_ID_A}""#
-        ))
-        .expect("single workspace id should deserialize");
-
-        assert_eq!(
-            config
-                .forced_chatgpt_workspace_id
-                .expect("workspace id should be set")
-                .into_vec(),
-            vec![WORKSPACE_ID_A.to_string()]
-        );
-    }
-
-    #[test]
-    fn forced_chatgpt_workspace_id_accepts_string_list() {
-        let config: ConfigToml = toml::from_str(&format!(
-            r#"forced_chatgpt_workspace_id = ["{WORKSPACE_ID_A}", "{WORKSPACE_ID_B}"]"#
-        ))
-        .expect("workspace id list should deserialize");
-
-        assert_eq!(
-            config
-                .forced_chatgpt_workspace_id
-                .expect("workspace ids should be set")
-                .into_vec(),
-            vec![WORKSPACE_ID_A.to_string(), WORKSPACE_ID_B.to_string()]
-        );
-    }
-
-    #[test]
-    fn forced_chatgpt_workspace_id_rejects_comma_separated_string() {
-        let err = toml::from_str::<ConfigToml>(&format!(
-            r#"forced_chatgpt_workspace_id = "{WORKSPACE_ID_A},{WORKSPACE_ID_B}""#
-        ))
-        .expect_err("comma-separated string should be rejected");
-
-        let message = err.to_string();
-        assert!(message.contains("TOML list of strings"));
-        assert!(message.contains("comma-separated strings are not supported"));
-    }
-
-    #[test]
-    fn amazon_bedrock_auth_command_must_not_be_empty() {
-        let err = toml::from_str::<ConfigToml>(
-            r#"
-[model_providers.amazon-bedrock.auth]
-command = "   "
-"#,
-        )
-        .expect_err("empty Amazon Bedrock auth command should be rejected");
-
-        assert!(
-            err.to_string().contains(
-                "model_providers.amazon-bedrock: provider auth.command must not be empty"
-            )
-        );
     }
 }

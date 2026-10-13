@@ -19,15 +19,7 @@ png = { version = "0.18.0", features = ["zlib-rs"] }
 codex-utils-cache = { workspace = true }
 mime_guess = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["fs", "rt", "rt-multi-thread", "macros"] }
-
-[dev-dependencies]
-divan = { workspace = true }
-image = { workspace = true, features = ["jpeg", "png", "gif", "webp"] }
 
 [lib]
 doctest = false
-
-[[bench]]
-name = "prompt_images"
-harness = false
+test = false

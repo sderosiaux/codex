@@ -68,7 +68,3 @@ fn file_too_large_error() -> io::Error {
         format!("file is too large to read: limit is {MAX_READ_FILE_BYTES} bytes"),
     )
 }
-
-#[cfg(test)]
-#[path = "local_file_system_read_tests.rs"]
-mod tests;

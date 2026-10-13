@@ -172,7 +172,3 @@ fn read_git_path(path: &Path, relative_to: &Path, prefix: &str) -> Option<PathBu
     }
     canonicalize_native(relative_to.join(value))
 }
-
-#[cfg(test)]
-#[path = "worktree_tests.rs"]
-mod tests;

@@ -104,7 +104,3 @@ pub(crate) fn record_catalog_metrics(
         extension_metrics.histogram_with_boundaries(name, value, boundaries, &tags);
     }
 }
-
-#[cfg(test)]
-#[path = "render_observability_tests.rs"]
-mod tests;

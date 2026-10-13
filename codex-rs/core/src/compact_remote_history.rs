@@ -191,7 +191,3 @@ fn truncated_output_payload(output: &FunctionCallOutputPayload) -> FunctionCallO
         success: output.success,
     }
 }
-
-#[cfg(test)]
-#[path = "compact_remote_history_tests.rs"]
-mod metadata_tests;

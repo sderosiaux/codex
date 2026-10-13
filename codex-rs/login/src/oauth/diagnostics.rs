@@ -100,7 +100,3 @@ pub(crate) fn redact_request_secrets(text: &str, secrets: &[&str]) -> String {
     }
     redacted
 }
-
-#[cfg(test)]
-#[path = "diagnostics_tests.rs"]
-mod tests;

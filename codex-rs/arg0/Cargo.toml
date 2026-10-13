@@ -8,6 +8,7 @@ license.workspace = true
 name = "codex_arg0"
 path = "src/lib.rs"
 doctest = false
+test = false
 
 [lints]
 workspace = true
@@ -27,7 +28,3 @@ tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 [target.'cfg(windows)'.dependencies]
 pathdiff = { workspace = true }
-
-[dev-dependencies]
-codex-utils-cargo-bin = { workspace = true }
-pretty_assertions = { workspace = true }

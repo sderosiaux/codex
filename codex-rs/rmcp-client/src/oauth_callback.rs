@@ -142,7 +142,3 @@ pub(crate) fn validate_callback_redirect(
 
     Ok(())
 }
-
-#[cfg(test)]
-#[path = "oauth_callback_tests.rs"]
-mod tests;

@@ -8,6 +8,7 @@ license.workspace = true
 doctest = false
 name = "codex_otel"
 path = "src/lib.rs"
+test = false
 
 [lints]
 workspace = true
@@ -60,16 +61,3 @@ tokio-tungstenite = { workspace = true }
 tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 tracing-subscriber = { workspace = true }
-
-[dev-dependencies]
-opentelemetry_sdk = { workspace = true, features = [
-    "experimental_metrics_custom_reader",
-    "testing",
-] }
-pretty_assertions = { workspace = true }
-
-[target.'cfg(unix)'.dev-dependencies]
-libc = { workspace = true }
-
-[target.'cfg(target_os = "linux")'.dev-dependencies]
-seccompiler = { workspace = true }

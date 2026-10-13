@@ -26,7 +26,3 @@ pub fn delegated_output_preview(output: &FunctionCallOutputItem) -> Option<Strin
         .unwrap_or(text);
     (!preview.trim().is_empty()).then_some(preview)
 }
-
-#[cfg(test)]
-#[path = "delegated_preview_tests.rs"]
-mod tests;

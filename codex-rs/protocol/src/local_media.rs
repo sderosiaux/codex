@@ -90,7 +90,3 @@ pub(crate) fn audio_mime_for_path(path: &Path) -> Option<&'static str> {
         None
     }
 }
-
-#[cfg(test)]
-#[path = "local_media_tests.rs"]
-mod tests;

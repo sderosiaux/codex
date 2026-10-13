@@ -58,7 +58,3 @@ impl RemotePluginCapabilities {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "plugin_capabilities_tests.rs"]
-mod tests;

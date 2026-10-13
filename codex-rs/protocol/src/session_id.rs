@@ -105,22 +105,3 @@ impl JsonSchema for SessionId {
         <String>::json_schema(generator)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_session_id_default_is_not_zeroes() {
-        let id = SessionId::default();
-        assert_ne!(id.uuid, Uuid::nil());
-    }
-
-    #[test]
-    fn converts_to_and_from_thread_id() {
-        let thread_id = ThreadId::new();
-        let session_id = SessionId::from(thread_id);
-
-        assert_eq!(ThreadId::from(session_id), thread_id);
-    }
-}

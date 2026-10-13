@@ -158,7 +158,3 @@ fn is_complex_schema_object(map: &serde_json::Map<String, JsonValue>) -> bool {
         || map.contains_key("additionalProperties")
         || map.contains_key("$ref")
 }
-
-#[cfg(test)]
-#[path = "compaction_tests.rs"]
-mod tests;

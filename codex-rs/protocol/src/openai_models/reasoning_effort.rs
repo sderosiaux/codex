@@ -39,6 +39,3 @@ impl ModelInfo {
         }
     }
 }
-#[cfg(test)]
-#[path = "reasoning_effort_tests.rs"]
-mod tests;

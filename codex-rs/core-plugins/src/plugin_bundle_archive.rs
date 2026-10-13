@@ -316,7 +316,3 @@ impl fmt::Display for ArchiveSizeLimitExceeded {
 }
 
 impl std::error::Error for ArchiveSizeLimitExceeded {}
-
-#[cfg(test)]
-#[path = "plugin_bundle_archive_tests.rs"]
-mod tests;

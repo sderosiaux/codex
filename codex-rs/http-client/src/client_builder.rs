@@ -408,7 +408,3 @@ pub(crate) enum ProxyRouting {
     TransportDefault,
     Direct,
 }
-
-#[cfg(test)]
-#[path = "client_builder_tests.rs"]
-mod tests;

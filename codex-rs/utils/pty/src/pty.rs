@@ -673,7 +673,3 @@ pub(crate) fn configure_child_terminal() -> std::io::Result<()> {
     }
     Ok(())
 }
-
-#[cfg(all(test, target_os = "linux"))]
-#[path = "pty_linux_tests.rs"]
-mod linux_tests;

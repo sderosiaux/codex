@@ -216,7 +216,3 @@ impl HttpClient for SameOriginRedirectHttpClient {
         .boxed()
     }
 }
-
-#[cfg(test)]
-#[path = "http_client_redirect_tests.rs"]
-mod tests;

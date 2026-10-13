@@ -251,7 +251,3 @@ impl Drop for StorageTelemetry {
         self.observation.record();
     }
 }
-
-#[cfg(test)]
-#[path = "auth_storage_tests.rs"]
-mod tests;

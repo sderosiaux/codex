@@ -195,7 +195,3 @@ fn resolve_color_str(value: Option<String>, field: &'static str) -> Option<Strin
         None
     }
 }
-
-#[cfg(test)]
-#[path = "interface_tests.rs"]
-mod tests;

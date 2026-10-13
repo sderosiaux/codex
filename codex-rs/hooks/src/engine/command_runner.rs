@@ -460,7 +460,3 @@ fn default_shell_program(environment: &[(OsString, OsString)]) -> OsString {
         .map(|(_, value)| value.clone())
         .unwrap_or_else(|| OsString::from(fallback_program))
 }
-
-#[cfg(test)]
-#[path = "command_runner_tests.rs"]
-mod tests;

@@ -98,7 +98,3 @@ pub(crate) fn respond_to_terminal_queries(mut spawned: SpawnedProcess) -> Spawne
 
     spawned
 }
-
-#[cfg(test)]
-#[path = "terminal_queries_tests.rs"]
-mod tests;

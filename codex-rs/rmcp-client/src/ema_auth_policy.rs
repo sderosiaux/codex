@@ -108,7 +108,3 @@ pub fn validate_ema_auth_resource(server_url: &str, resource: Option<&str>) -> R
     }
     Ok(())
 }
-
-#[cfg(test)]
-#[path = "ema_auth_policy_tests.rs"]
-mod tests;

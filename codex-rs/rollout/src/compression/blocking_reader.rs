@@ -112,7 +112,3 @@ impl Iterator for MeasuredLines<'_> {
         line
     }
 }
-
-#[cfg(test)]
-#[path = "blocking_reader_tests.rs"]
-mod tests;

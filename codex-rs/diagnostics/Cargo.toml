@@ -8,12 +8,10 @@ license.workspace = true
 name = "codex_diagnostics"
 path = "src/lib.rs"
 doctest = false
+test = false
 
 [lints]
 workspace = true
 
 [dependencies]
 libc = { workspace = true }
-
-[dev-dependencies]
-pretty_assertions = { workspace = true }

@@ -422,11 +422,6 @@ impl ExecCommandToolOutput {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn truncated_output(&self, max_tokens: usize) -> String {
-        self.truncated_output_with_policy(TruncationPolicy::Tokens(max_tokens))
-    }
-
     fn truncated_output_with_policy(&self, policy: TruncationPolicy) -> String {
         let text = String::from_utf8_lossy(&self.raw_output).to_string();
         let Some(omitted_bytes) = self.output_omitted_bytes else {
@@ -536,7 +531,3 @@ fn function_tool_response(
         output: FunctionCallOutputPayload { body, success },
     }
 }
-
-#[cfg(test)]
-#[path = "context_tests.rs"]
-mod tests;

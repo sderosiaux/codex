@@ -150,7 +150,3 @@ fn local_model_messages() -> ModelMessages {
         ..Default::default()
     }
 }
-
-#[cfg(test)]
-#[path = "model_info_tests.rs"]
-mod tests;

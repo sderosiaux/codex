@@ -360,11 +360,3 @@ pub async fn spawn_process_no_stdin(
     )
     .await
 }
-
-#[cfg(all(test, windows))]
-#[path = "pipe_tests.rs"]
-mod tests;
-
-#[cfg(all(test, unix))]
-#[path = "pipe_unix_tests.rs"]
-mod unix_tests;

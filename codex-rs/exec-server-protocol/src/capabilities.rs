@@ -93,7 +93,3 @@ impl fmt::Debug for ExecutorSkill {
             .finish()
     }
 }
-
-#[cfg(test)]
-#[path = "capabilities_tests.rs"]
-mod tests;

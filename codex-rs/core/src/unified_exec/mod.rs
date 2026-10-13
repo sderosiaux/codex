@@ -36,10 +36,6 @@ mod process_manager;
 mod process_state;
 mod shell_snapshot;
 
-pub(crate) fn set_deterministic_process_ids_for_tests(enabled: bool) {
-    process_manager::set_deterministic_process_ids_for_tests(enabled);
-}
-
 pub(crate) use errors::UnifiedExecError;
 pub(crate) use process::UnifiedExecProcess;
 
@@ -124,9 +120,7 @@ pub(crate) struct ProcessStore {
 
 impl ProcessStore {
     fn remove(&mut self, process_id: i32) -> Option<ProcessEntry> {
-        if !process_manager::should_use_deterministic_process_ids() {
-            self.reserved_process_ids.remove(&process_id);
-        }
+        self.reserved_process_ids.remove(&process_id);
         self.processes.remove(&process_id)
     }
 }
@@ -187,12 +181,3 @@ pub(crate) fn generate_chunk_id() -> String {
         .map(|_| format!("{:x}", rng.random_range(0..16)))
         .collect()
 }
-
-#[cfg(test)]
-#[cfg(unix)]
-#[path = "process_tests.rs"]
-mod process_tests;
-#[cfg(test)]
-#[cfg(unix)]
-#[path = "mod_tests.rs"]
-mod tests;

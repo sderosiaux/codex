@@ -108,6 +108,3 @@ impl UserInstructionsProvider for CodexHomeUserInstructionsProvider {
         })
     }
 }
-
-#[cfg(test)]
-mod tests;

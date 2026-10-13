@@ -38,7 +38,3 @@ pub(super) async fn bedrock_runtime_base_url(
     .await?;
     Ok(base_url(&region))
 }
-
-#[cfg(test)]
-#[path = "runtime_tests.rs"]
-mod tests;

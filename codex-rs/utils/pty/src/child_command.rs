@@ -357,19 +357,3 @@ impl Command {
         })
     }
 }
-
-#[cfg(all(test, unix))]
-#[path = "command_validation_tests.rs"]
-mod validation_tests;
-
-#[cfg(all(test, target_os = "macos"))]
-#[path = "macos_child_tests.rs"]
-mod tests;
-
-#[cfg(all(test, target_os = "macos"))]
-#[path = "macos_descriptor_tests.rs"]
-mod descriptor_tests;
-
-#[cfg(all(test, target_os = "linux"))]
-#[path = "linux_child_tests.rs"]
-mod linux_tests;

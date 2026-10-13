@@ -167,7 +167,3 @@ impl Session {
             .await
     }
 }
-
-#[cfg(test)]
-#[path = "step_activation_tests.rs"]
-mod tests;

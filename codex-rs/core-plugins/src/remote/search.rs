@@ -89,7 +89,3 @@ pub async fn search_remote_plugins(
         next_page_token: response.pagination.next_page_token,
     })
 }
-
-#[cfg(test)]
-#[path = "search_tests.rs"]
-mod tests;

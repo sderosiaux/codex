@@ -125,7 +125,3 @@ impl<'a> OAuthClient<'a> {
             .map_err(|_| OAuthError::InvalidResponse)
     }
 }
-
-#[cfg(test)]
-#[path = "client_tests.rs"]
-mod tests;

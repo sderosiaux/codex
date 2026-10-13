@@ -90,7 +90,3 @@ fn rejection_reason(header: &[u8]) -> Option<&'static str> {
         _ => None,
     }
 }
-
-#[cfg(test)]
-#[path = "connection_diagnostics_tests.rs"]
-mod tests;

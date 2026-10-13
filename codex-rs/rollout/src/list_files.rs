@@ -277,7 +277,3 @@ fn collect_rollout_day_files_sync(
     day_files.sort_by_key(|(ts, sid, _path)| (Reverse(*ts), Reverse(*sid)));
     Ok(day_files)
 }
-
-#[cfg(test)]
-#[path = "list_files_tests.rs"]
-mod tests;

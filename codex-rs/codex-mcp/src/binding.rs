@@ -391,7 +391,3 @@ pub(crate) fn call_tool_result_from_rmcp(result: rmcp::model::CallToolResult) ->
         meta: result.meta.and_then(|meta| serde_json::to_value(meta).ok()),
     }
 }
-
-#[cfg(test)]
-#[path = "binding_tests.rs"]
-mod tests;

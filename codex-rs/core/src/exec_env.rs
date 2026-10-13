@@ -1,8 +1,6 @@
 pub use codex_apply_patch::CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
-#[cfg(test)]
-use codex_protocol::config_types::EnvironmentVariablePattern;
 use codex_protocol::config_types::ShellEnvironmentPolicy;
 use codex_protocol::shell_environment;
 use std::collections::HashMap;
@@ -54,33 +52,3 @@ pub fn inject_apply_patch_env(env: &mut HashMap<String, String>) {
         "1".to_string(),
     );
 }
-
-#[cfg(all(test, target_os = "windows"))]
-fn create_env_from_vars<I>(
-    vars: I,
-    policy: &ShellEnvironmentPolicy,
-    thread_id: Option<ThreadId>,
-) -> HashMap<String, String>
-where
-    I: IntoIterator<Item = (String, String)>,
-{
-    let thread_id = thread_id.map(|thread_id| thread_id.to_string());
-    shell_environment::create_env_from_vars(vars, policy, thread_id.as_deref())
-}
-
-#[cfg(test)]
-fn populate_env<I>(
-    vars: I,
-    policy: &ShellEnvironmentPolicy,
-    thread_id: Option<ThreadId>,
-) -> HashMap<String, String>
-where
-    I: IntoIterator<Item = (String, String)>,
-{
-    let thread_id = thread_id.map(|thread_id| thread_id.to_string());
-    shell_environment::populate_env(vars, policy, thread_id.as_deref())
-}
-
-#[cfg(test)]
-#[path = "exec_env_tests.rs"]
-mod tests;

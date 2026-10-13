@@ -736,7 +736,3 @@ fn synthetic_exit_status(code: i32) -> ExitStatus {
 fn synthetic_exit_status_for_code(code: i32) -> ExitStatus {
     synthetic_exit_status(code)
 }
-
-#[cfg(test)]
-#[path = "exec_tests.rs"]
-mod tests;

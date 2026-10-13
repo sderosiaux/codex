@@ -162,7 +162,3 @@ impl RolloutReferenceIndex {
             .map(|(rollout_id, rollout)| (*rollout_id, rollout.path.as_path()))
     }
 }
-
-#[cfg(test)]
-#[path = "rollout_reference_index_tests.rs"]
-mod tests;

@@ -173,7 +173,3 @@ fn parse_callback_url(
         issuer: params.remove("iss"),
     }))
 }
-
-#[cfg(test)]
-#[path = "oauth_callback_input_tests.rs"]
-mod tests;

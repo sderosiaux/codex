@@ -131,7 +131,3 @@ impl From<ResolvedReviewRequest> for ReviewRequest {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "review_request_tests.rs"]
-mod review_request_tests;

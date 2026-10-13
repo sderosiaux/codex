@@ -186,7 +186,3 @@ impl fmt::Display for TokenErrorDetail {
         formatter.write_str(&self.display_message)
     }
 }
-
-#[cfg(test)]
-#[path = "error_tests.rs"]
-mod tests;

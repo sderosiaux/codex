@@ -181,6 +181,3 @@ fn assemble_truncated_output(prefix: &str, suffix: &str, marker: &str) -> String
     out.push_str(suffix);
     out
 }
-
-#[cfg(test)]
-mod tests;

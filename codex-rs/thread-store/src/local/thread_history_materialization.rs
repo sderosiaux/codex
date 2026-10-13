@@ -370,7 +370,3 @@ fn thread_store_io_error(err: std::io::Error) -> ThreadStoreError {
         message: err.to_string(),
     }
 }
-
-#[cfg(test)]
-#[path = "thread_history_materialization_tests.rs"]
-mod tests;

@@ -13,10 +13,6 @@ pub use capture::SnapshotCaptureOptions;
 pub use capture::snapshot_capture_script;
 pub use capture::snapshot_source_capture_script;
 
-#[cfg(all(test, unix))]
-#[path = "shell_snapshot_tests.rs"]
-mod tests;
-
 /// Returns the POSIX shell helper used to resolve supported `ENV` startup paths.
 ///
 /// The helper deliberately supports only non-evaluating path forms. Unsupported

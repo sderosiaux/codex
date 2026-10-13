@@ -169,7 +169,3 @@ fn normalize_case_insensitive_keys(table: &mut toml::map::Map<String, TomlValue>
         table.insert(key.to_lowercase(), value);
     }
 }
-
-#[cfg(test)]
-#[path = "merge_tests.rs"]
-mod tests;

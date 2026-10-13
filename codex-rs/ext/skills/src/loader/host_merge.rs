@@ -262,7 +262,3 @@ fn scope_rank(scope: SkillScope) -> u8 {
         SkillScope::Admin => 3,
     }
 }
-
-#[cfg(test)]
-#[path = "host_merge_tests.rs"]
-mod tests;

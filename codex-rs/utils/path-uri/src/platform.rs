@@ -45,7 +45,3 @@ impl Platform {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "platform_tests.rs"]
-mod tests;

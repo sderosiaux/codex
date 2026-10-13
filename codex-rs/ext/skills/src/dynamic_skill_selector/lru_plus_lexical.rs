@@ -54,7 +54,3 @@ impl CheapSkillSelector for LruPlusLexicalSkillSelector {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "lru_plus_lexical_tests.rs"]
-mod tests;

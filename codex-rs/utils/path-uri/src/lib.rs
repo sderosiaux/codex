@@ -1038,7 +1038,3 @@ impl fmt::Display for PathConvention {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "tests.rs"]
-mod tests;

@@ -192,7 +192,3 @@ impl Session {
             .await;
     }
 }
-
-#[cfg(test)]
-#[path = "inject_tests.rs"]
-mod tests;

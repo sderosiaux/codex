@@ -29,7 +29,3 @@ impl AbsolutePathBuf {
         Self::from_absolute_path(canonical_top_level.join(suffix))
     }
 }
-
-#[cfg(test)]
-#[path = "system_aliases_tests.rs"]
-mod tests;

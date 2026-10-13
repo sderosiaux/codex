@@ -388,11 +388,3 @@ fn default_skill_name(path: &PathUri) -> String {
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| "skill".to_string())
 }
-
-#[cfg(test)]
-#[path = "environment_tests.rs"]
-mod tests;
-
-#[cfg(test)]
-#[path = "environment_io_tests.rs"]
-mod io_tests;

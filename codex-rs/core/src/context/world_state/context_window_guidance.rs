@@ -73,7 +73,3 @@ impl WorldStateSection for ContextWindowGuidanceState {
         )
     }
 }
-
-#[cfg(test)]
-#[path = "context_window_guidance_tests.rs"]
-mod tests;

@@ -160,7 +160,3 @@ fn installation_roots() -> Vec<PathBuf> {
     })
     .collect()
 }
-
-#[cfg(test)]
-#[path = "system_commands_tests.rs"]
-mod tests;

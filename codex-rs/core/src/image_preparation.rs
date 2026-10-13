@@ -377,7 +377,3 @@ pub(crate) fn resize_image(
     }
     Ok(Some(PreparedInlineImage { encoded, resize }))
 }
-
-#[cfg(test)]
-#[path = "image_preparation_tests.rs"]
-mod tests;

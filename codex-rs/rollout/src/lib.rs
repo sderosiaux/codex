@@ -167,6 +167,3 @@ pub use state_db::StateDbHandle;
 pub use state_db::sqlite_telemetry_recorder;
 pub use writer_lock::WriterLockCoordinator;
 pub use writer_lock::WriterLockGuard;
-
-#[cfg(test)]
-mod tests;

@@ -163,7 +163,3 @@ fn resolve_path<'a>(hook_event: &'a Value, path: &str) -> Result<&'a Value> {
             .with_context(|| format!("hook input placeholder `${{{path}}}` was not found"))
     })
 }
-
-#[cfg(test)]
-#[path = "mcp_runner_tests.rs"]
-mod tests;

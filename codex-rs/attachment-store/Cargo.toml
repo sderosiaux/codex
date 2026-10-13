@@ -8,6 +8,7 @@ version.workspace = true
 doctest = false
 name = "codex_attachment_store"
 path = "src/lib.rs"
+test = false
 
 [lints]
 workspace = true
@@ -15,7 +16,3 @@ workspace = true
 [dependencies]
 serde = { workspace = true, features = ["derive"] }
 tracing = { workspace = true }
-
-[dev-dependencies]
-pretty_assertions = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt", "sync"] }

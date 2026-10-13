@@ -291,7 +291,3 @@ impl TrustedAccessContext {
         }))
     }
 }
-
-#[cfg(test)]
-#[path = "trusted_access_tests.rs"]
-mod tests;

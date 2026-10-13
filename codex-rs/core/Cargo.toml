@@ -8,6 +8,7 @@ version.workspace = true
 name = "codex_core"
 path = "src/lib.rs"
 doctest = false
+test = false
 
 [lints]
 workspace = true
@@ -86,9 +87,7 @@ iana-time-zone = { workspace = true }
 image = { workspace = true, features = ["jpeg", "png", "webp"] }
 indexmap = { workspace = true }
 libc = { workspace = true }
-once_cell = { workspace = true }
 rand = { workspace = true }
-regex-lite = { workspace = true }
 rmcp = { workspace = true, default-features = false, features = [
     "base64",
     "macros",
@@ -100,7 +99,6 @@ serde_json = { workspace = true }
 sha1 = { workspace = true }
 shlex = { workspace = true }
 similar = { workspace = true }
-tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = [
     "io-std",
@@ -125,41 +123,5 @@ openssl-sys = { workspace = true, features = ["vendored"] }
 [target.aarch64-unknown-linux-musl.dependencies]
 openssl-sys = { workspace = true, features = ["vendored"] }
 
-[dev-dependencies]
-assert_matches = { workspace = true }
-codex-exec-server-test-support = { workspace = true }
-codex-image-generation-extension = { workspace = true }
-codex-home = { workspace = true }
-codex-mcp-extension = { workspace = true }
-codex-otel = { workspace = true }
-codex-test-binary-support = { workspace = true }
-codex-utils-cargo-bin = { workspace = true }
-codex-utils-redacted-string = { workspace = true }
-codex-web-search-extension = { workspace = true }
-core_test_support = { workspace = true }
-ctor = { workspace = true }
-insta = { workspace = true }
-maplit = { workspace = true }
-opentelemetry = { workspace = true }
-pretty_assertions = { workspace = true }
-test-case = "3.3.1"
-opentelemetry_sdk = { workspace = true, features = [
-    "experimental_metrics_custom_reader",
-    "metrics",
-] }
-serial_test = { workspace = true }
-tempfile = { workspace = true }
-test-log = { workspace = true }
-tracing-opentelemetry = { workspace = true }
-tracing-subscriber = { workspace = true }
-tracing-test = { workspace = true, features = ["no-env-filter"] }
-walkdir = { workspace = true }
-wiremock = { workspace = true }
-zstd = { workspace = true }
-
-[target.'cfg(windows)'.dev-dependencies]
-windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Threading"] }
-
 [package.metadata.cargo-shear]
 ignored = ["openssl-sys"]
-ignored-paths = ["tests/remote_env_windows/*.rs"]

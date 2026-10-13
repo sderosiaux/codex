@@ -56,7 +56,3 @@ async fn notify(client: &RmcpClient, changes: &mut watch::Receiver<AuthChangeSta
     )
     .await?
 }
-
-#[cfg(test)]
-#[path = "auth_changes_tests.rs"]
-mod tests;

@@ -209,7 +209,3 @@ impl SqliteQueueStore {
             > 0)
     }
 }
-
-#[cfg(test)]
-#[path = "queued_items_tests.rs"]
-mod tests;

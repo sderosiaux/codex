@@ -3,8 +3,6 @@ mod workspace_routing;
 use chrono::Utc;
 use http::StatusCode;
 use serde::Deserialize;
-#[cfg(test)]
-use serial_test::serial;
 use std::env;
 use std::fmt::Debug;
 use std::future::Future;
@@ -16,8 +14,6 @@ use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::RwLock;
 use std::sync::Weak;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 use tokio::sync::Semaphore;
@@ -213,7 +209,6 @@ pub(super) const REVOKE_TOKEN_URL: &str = "https://auth.openai.com/oauth/revoke"
 pub const REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR: &str = "CODEX_REFRESH_TOKEN_URL_OVERRIDE";
 pub const REVOKE_TOKEN_URL_OVERRIDE_ENV_VAR: &str = "CODEX_REVOKE_TOKEN_URL_OVERRIDE";
 pub const CLIENT_ID_OVERRIDE_ENV_VAR: &str = "CODEX_APP_SERVER_LOGIN_CLIENT_ID";
-static NEXT_DUMMY_AUTH_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Error)]
 pub enum RefreshTokenError {
@@ -801,37 +796,6 @@ impl CodexAuth {
         .await?;
         self.persist_managed_chatgpt_agent_identity_record(auth.record().clone())?;
         Ok(auth)
-    }
-
-    /// Consider this private to integration tests.
-    pub fn create_dummy_chatgpt_auth_for_testing() -> Self {
-        let auth_dot_json = AuthDotJson {
-            auth_mode: Some(AuthMode::Chatgpt),
-            openai_api_key: None,
-            tokens: Some(TokenData {
-                id_token: Default::default(),
-                access_token: "Access Token".to_string(),
-                refresh_token: "test".to_string(),
-                account_id: Some("account_id".to_string()),
-            }),
-            last_refresh: Some(Utc::now()),
-            agent_identity: None,
-            personal_access_token: None,
-            bedrock_api_key: None,
-            bedrock_access_keys: None,
-        };
-
-        let state = ChatgptAuthState {
-            auth_dot_json: Arc::new(Mutex::new(Some(auth_dot_json))),
-            client: create_client(),
-        };
-        let dummy_auth_id = NEXT_DUMMY_AUTH_ID.fetch_add(1, Ordering::Relaxed);
-        let storage = create_auth_storage(
-            PathBuf::from(format!("dummy-chatgpt-auth-{dummy_auth_id}")),
-            AuthCredentialsStoreMode::Ephemeral,
-            AuthKeyringBackendKind::default(),
-        );
-        Self::Chatgpt(ChatgptAuth { state, storage })
     }
 
     /// Constructs in-memory ChatGPT auth from externally managed tokens.
@@ -2210,107 +2174,6 @@ impl AuthManager {
         }
     }
 
-    /// Create an AuthManager with a specific CodexAuth, for testing only.
-    pub fn from_auth_for_testing(auth: CodexAuth) -> Arc<Self> {
-        Self::from_optional_auth_for_testing(Some(auth))
-    }
-
-    /// Create an AuthManager with an optional CodexAuth, for testing only.
-    pub(crate) fn from_optional_auth_for_testing(auth: Option<CodexAuth>) -> Arc<Self> {
-        let cached = CachedAuth {
-            auth,
-            permanent_refresh_failure: None,
-        };
-        let (auth_change_tx, _auth_change_rx) = watch::channel(0);
-
-        Arc::new(Self {
-            codex_home: PathBuf::from("non-existent"),
-            inner: RwLock::new(cached),
-            auth_change_tx,
-            auth_change_state_tx: watch::channel(AuthChangeState::default()).0,
-            workspace_routing_resolver: OnceLock::new(),
-            enable_codex_api_key_env: false,
-            auth_credentials_store_mode: AuthCredentialsStoreMode::File,
-            keyring_backend_kind: AuthKeyringBackendKind::default(),
-            forced_login_method: None,
-            forced_chatgpt_workspace_id: RwLock::new(None),
-            chatgpt_base_url: None,
-            agent_identity_authapi_base_url: default_agent_identity_authapi_base_url(),
-            refresh_lock: Semaphore::new(/*permits*/ 1),
-            agent_identity_lock: Semaphore::new(/*permits*/ 1),
-            agent_identity_bootstrap_cooldown: Mutex::default(),
-            external_auth: RwLock::new(None),
-            workload_identity_selected: false,
-            auth_route_config: crate::test_support::transport_default_auth_route_config(),
-        })
-    }
-
-    /// Create an AuthManager with a specific CodexAuth and codex home, for testing only.
-    pub fn from_auth_for_testing_with_home(auth: CodexAuth, codex_home: PathBuf) -> Arc<Self> {
-        let cached = CachedAuth {
-            auth: Some(auth),
-            permanent_refresh_failure: None,
-        };
-        let (auth_change_tx, _auth_change_rx) = watch::channel(0);
-        Arc::new(Self {
-            codex_home,
-            inner: RwLock::new(cached),
-            auth_change_tx,
-            auth_change_state_tx: watch::channel(AuthChangeState::default()).0,
-            workspace_routing_resolver: OnceLock::new(),
-            enable_codex_api_key_env: false,
-            auth_credentials_store_mode: AuthCredentialsStoreMode::File,
-            keyring_backend_kind: AuthKeyringBackendKind::default(),
-            forced_login_method: None,
-            forced_chatgpt_workspace_id: RwLock::new(None),
-            chatgpt_base_url: None,
-            agent_identity_authapi_base_url: default_agent_identity_authapi_base_url(),
-            refresh_lock: Semaphore::new(/*permits*/ 1),
-            agent_identity_lock: Semaphore::new(/*permits*/ 1),
-            agent_identity_bootstrap_cooldown: Mutex::default(),
-            external_auth: RwLock::new(None),
-            workload_identity_selected: false,
-            auth_route_config: crate::test_support::transport_default_auth_route_config(),
-        })
-    }
-
-    /// Create an AuthManager with a specific CodexAuth and Agent Identity AuthAPI base URL, for testing only.
-    #[doc(hidden)]
-    pub fn from_auth_for_testing_with_agent_identity_authapi_base_url(
-        auth: CodexAuth,
-        agent_identity_authapi_base_url: String,
-    ) -> Arc<Self> {
-        let cached = CachedAuth {
-            auth: Some(auth),
-            permanent_refresh_failure: None,
-        };
-        let (auth_change_tx, _auth_change_rx) = watch::channel(0);
-        Arc::new(Self {
-            codex_home: PathBuf::from("non-existent"),
-            inner: RwLock::new(cached),
-            auth_change_tx,
-            auth_change_state_tx: watch::channel(AuthChangeState::default()).0,
-            workspace_routing_resolver: OnceLock::new(),
-            enable_codex_api_key_env: false,
-            auth_credentials_store_mode: AuthCredentialsStoreMode::File,
-            keyring_backend_kind: AuthKeyringBackendKind::default(),
-            forced_login_method: None,
-            forced_chatgpt_workspace_id: RwLock::new(None),
-            chatgpt_base_url: None,
-            agent_identity_authapi_base_url: Some(
-                agent_identity_authapi_base_url
-                    .trim_end_matches('/')
-                    .to_string(),
-            ),
-            refresh_lock: Semaphore::new(/*permits*/ 1),
-            agent_identity_lock: Semaphore::new(/*permits*/ 1),
-            agent_identity_bootstrap_cooldown: Mutex::default(),
-            external_auth: RwLock::new(None),
-            workload_identity_selected: false,
-            auth_route_config: crate::test_support::transport_default_auth_route_config(),
-        })
-    }
-
     pub fn external_bearer_only(config: ModelProviderAuthInfo) -> Arc<Self> {
         let (auth_change_tx, _auth_change_rx) = watch::channel(0);
         Arc::new(Self {
@@ -3096,15 +2959,3 @@ fn auth_config_from(config: &impl AuthManagerConfig) -> AuthConfig {
         auth_route_config: config.auth_route_config(),
     }
 }
-
-#[cfg(test)]
-#[path = "auth_tests.rs"]
-mod tests;
-
-#[cfg(test)]
-#[path = "change_state_tests.rs"]
-mod change_state_tests;
-
-#[cfg(test)]
-#[path = "account_user_id_tests.rs"]
-mod account_user_id_tests;

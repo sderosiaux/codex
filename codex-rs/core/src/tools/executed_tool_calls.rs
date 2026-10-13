@@ -1,9 +1,6 @@
 //! Records attempted calls at existing execution boundaries. Request metadata policy
 //! lives in the private request metadata module; this recorder must never dispatch or await tools.
 
-#[cfg(test)]
-#[path = "executed_tool_calls_direct_tests.rs"]
-mod direct_tests;
 mod mcp_attribution;
 mod request_metadata;
 

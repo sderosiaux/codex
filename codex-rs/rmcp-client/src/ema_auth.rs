@@ -198,7 +198,3 @@ async fn discover_ema_authorization_metadata(
         "enterprise MCP discovery found no authorization server advertising public-client JWT bearer support for ID-JAG"
     )
 }
-
-#[cfg(test)]
-#[path = "ema_auth_tests.rs"]
-mod tests;

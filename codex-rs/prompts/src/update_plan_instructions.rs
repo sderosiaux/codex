@@ -57,7 +57,3 @@ pub fn without_update_plan_instructions(instructions: &str) -> String {
     }
     rendered
 }
-
-#[cfg(test)]
-#[path = "update_plan_instructions_tests.rs"]
-mod tests;

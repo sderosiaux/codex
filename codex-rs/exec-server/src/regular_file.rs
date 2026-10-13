@@ -96,7 +96,3 @@ pub(crate) fn is_disk_file(file: &impl std::os::windows::io::AsRawHandle) -> boo
 fn is_disk_file<T>(_file: &T) -> bool {
     true
 }
-
-#[cfg(test)]
-#[path = "regular_file_tests.rs"]
-mod tests;

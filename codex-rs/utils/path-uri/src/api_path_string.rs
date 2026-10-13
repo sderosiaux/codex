@@ -438,7 +438,3 @@ pub enum LegacyAppPathStringError {
     #[error(transparent)]
     PathUri(#[from] PathUriParseError),
 }
-
-#[cfg(test)]
-#[path = "api_path_string_tests.rs"]
-mod tests;

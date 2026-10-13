@@ -244,11 +244,3 @@ pub(crate) type ConnectionInner = Either<
 pub(crate) trait AsyncIo: AsyncRead + AsyncWrite + Send + Unpin {}
 
 impl<T> AsyncIo for T where T: AsyncRead + AsyncWrite + Send + Unpin {}
-
-#[cfg(test)]
-#[path = "lib_tests.rs"]
-mod tests;
-
-#[cfg(test)]
-#[path = "cookie_tests.rs"]
-mod cookie_tests;

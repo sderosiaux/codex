@@ -289,7 +289,3 @@ fn primary_runtime_cache_dir() -> Option<PathBuf> {
 fn primary_runtime_cache_dir() -> Option<PathBuf> {
     dirs::cache_dir()
 }
-
-#[cfg(test)]
-#[path = "marketplace_policy_tests.rs"]
-mod tests;

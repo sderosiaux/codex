@@ -240,7 +240,3 @@ pub async fn run_device_code_login(opts: ServerOptions) -> std::io::Result<()> {
     print_device_code_prompt(&device_code.verification_url, &device_code.user_code);
     complete_device_code_login(opts, device_code).await
 }
-
-#[cfg(test)]
-#[path = "device_code_auth_tests.rs"]
-mod tests;

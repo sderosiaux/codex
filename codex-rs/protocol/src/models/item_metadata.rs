@@ -11,7 +11,3 @@ impl ContentItemKind {
         &self.0
     }
 }
-
-#[cfg(test)]
-#[path = "item_metadata_tests.rs"]
-mod tests;

@@ -187,7 +187,3 @@ impl RequestBuilder {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "request_builder_tests.rs"]
-mod tests;

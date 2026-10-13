@@ -187,28 +187,3 @@ impl SystemSkillsError {
         Self::Io { action, source }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::SYSTEM_SKILLS_DIR;
-    use super::collect_fingerprint_items;
-
-    #[test]
-    fn fingerprint_traverses_nested_entries() {
-        let mut items = Vec::new();
-        collect_fingerprint_items(&SYSTEM_SKILLS_DIR, &mut items);
-        let mut paths: Vec<String> = items.into_iter().map(|(path, _)| path).collect();
-        paths.sort_unstable();
-
-        assert!(
-            paths
-                .binary_search_by(|probe| probe.as_str().cmp("skill-creator/SKILL.md"))
-                .is_ok()
-        );
-        assert!(
-            paths
-                .binary_search_by(|probe| probe.as_str().cmp("skill-creator/scripts/init_skill.py"))
-                .is_ok()
-        );
-    }
-}

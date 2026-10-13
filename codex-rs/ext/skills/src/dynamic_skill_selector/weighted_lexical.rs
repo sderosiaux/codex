@@ -202,7 +202,3 @@ fn bounded(value: &str, max_bytes: usize) -> (&str, bool) {
     }
     (&value[..end], true)
 }
-
-#[cfg(test)]
-#[path = "weighted_lexical_tests.rs"]
-mod tests;

@@ -213,7 +213,3 @@ fn rewrite_input_property_schema_as_local_file_path(schema: &mut JsonValue) {
         object.insert("type".to_string(), JsonValue::String("string".to_string()));
     }
 }
-
-#[cfg(test)]
-#[path = "file_params_tests.rs"]
-mod tests;

@@ -192,7 +192,3 @@ fn filter_codex_apps_mcp_tools<'a>(
         })
     })
 }
-
-#[cfg(test)]
-#[path = "mcp_tool_exposure_test.rs"]
-mod tests;

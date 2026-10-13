@@ -45,7 +45,3 @@ pub(super) fn classify(error: &CredentialStoreError) -> ErrorKind {
     }
     ErrorKind::Other
 }
-
-#[cfg(test)]
-#[path = "error_kind_tests.rs"]
-mod tests;

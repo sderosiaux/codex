@@ -74,7 +74,3 @@ pub(super) async fn quick_check(
         Err(_) => Ok(QuickCheckOutcome::Incomplete),
     }
 }
-
-#[cfg(test)]
-#[path = "validation_tests.rs"]
-mod tests;

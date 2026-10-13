@@ -565,7 +565,3 @@ fn parse_snapshot(
         environment,
     })
 }
-
-#[cfg(test)]
-#[path = "shell_snapshot_tests.rs"]
-mod tests;

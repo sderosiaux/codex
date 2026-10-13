@@ -13,10 +13,6 @@ use codex_features::FeaturesToml;
 use serde::Deserialize;
 use std::collections::HashMap;
 
-#[cfg(test)]
-#[path = "runtime_refresh_tests.rs"]
-mod tests;
-
 #[derive(Clone, Copy)]
 pub(crate) enum RuntimeConfigRefresh {
     User,

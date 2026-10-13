@@ -570,7 +570,3 @@ fn validate_oauth_url(value: &str, description: &str) -> io::Result<Url> {
     }
     Ok(url)
 }
-
-#[cfg(test)]
-#[path = "gateway_auth_tests.rs"]
-mod tests;

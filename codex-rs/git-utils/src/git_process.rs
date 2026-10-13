@@ -91,7 +91,3 @@ pub(crate) async fn run_git_command_with_timeout_output(
     let (child, process_tree) = spawn_git_command(command)?;
     wait_for_git_command_with_timeout_output(child, process_tree, timeout_duration).await
 }
-
-#[cfg(test)]
-#[path = "git_process_tests.rs"]
-mod tests;

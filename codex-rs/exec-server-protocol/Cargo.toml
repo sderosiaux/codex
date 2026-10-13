@@ -8,6 +8,7 @@ license.workspace = true
 name = "codex_exec_server_protocol"
 path = "src/lib.rs"
 doctest = false
+test = false
 
 [lints]
 workspace = true
@@ -21,8 +22,3 @@ codex-shell-command = { workspace = true }
 codex-utils-path-uri = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["arbitrary_precision", "raw_value"] }
-
-[target.'cfg(windows)'.dependencies]
-
-[dev-dependencies]
-pretty_assertions = { workspace = true }

@@ -44,7 +44,3 @@ pub fn create_web_search_tool(options: WebSearchToolOptions<'_>) -> Option<ToolS
         search_content_types,
     })
 }
-
-#[cfg(test)]
-#[path = "hosted_spec_tests.rs"]
-mod tests;

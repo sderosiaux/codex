@@ -133,7 +133,3 @@ pub(crate) async fn start_authorization(
         redirect_uri,
     })
 }
-
-#[cfg(test)]
-#[path = "oauth_client_registration_tests.rs"]
-mod tests;

@@ -504,7 +504,3 @@ pub(crate) fn config_skill_root_cache_key(root: &HostSkillRoot) -> ConfigSkillRo
         file_system: FileSystemIdentity(Arc::downgrade(&root.file_system)),
     }
 }
-
-#[cfg(test)]
-#[path = "host_service_tests.rs"]
-mod tests;

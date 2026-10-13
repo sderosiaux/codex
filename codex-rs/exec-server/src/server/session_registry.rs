@@ -13,9 +13,6 @@ use crate::rpc::session_already_attached;
 use crate::server::process_handler::ProcessHandler;
 use crate::telemetry::ExecServerTelemetry;
 
-#[cfg(test)]
-const DETACHED_SESSION_TTL: Duration = Duration::from_millis(200);
-#[cfg(not(test))]
 const DETACHED_SESSION_TTL: Duration = Duration::from_secs(30);
 
 pub(crate) struct SessionRegistry {

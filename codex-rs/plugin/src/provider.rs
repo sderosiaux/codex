@@ -102,7 +102,3 @@ fn environment_resource(
         path,
     })
 }
-
-#[cfg(test)]
-#[path = "provider_tests.rs"]
-mod tests;

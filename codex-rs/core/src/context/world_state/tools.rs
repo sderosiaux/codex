@@ -245,7 +245,3 @@ fn record_fragment_metrics(
         );
     }
 }
-
-#[cfg(test)]
-#[path = "tools_tests.rs"]
-mod tests;

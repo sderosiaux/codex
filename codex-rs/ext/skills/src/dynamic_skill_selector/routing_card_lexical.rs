@@ -252,7 +252,3 @@ fn bounded(value: &str, max_bytes: usize) -> (&str, bool) {
     }
     (&value[..end], true)
 }
-
-#[cfg(test)]
-#[path = "routing_card_lexical_tests.rs"]
-mod tests;

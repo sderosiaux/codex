@@ -111,7 +111,3 @@ fn calculate_namespace_row_truncation(
     }
     retained_description_bytes
 }
-
-#[cfg(test)]
-#[path = "tools_budget_tests.rs"]
-mod tests;

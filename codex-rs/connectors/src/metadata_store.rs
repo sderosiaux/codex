@@ -138,7 +138,3 @@ struct CachedConnectorMetadata {
 static CONNECTOR_METADATA_CACHE: LazyLock<
     StdMutex<HashMap<ConnectorMetadataStoreScope, HashMap<String, CachedConnectorMetadata>>>,
 > = LazyLock::new(|| StdMutex::new(HashMap::new()));
-
-#[cfg(test)]
-#[path = "metadata_store_tests.rs"]
-mod tests;

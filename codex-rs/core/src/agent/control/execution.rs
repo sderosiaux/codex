@@ -86,7 +86,3 @@ fn is_execution_limited(
     multi_agent_version == MultiAgentVersion::V2
         && matches!(session_source, SessionSource::SubAgent(_))
 }
-
-#[cfg(test)]
-#[path = "execution_tests.rs"]
-mod tests;

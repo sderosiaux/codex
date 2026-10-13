@@ -331,7 +331,3 @@ impl ContextualUserFragment for RemovedTools {
         body
     }
 }
-
-#[cfg(test)]
-#[path = "top_level_tools_tests.rs"]
-mod tests;

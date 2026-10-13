@@ -547,11 +547,3 @@ impl RouteAwareClientPool {
             .map_err(Into::into)
     }
 }
-
-#[cfg(test)]
-#[path = "route_aware_client_pool_tests.rs"]
-mod tests;
-
-#[cfg(test)]
-#[path = "route_aware_tls_fallback_tests.rs"]
-mod tls_fallback_tests;

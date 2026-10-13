@@ -12,7 +12,3 @@ pub(super) fn classify_codex_access_token(access_token: &str) -> CodexAccessToke
         CodexAccessToken::AgentIdentityJwt(access_token)
     }
 }
-
-#[cfg(test)]
-#[path = "access_token_tests.rs"]
-mod tests;

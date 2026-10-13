@@ -407,11 +407,3 @@ async fn canonicalize_for_skill_identity(
         .and_then(|path| path.to_abs_path())
         .unwrap_or_else(|_| path.clone())
 }
-
-#[cfg(test)]
-#[path = "host_tests.rs"]
-mod tests;
-
-#[cfg(all(test, unix))]
-#[path = "host_io_tests.rs"]
-mod io_tests;

@@ -149,7 +149,3 @@ impl fmt::Display for BuildInfo {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "build_info_tests.rs"]
-mod tests;

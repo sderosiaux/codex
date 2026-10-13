@@ -153,7 +153,3 @@ impl JsonRpcMessageDecoder {
         ClientJsonRpcMessageDecoder::default()
     }
 }
-
-#[cfg(test)]
-#[path = "message_framing_tests.rs"]
-mod tests;

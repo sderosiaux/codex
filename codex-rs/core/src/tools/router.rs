@@ -2,28 +2,20 @@ use crate::function_tool::FunctionCallError;
 use crate::responses_metadata::TurnToolNamespacesInfo;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
-#[cfg(test)]
-use crate::session::turn_context::TurnContext;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::context::ToolCallState;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
-#[cfg(test)]
-use crate::tools::handlers::ToolSearchHandlerCache;
 use crate::tools::registry::AnyToolResult;
 use crate::tools::registry::RegisteredTool;
 use crate::tools::registry::ToolArgumentDiffConsumer;
 use crate::tools::registry::ToolExposure;
 use crate::tools::registry::ToolRegistry;
-#[cfg(test)]
-use crate::tools::spec_plan::finalize_tool_router;
 use codex_otel::SessionTelemetry;
 use codex_otel::TOOL_REGISTRATIONS_METRIC;
 use codex_otel::TOOL_REGISTRATIONS_METRIC_BUCKETS;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::models::SearchToolCallParams;
-#[cfg(test)]
-use codex_protocol::openai_models::ModelInfo;
 use codex_tools::DiscoverableTool;
 use codex_tools::ResponsesApiNamespaceTool;
 use codex_tools::ToolName;
@@ -82,7 +74,6 @@ pub struct ToolRouter {
     registry: ToolRegistry,
     model_visible_specs: Arc<[ToolSpec]>,
     tool_namespaces_info: Option<TurnToolNamespacesInfo>,
-    can_manage_children: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -98,41 +89,16 @@ pub(crate) struct ToolSuggestCandidates {
 }
 
 impl ToolRouter {
-    #[cfg(test)]
-    pub(crate) fn from_registry(
-        turn_context: &TurnContext,
-        model_info: &ModelInfo,
-        registry: ToolRegistry,
-        hosted_specs: Vec<ToolSpec>,
-        tool_search_handler_cache: &ToolSearchHandlerCache,
-    ) -> Self {
-        finalize_tool_router(
-            turn_context,
-            model_info,
-            registry,
-            hosted_specs,
-            tool_search_handler_cache,
-        )
-        .expect("test tool registry should not contain duplicate tools")
-    }
-
     pub(crate) fn from_parts(
         registry: ToolRegistry,
         model_visible_specs: Vec<ToolSpec>,
         tool_namespaces_info: Option<TurnToolNamespacesInfo>,
-        child_management_tools: &[ToolName],
     ) -> Self {
-        let mut router = Self {
+        Self {
             registry,
             model_visible_specs: model_visible_specs.into(),
             tool_namespaces_info,
-            can_manage_children: false,
-        };
-        router.can_manage_children = !child_management_tools.is_empty()
-            && child_management_tools
-                .iter()
-                .all(|name| router.exposes_tool(name));
-        router
+        }
     }
 
     pub(crate) fn model_visible_specs(&self) -> Arc<[ToolSpec]> {
@@ -142,19 +108,6 @@ impl ToolRouter {
     /// Optional request inventory for this exact plan, without publishing it to turn state.
     pub(crate) fn tool_namespaces_info(&self) -> Option<&TurnToolNamespacesInfo> {
         self.tool_namespaces_info.as_ref()
-    }
-
-    /// Whether the model can both start and interact with a terminal process.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn has_terminal_controls(&self) -> bool {
-        self.exposes_tool(&ToolName::plain("exec_command"))
-            && self.exposes_tool(&ToolName::plain("write_stdin"))
-    }
-
-    /// Whether the configured collaboration backend's child-management tools remain exposed.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn can_manage_children(&self) -> bool {
-        self.can_manage_children
     }
 
     // Answers if the tool plan lets the model invoke the tool directly or through deferred tool search.
@@ -192,19 +145,6 @@ impl ToolRouter {
 
     pub(crate) fn mcp_namespaces(&self) -> impl Iterator<Item = (&str, &str)> {
         self.registry.mcp_namespaces()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn registered_tool_names_for_test(&self) -> Vec<ToolName> {
-        self.registry.tool_names_for_test()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn tool_exposure_for_test(
-        &self,
-        name: &ToolName,
-    ) -> Option<crate::tools::registry::ToolExposure> {
-        self.registry.tool_exposure(name)
     }
 
     pub(crate) fn create_diff_consumer(
@@ -345,7 +285,3 @@ pub(crate) fn record_registration_metrics(router: &ToolRouter, telemetry: &Sessi
         );
     }
 }
-
-#[cfg(test)]
-#[path = "router_tests.rs"]
-mod tests;

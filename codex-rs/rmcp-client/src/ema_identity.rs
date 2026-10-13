@@ -168,7 +168,3 @@ async fn resolve_ema_idp_identity_in<K: KeyringStore + Clone + 'static>(
     .await
     .map_err(|_| anyhow!("enterprise IdP credential reread task failed"))?
 }
-
-#[cfg(test)]
-#[path = "ema_identity_tests.rs"]
-mod tests;

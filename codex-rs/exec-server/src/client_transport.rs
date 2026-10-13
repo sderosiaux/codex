@@ -853,7 +853,3 @@ fn stdio_command_process(stdio_command: &StdioExecServerCommand) -> Command {
     command.process_group(0);
     command
 }
-
-#[cfg(test)]
-#[path = "client_transport_tests.rs"]
-mod tests;

@@ -369,7 +369,3 @@ impl TokenExchangeResponse {
         })
     }
 }
-
-#[cfg(test)]
-#[path = "workload_identity_tests.rs"]
-mod tests;

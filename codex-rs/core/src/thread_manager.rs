@@ -58,12 +58,9 @@ use codex_history::InitialHistory;
 use codex_history::ResumedHistory;
 use codex_history::RolloutItem;
 use codex_login::AuthManager;
-use codex_login::CodexAuth;
 use codex_login::default_client::CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR;
 use codex_login::default_client::originator;
 use codex_model_provider::create_model_provider;
-use codex_model_provider_info::ModelProviderInfo;
-use codex_model_provider_info::OPENAI_PROVIDER_ID;
 use codex_models_manager::manager::RefreshStrategy;
 use codex_models_manager::manager::SharedModelsManager;
 use codex_protocol::ThreadId;
@@ -122,56 +119,12 @@ use tracing::warn;
 
 const THREAD_CREATED_CHANNEL_CAPACITY: usize = 1024;
 
-/// Test-only override for enabling thread-manager behaviors used by integration
-/// tests.
-///
-/// In production builds this value should remain at its default (`false`) and
-/// must not be toggled.
-static FORCE_TEST_THREAD_MANAGER_BEHAVIOR: AtomicBool = AtomicBool::new(false);
-
-type CapturedOps = Vec<(ThreadId, Op)>;
-type SharedCapturedOps = Arc<std::sync::Mutex<CapturedOps>>;
 pub(crate) type ThreadIdGenerator = Arc<dyn Fn() -> ThreadId + Send + Sync>;
 type AgentControlFactory =
     Arc<dyn Fn(ThreadId) -> BoxFuture<'static, CodexResult<Arc<dyn AgentControl>>> + Send + Sync>;
 
-// `Op` is intentionally not `Clone`. Thread-manager tests only snapshot the
-// small subset of ops they inspect.
-fn capture_test_op(op: &Op) -> Option<Op> {
-    match op {
-        Op::Interrupt => Some(Op::Interrupt),
-        Op::InterAgentCommunication {
-            communication,
-            start_options,
-        } => Some(Op::InterAgentCommunication {
-            communication: communication.clone(),
-            start_options: start_options.clone(),
-        }),
-        Op::Shutdown => Some(Op::Shutdown),
-        _ => None,
-    }
-}
-
 pub(crate) fn default_thread_id_generator() -> ThreadIdGenerator {
     Arc::new(ThreadId::new)
-}
-
-pub(crate) fn set_thread_manager_test_mode_for_tests(enabled: bool) {
-    FORCE_TEST_THREAD_MANAGER_BEHAVIOR.store(enabled, Ordering::Relaxed);
-}
-
-fn should_use_test_thread_manager_behavior() -> bool {
-    FORCE_TEST_THREAD_MANAGER_BEHAVIOR.load(Ordering::Relaxed)
-}
-
-struct TempCodexHomeGuard {
-    path: PathBuf,
-}
-
-impl Drop for TempCodexHomeGuard {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
 }
 
 /// Represents a newly created Codex thread (formerly called a conversation), including the first event
@@ -244,7 +197,6 @@ enum ShutdownOutcome {
 /// them in memory.
 pub struct ThreadManager {
     state: Arc<ThreadManagerState>,
-    _test_codex_home_guard: Option<TempCodexHomeGuard>,
 }
 
 /// Captured parent identity for an internal child, including inline parents that
@@ -430,8 +382,6 @@ pub(crate) struct ThreadManagerState {
     external_time_provider: Option<Arc<dyn TimeProvider>>,
     session_source: SessionSource,
     installation_id: String,
-    // Captures submitted ops for testing purpose when test mode is enabled.
-    ops_log: Option<SharedCapturedOps>,
 }
 
 pub fn build_models_manager(
@@ -582,10 +532,7 @@ impl ThreadManager {
                 auth_manager,
                 session_source,
                 installation_id,
-                ops_log: should_use_test_thread_manager_behavior()
-                    .then(|| Arc::new(std::sync::Mutex::new(Vec::new()))),
             }),
-            _test_codex_home_guard: None,
         }
     }
 
@@ -621,119 +568,6 @@ impl ThreadManager {
         };
         state.agent_control_factory = Some(Arc::new(move |thread_id| Box::pin(factory(thread_id))));
         self
-    }
-
-    /// Construct with a dummy AuthManager containing the provided CodexAuth.
-    /// Used for integration tests: should not be used by ordinary business logic.
-    pub(crate) fn with_models_provider_for_tests(
-        auth: CodexAuth,
-        provider: ModelProviderInfo,
-    ) -> Self {
-        set_thread_manager_test_mode_for_tests(/*enabled*/ true);
-        let codex_home = std::env::temp_dir().join(format!(
-            "codex-thread-manager-test-{}",
-            uuid::Uuid::new_v4()
-        ));
-        std::fs::create_dir_all(&codex_home)
-            .unwrap_or_else(|err| panic!("temp codex home dir create failed: {err}"));
-        let mut manager = Self::with_models_provider_and_home_for_tests(
-            auth,
-            provider,
-            codex_home.clone(),
-            Arc::new(EnvironmentManager::default_for_tests()),
-        );
-        manager._test_codex_home_guard = Some(TempCodexHomeGuard { path: codex_home });
-        manager
-    }
-
-    /// Construct with a dummy AuthManager containing the provided CodexAuth and codex home.
-    /// Used for integration tests: should not be used by ordinary business logic.
-    pub(crate) fn with_models_provider_and_home_for_tests(
-        auth: CodexAuth,
-        provider: ModelProviderInfo,
-        codex_home: PathBuf,
-        environment_manager: Arc<EnvironmentManager>,
-    ) -> Self {
-        Self::with_models_provider_home_and_state_for_tests(
-            auth,
-            provider,
-            codex_home,
-            environment_manager,
-            /*state_db*/ None,
-        )
-    }
-
-    pub(crate) fn with_models_provider_home_and_state_for_tests(
-        auth: CodexAuth,
-        provider: ModelProviderInfo,
-        codex_home: PathBuf,
-        environment_manager: Arc<EnvironmentManager>,
-        state_db: Option<StateDbHandle>,
-    ) -> Self {
-        set_thread_manager_test_mode_for_tests(/*enabled*/ true);
-        let auth_manager = AuthManager::from_auth_for_testing(auth);
-        let installation_id = uuid::Uuid::new_v4().to_string();
-        let absolute_codex_home = match AbsolutePathBuf::from_absolute_path_checked(&codex_home) {
-            Ok(codex_home) => codex_home,
-            Err(err) => panic!("test codex_home should be absolute: {err}"),
-        };
-        let (thread_created_tx, _) = broadcast::channel(THREAD_CREATED_CHANNEL_CAPACITY);
-        let restriction_product = SessionSource::Exec.restriction_product();
-        let skills_service = Arc::new(HostSkillsService::new_with_restriction_product(
-            absolute_codex_home.clone(),
-            /*bundled_skills_enabled*/ true,
-            restriction_product,
-        ));
-        let plugins_manager = Arc::new(PluginsManager::new_with_options(
-            codex_home.clone(),
-            restriction_product,
-            Arc::clone(&auth_manager),
-            skills_service.clone(),
-        ));
-        let mcp_manager = Arc::new(McpManager::new(Arc::clone(&plugins_manager)));
-        // This test constructor has no Config input. Tests that need a non-local
-        // process store should construct ThreadManager::new with an explicit store.
-        let thread_store: Arc<dyn ThreadStore> = Arc::new(LocalThreadStore::new(
-            LocalThreadStoreConfig {
-                codex_home: codex_home.clone(),
-                sqlite: codex_state::SqliteConfig::new_for_testing(absolute_codex_home),
-                default_model_provider_id: OPENAI_PROVIDER_ID.to_string(),
-            },
-            state_db.clone(),
-        ));
-        let agent_graph_store = local_agent_graph_store_from_state_db(state_db.as_ref());
-        Self {
-            state: Arc::new(ThreadManagerState {
-                threads: Arc::new(RwLock::new(HashMap::new())),
-                shared_thread_instructions: Default::default(),
-                thread_created_tx,
-                thread_id_generator: default_thread_id_generator(),
-                agent_control_factory: None,
-                models_manager: create_model_provider(provider, Some(auth_manager.clone()))
-                    .models_manager(codex_home, /*config_model_catalog*/ None),
-                git_root_discovery: Arc::default(),
-                environment_manager,
-                starting_mcp_runtimes: std::sync::Mutex::new(Vec::new()),
-                skills_service,
-                plugins_manager,
-                mcp_manager,
-                extensions: empty_extension_registry(),
-                user_instructions_provider: Arc::new(
-                    crate::test_support::EmptyUserInstructionsProvider,
-                ),
-                image_store: passthrough_image_store(),
-                thread_store,
-                agent_graph_store,
-                attestation_provider: None,
-                external_time_provider: None,
-                auth_manager,
-                session_source: SessionSource::Exec,
-                installation_id,
-                ops_log: should_use_test_thread_manager_behavior()
-                    .then(|| Arc::new(std::sync::Mutex::new(Vec::new()))),
-            }),
-            _test_codex_home_guard: None,
-        }
     }
 
     pub fn session_source(&self) -> SessionSource {
@@ -1270,50 +1104,6 @@ impl ThreadManager {
         .await
     }
 
-    pub(crate) async fn start_thread_with_user_shell_override_for_tests(
-        &self,
-        config: Config,
-        user_shell_override: crate::shell::Shell,
-        client_mcp_extensions: ClientMcpExtensions,
-    ) -> CodexResult<NewThread> {
-        let agent_control = self.agent_control_for_config(&config);
-        let options = StartThreadOptions {
-            client_mcp_extensions,
-            ..StartThreadOptions::new(config)
-        };
-        let mut request =
-            ThreadSpawnRequest::new(options, Arc::clone(&self.state.auth_manager), agent_control);
-        request.user_shell_override = Some(user_shell_override);
-        Box::pin(self.state.spawn_thread(request)).await
-    }
-
-    pub(crate) async fn resume_legacy_thread_from_rollout_with_user_shell_override_for_tests(
-        &self,
-        config: Config,
-        rollout_path: PathBuf,
-        auth_manager: Arc<AuthManager>,
-        user_shell_override: crate::shell::Shell,
-        client_mcp_extensions: ClientMcpExtensions,
-    ) -> CodexResult<NewThread> {
-        let agent_control = self.agent_control_for_config(&config);
-        let initial_history = self
-            .legacy_initial_history_from_rollout_path(rollout_path)
-            .await?;
-        let (session_source, thread_source) = initial_history
-            .get_resumed_session_sources()
-            .unwrap_or_else(|| (self.state.session_source.clone(), None));
-        let options = StartThreadOptions {
-            initial_history,
-            session_source: Some(session_source),
-            thread_source,
-            client_mcp_extensions,
-            ..StartThreadOptions::new(config)
-        };
-        let mut request = ThreadSpawnRequest::new(options, auth_manager, agent_control);
-        request.user_shell_override = Some(user_shell_override);
-        Box::pin(self.state.spawn_thread(request)).await
-    }
-
     /// Removes the thread from the manager's internal map, though the thread is stored
     /// as `Arc<CodexThread>`, it is possible that other references to it exist elsewhere.
     /// Returns the thread if the thread was found and removed.
@@ -1601,23 +1391,6 @@ impl ThreadManager {
             config.rollout_budget.clone(),
         )
     }
-
-    #[cfg(test)]
-    pub(crate) fn captured_ops(&self) -> Vec<(ThreadId, Op)> {
-        self.state
-            .ops_log
-            .as_ref()
-            .and_then(|ops_log| {
-                ops_log.lock().ok().map(|log| {
-                    log.iter()
-                        .filter_map(|(thread_id, op)| {
-                            capture_test_op(op).map(|op| (*thread_id, op))
-                        })
-                        .collect()
-                })
-            })
-            .unwrap_or_default()
-    }
 }
 
 impl ThreadManagerState {
@@ -1737,12 +1510,6 @@ impl ThreadManagerState {
         } else {
             None
         };
-        if let Some(ops_log) = &self.ops_log
-            && let Ok(mut log) = ops_log.lock()
-            && let Some(captured_op) = capture_test_op(&op)
-        {
-            log.push((thread_id, captured_op));
-        }
         thread
             .io
             .submit_with_trace(
@@ -2597,7 +2364,3 @@ fn append_interrupted_boundary(
         }
     }
 }
-
-#[cfg(test)]
-#[path = "thread_manager_tests.rs"]
-mod tests;

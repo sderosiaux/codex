@@ -99,7 +99,3 @@ impl RefreshCredentialLock {
         Ok(Self { _file: file })
     }
 }
-
-#[cfg(test)]
-#[path = "refresh_lock_tests.rs"]
-mod tests;

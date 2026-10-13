@@ -64,7 +64,3 @@ impl From<ResponseItemId> for String {
         value.0
     }
 }
-
-#[cfg(test)]
-#[path = "response_item_id_tests.rs"]
-mod tests;

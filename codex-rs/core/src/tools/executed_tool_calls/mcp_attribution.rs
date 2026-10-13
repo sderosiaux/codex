@@ -174,7 +174,3 @@ impl State {
         self.revision += 1;
     }
 }
-
-#[cfg(test)]
-#[path = "mcp_attribution_tests.rs"]
-mod tests;

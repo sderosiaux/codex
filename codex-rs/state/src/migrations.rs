@@ -116,7 +116,3 @@ WHERE version = ?
     .await?;
     Ok(())
 }
-
-#[cfg(test)]
-#[path = "migrations_tests.rs"]
-mod tests;

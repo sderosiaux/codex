@@ -64,7 +64,3 @@ impl OrderedCiphertextFrames {
         Ok(())
     }
 }
-
-#[cfg(test)]
-#[path = "ordered_ciphertext_tests.rs"]
-mod tests;

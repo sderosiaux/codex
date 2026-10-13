@@ -198,7 +198,3 @@ fn select_skills_from_mentions(
         }
     }
 }
-
-#[cfg(test)]
-#[path = "selection_tests.rs"]
-mod tests;

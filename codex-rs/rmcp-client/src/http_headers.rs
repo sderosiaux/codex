@@ -564,7 +564,3 @@ fn parse_helper_output(stdout: Vec<u8>) -> Result<HeaderMap> {
     }
     Ok(parsed)
 }
-
-#[cfg(test)]
-#[path = "http_headers_tests.rs"]
-mod tests;

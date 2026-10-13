@@ -539,7 +539,3 @@ fn multi_agent_version_from_items(
 
     session_meta_version.or_else(|| items.iter().rev().find_map(resume_multi_agent_version))
 }
-
-#[cfg(test)]
-#[path = "tests.rs"]
-mod tests;

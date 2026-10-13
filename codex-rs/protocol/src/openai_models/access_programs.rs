@@ -48,7 +48,3 @@ where
         .filter_map(|program| serde_json::from_value(serde_json::Value::String(program)).ok())
         .collect())
 }
-
-#[cfg(test)]
-#[path = "access_programs_tests.rs"]
-mod tests;

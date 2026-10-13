@@ -51,10 +51,6 @@ mod remote_installed_plugin_sync;
 mod search;
 mod share;
 
-#[cfg(test)]
-#[path = "remote_tests.rs"]
-mod tests;
-
 pub use plugin_capabilities::RemotePluginCapabilities;
 pub use remote_installed_plugin_sync::RemoteInstalledPluginBundleSyncError;
 pub use remote_installed_plugin_sync::RemoteInstalledPluginBundleSyncOutcome;

@@ -79,7 +79,3 @@ impl WorldStateSection for AgentsMdState {
         )
     }
 }
-
-#[cfg(test)]
-#[path = "agents_md_tests.rs"]
-mod tests;

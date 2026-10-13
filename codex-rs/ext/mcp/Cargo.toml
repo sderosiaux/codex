@@ -8,6 +8,7 @@ version.workspace = true
 name = "codex_mcp_extension"
 path = "src/lib.rs"
 doctest = false
+test = false
 
 [lints]
 workspace = true
@@ -25,21 +26,8 @@ codex-features = { workspace = true }
 codex-mcp = { workspace = true }
 codex-plugin = { workspace = true }
 codex-protocol = { workspace = true }
-codex-utils-absolute-path = { workspace = true }
 codex-utils-path-uri = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
-
-[dev-dependencies]
-core_test_support = { workspace = true }
-axum = { workspace = true }
-codex-exec-server-test-support = { workspace = true }
-codex-login = { workspace = true }
-futures = { workspace = true }
-pretty_assertions = { workspace = true }
-tempfile = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
-tokio-util = { workspace = true, features = ["rt"] }
-wiremock = { workspace = true }

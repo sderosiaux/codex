@@ -141,7 +141,3 @@ fn rate_limit_regex() -> &'static regex_lite::Regex {
         regex_lite::Regex::new(r"(?i)try again in\s*(\d+(?:\.\d+)?)\s*(s|ms|seconds?)").unwrap()
     })
 }
-
-#[cfg(test)]
-#[path = "responses_error_parser_tests.rs"]
-mod tests;

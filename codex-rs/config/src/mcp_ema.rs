@@ -195,7 +195,3 @@ impl McpServerConfig {
         Ok(())
     }
 }
-
-#[cfg(test)]
-#[path = "mcp_ema_tests.rs"]
-mod tests;

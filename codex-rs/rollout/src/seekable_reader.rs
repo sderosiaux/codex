@@ -104,7 +104,3 @@ pub fn rollout_contains_prefix(path: &Path, end_byte_offset: u64) -> io::Result<
         }
     }
 }
-
-#[cfg(test)]
-#[path = "seekable_reader_tests.rs"]
-mod tests;

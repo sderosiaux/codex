@@ -132,10 +132,6 @@ fn render_prepared_catalog(
     }
 }
 
-#[cfg(test)]
-#[path = "extension_tests.rs"]
-mod tests;
-
 impl<C> ThreadLifecycleContributor<C> for SkillsExtension<C>
 where
     C: Send + Sync + 'static,

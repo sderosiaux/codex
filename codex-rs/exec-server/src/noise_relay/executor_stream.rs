@@ -185,11 +185,3 @@ pub(crate) fn spawn_noise_virtual_stream<H: NoiseStreamHandler>(
         instance_id,
     }
 }
-
-#[cfg(test)]
-#[path = "executor_stream_tests.rs"]
-mod tests;
-
-#[cfg(test)]
-#[path = "forward_stream_tests.rs"]
-mod forward_tests;

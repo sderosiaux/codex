@@ -6,6 +6,7 @@ license.workspace = true
 
 [lib]
 doctest = false
+test = false
 
 [lints]
 workspace = true
@@ -20,9 +21,3 @@ jsonwebtoken = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 sha2 = { workspace = true }
 time = { workspace = true }
-
-[dev-dependencies]
-base64 = { workspace = true }
-hmac = { workspace = true }
-pretty_assertions = { workspace = true }
-serde_json = { workspace = true }

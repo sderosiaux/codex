@@ -8,6 +8,7 @@ version.workspace = true
 name = "codex_image_generation_extension"
 path = "src/lib.rs"
 doctest = false
+test = false
 
 [lints]
 workspace = true
@@ -33,7 +34,3 @@ schemars = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tracing = { workspace = true }
-
-[dev-dependencies]
-pretty_assertions = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt"] }

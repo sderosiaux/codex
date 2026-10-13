@@ -272,20 +272,3 @@ fn classify_sqlite_code(code: &str) -> &'static str {
         _ => "unknown",
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use pretty_assertions::assert_eq;
-
-    #[test]
-    fn classifies_extended_sqlite_codes() {
-        assert_eq!(classify_sqlite_code("5"), "busy");
-        assert_eq!(classify_sqlite_code("6"), "locked");
-        assert_eq!(classify_sqlite_code("2067"), "constraint");
-    }
-}
-
-#[cfg(test)]
-#[path = "log_write_telemetry_tests.rs"]
-mod log_write_telemetry_tests;

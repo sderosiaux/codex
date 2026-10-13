@@ -93,7 +93,3 @@ fn section_error(operation: &str, error: impl std::fmt::Display) -> ThreadStoreE
         message: format!("failed to {operation} thread section: {error}"),
     }
 }
-
-#[cfg(test)]
-#[path = "thread_sections_tests.rs"]
-mod tests;

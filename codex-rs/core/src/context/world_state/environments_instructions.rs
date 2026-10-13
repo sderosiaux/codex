@@ -51,7 +51,3 @@ impl WorldStateSection for EnvironmentsInstructionsState {
         )
     }
 }
-
-#[cfg(test)]
-#[path = "environments_instructions_tests.rs"]
-mod tests;

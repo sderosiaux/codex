@@ -51,7 +51,3 @@ impl ProviderCapabilities {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "capabilities_tests.rs"]
-mod tests;

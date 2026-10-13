@@ -194,7 +194,3 @@ impl Drop for WriterLockGuard {
         drop(coordination_lock);
     }
 }
-
-#[cfg(test)]
-#[path = "writer_lock_tests.rs"]
-mod tests;

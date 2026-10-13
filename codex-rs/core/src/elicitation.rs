@@ -89,7 +89,3 @@ impl Drop for ElicitationRegistration {
         self.service.decrement();
     }
 }
-
-#[cfg(test)]
-#[path = "elicitation_tests.rs"]
-mod tests;

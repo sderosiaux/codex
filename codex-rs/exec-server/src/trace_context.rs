@@ -34,7 +34,3 @@ pub(crate) fn current_trace_context_headers() -> HeaderMap {
     }
     headers
 }
-
-#[cfg(test)]
-#[path = "trace_context_tests.rs"]
-mod tests;

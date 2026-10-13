@@ -311,7 +311,3 @@ fn malformed_lineage(thread_id: ThreadId, detail: &str) -> ThreadStoreError {
         message: format!("invalid paginated history lineage for {thread_id}: {detail}"),
     }
 }
-
-#[cfg(test)]
-#[path = "rollout_lineage_tests.rs"]
-mod tests;

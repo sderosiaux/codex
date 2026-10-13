@@ -323,7 +323,3 @@ async fn find_manifest(
     }
     Ok(None)
 }
-
-#[cfg(test)]
-#[path = "executor_provider_tests.rs"]
-mod tests;

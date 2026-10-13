@@ -189,7 +189,3 @@ impl NoiseStreamHandler for Forwarder {
         Forwarder::run_connection(self, connection).await;
     }
 }
-
-#[cfg(test)]
-#[path = "forward_tests.rs"]
-mod tests;

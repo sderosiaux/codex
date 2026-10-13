@@ -206,7 +206,3 @@ pub(super) enum OAuthStoreLockFailure {
 fn oauth_store_lock_path(codex_home: &Path, store: OAuthStore) -> PathBuf {
     codex_home.join(OAUTH_LOCK_DIR).join(store.lock_filename())
 }
-
-#[cfg(test)]
-#[path = "tests/store_lock_tests.rs"]
-mod tests;

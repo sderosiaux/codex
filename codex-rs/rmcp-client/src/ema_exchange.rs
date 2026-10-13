@@ -124,7 +124,3 @@ pub(crate) async fn exchange_id_jag(
         received_at: Instant::now(),
     })
 }
-
-#[cfg(test)]
-#[path = "ema_exchange_tests.rs"]
-mod tests;

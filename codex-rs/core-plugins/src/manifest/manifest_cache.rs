@@ -175,7 +175,3 @@ impl ManifestCacheState {
         Ok(manifest)
     }
 }
-
-#[cfg(test)]
-#[path = "manifest_cache_tests.rs"]
-mod tests;

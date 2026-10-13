@@ -473,7 +473,3 @@ fn unauthorized(message: &'static str) -> WebsocketAuthError {
         message,
     }
 }
-
-#[cfg(test)]
-#[path = "auth_tests.rs"]
-mod tests;

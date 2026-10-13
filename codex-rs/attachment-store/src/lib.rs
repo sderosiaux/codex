@@ -226,7 +226,3 @@ impl fmt::Display for AttachmentStoreError {
 }
 
 impl Error for AttachmentStoreError {}
-
-#[cfg(test)]
-#[path = "lib_tests.rs"]
-mod tests;

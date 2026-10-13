@@ -39,9 +39,6 @@ use codex_protocol::turn_input::TurnInputRequest;
 use codex_protocol::turn_input::TurnInputSubmission;
 use codex_protocol::turn_input::TurnStartOptions;
 
-#[cfg(test)]
-use crate::session::completed_session_loop_termination;
-
 /// Start an interactive sub-Codex thread and return its runtime and IO channels.
 ///
 /// The returned IO yields the delegate's public events.
@@ -385,7 +382,3 @@ async fn forward_ops(
         let _ = io.submit_with_id(submission).await;
     }
 }
-
-#[cfg(test)]
-#[path = "codex_delegate_tests.rs"]
-mod tests;

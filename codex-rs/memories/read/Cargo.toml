@@ -8,6 +8,7 @@ version.workspace = true
 name = "codex_memories_read"
 path = "src/lib.rs"
 doctest = false
+test = false
 
 [lints]
 workspace = true
@@ -16,6 +17,3 @@ workspace = true
 codex-protocol = { workspace = true }
 codex-shell-command = { workspace = true }
 codex-utils-absolute-path = { workspace = true }
-
-[dev-dependencies]
-pretty_assertions = { workspace = true }

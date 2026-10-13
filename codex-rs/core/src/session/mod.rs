@@ -169,8 +169,6 @@ use uuid::Uuid;
 use crate::client::ModelClient;
 use crate::codex_thread::CodexThreadSettingsOverrides;
 use crate::codex_thread::ThreadConfigSnapshot;
-#[cfg(test)]
-use crate::compact::collect_user_messages;
 use crate::config::Config;
 use crate::config::resolve_web_search_mode_for_turn;
 use crate::context_manager::ContextManager;
@@ -183,8 +181,6 @@ use codex_model_provider_info::ModelProviderInfo;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::Result as CodexResult;
-#[cfg(test)]
-use codex_protocol::exec_output::StreamOutput;
 
 mod config_refresh;
 pub(crate) mod context_window;
@@ -224,8 +220,6 @@ mod turn_input;
 mod turn_suspension;
 mod world_state;
 pub(crate) use self::environment::ThreadEnvironmentDefaults;
-#[cfg(test)]
-use self::handlers::submission_dispatch_span;
 use self::handlers::submission_loop;
 pub(crate) use self::input_queue::InputQueueActivity;
 pub(crate) use self::input_queue::TurnInput;
@@ -236,11 +230,7 @@ use self::session::Session;
 use self::session::SessionConfiguration;
 use self::session::SessionSettingsCommit;
 pub(crate) use self::session::SessionSettingsUpdate;
-#[cfg(test)]
-use self::turn::AssistantMessageStreamParsers;
 use self::turn_context::TurnContext;
-#[cfg(test)]
-mod rollout_reconstruction_tests;
 
 use crate::mcp::McpEnvironmentScope;
 use crate::mcp::McpManager;
@@ -254,13 +244,7 @@ use crate::state::ReasoningEffortPin;
 use crate::state::SessionServices;
 use crate::state::SessionState;
 use crate::state::TaskKind;
-#[cfg(test)]
-use crate::stream_events_utils::HandleOutputCtx;
-#[cfg(test)]
-use crate::stream_events_utils::handle_output_item_done;
 use crate::tasks::ReviewTask;
-#[cfg(test)]
-use crate::tools::parallel::ToolCallRuntime;
 use crate::turn_timing::TurnTimingState;
 use crate::turn_timing::record_turn_ttfm_metric;
 use crate::unified_exec::UnifiedExecProcessManager;
@@ -316,8 +300,6 @@ use codex_protocol::turn_input::TurnStartOptions;
 use codex_protocol::user_input::UserInput;
 use codex_skills_extension::HostSkillsService;
 use codex_utils_absolute_path::AbsolutePathBuf;
-#[cfg(test)]
-use codex_utils_stream_parser::ProposedPlanSegment;
 
 /// Queue and lifecycle endpoints for a running [`Session`].
 ///
@@ -996,11 +978,6 @@ fn unsupported_service_tier_warning(
     ))
 }
 
-#[cfg(test)]
-pub(crate) fn completed_session_loop_termination() -> SessionLoopTermination {
-    futures::future::ready(()).boxed().shared()
-}
-
 pub(crate) fn session_loop_termination_from_handle(
     handle: JoinHandle<()>,
 ) -> SessionLoopTermination {
@@ -1059,12 +1036,6 @@ impl Session {
                 .collect::<Vec<_>>()
                 .join(","),
         )
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn codex_home(&self) -> AbsolutePathBuf {
-        let state = self.state.lock().await;
-        state.session_configuration.codex_home.clone()
     }
 
     pub(crate) fn subscribe_elicitation_pause_state(&self) -> watch::Receiver<bool> {
@@ -1646,15 +1617,6 @@ impl Session {
             .await
             .as_ref()
             .map_or_else(Vec::new, |instructions| instructions.sources().collect())
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn set_session_startup_prewarm(
-        &self,
-        startup_prewarm: SessionStartupPrewarmHandle,
-    ) {
-        let mut state = self.state.lock().await;
-        state.set_session_startup_prewarm(startup_prewarm);
     }
 
     pub(crate) async fn take_session_startup_prewarm(&self) -> Option<SessionStartupPrewarmHandle> {
@@ -2824,16 +2786,6 @@ impl Session {
             .await;
     }
 
-    #[cfg(test)]
-    pub(crate) async fn replace_history(
-        &self,
-        items: Vec<ResponseItem>,
-        reference_context_item: Option<TurnContextItem>,
-    ) {
-        let mut state = self.state.lock().await;
-        state.replace_history(items, reference_context_item);
-    }
-
     pub(crate) async fn replace_compacted_history(
         &self,
         mut items: Vec<ResponseItemEnvelope>,
@@ -3886,14 +3838,3 @@ async fn build_hooks_config(
         shell_args: hook_shell_argv,
     }
 }
-
-#[cfg(test)]
-#[path = "elicitation_holders_tests.rs"]
-mod elicitation_holders_tests;
-
-#[cfg(test)]
-pub(crate) mod tests;
-
-#[cfg(test)]
-#[path = "world_state_item_tests.rs"]
-mod world_state_item_tests;

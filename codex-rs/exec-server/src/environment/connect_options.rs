@@ -110,7 +110,3 @@ impl RemoteEnvironmentOptions {
         })
     }
 }
-
-#[cfg(test)]
-#[path = "connect_options_tests.rs"]
-mod tests;

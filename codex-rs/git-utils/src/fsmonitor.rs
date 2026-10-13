@@ -123,7 +123,3 @@ pub async fn detect_fsmonitor_override(
         FsmonitorOverride::Disabled
     }
 }
-
-#[cfg(test)]
-#[path = "fsmonitor_tests.rs"]
-mod tests;

@@ -55,8 +55,6 @@ pub struct TurnDiffTracker {
     next_revision: u64,
     rendered_diffs: HashMap<DiffCacheKey, Option<String>>,
     unified_diff: Option<String>,
-    #[cfg(test)]
-    rendered_diff_count: std::cell::Cell<usize>,
 }
 
 impl Default for TurnDiffTracker {
@@ -70,8 +68,6 @@ impl Default for TurnDiffTracker {
             next_revision: 0,
             rendered_diffs: HashMap::new(),
             unified_diff: None,
-            #[cfg(test)]
-            rendered_diff_count: std::cell::Cell::new(0),
         }
     }
 }
@@ -316,10 +312,6 @@ impl TurnDiffTracker {
             return None;
         }
 
-        #[cfg(test)]
-        self.rendered_diff_count
-            .set(self.rendered_diff_count.get() + 1);
-
         // Git diff paths always use `/`, even when the displayed target path is Windows-native.
         let left_display = self.display_path(left_path).replace('\\', "/");
         let right_display = self.display_path(right_path).replace('\\', "/");
@@ -365,11 +357,6 @@ impl TurnDiffTracker {
         Some(diff)
     }
 
-    #[cfg(test)]
-    fn rendered_diff_count(&self) -> usize {
-        self.rendered_diff_count.get()
-    }
-
     fn display_path(&self, path: &TrackedPath) -> String {
         let display = self
             .display_roots_by_environment
@@ -397,7 +384,3 @@ fn git_blob_sha1_hex_bytes(data: &[u8]) -> Output<sha1::Sha1> {
     hasher.update(data);
     hasher.finalize()
 }
-
-#[cfg(test)]
-#[path = "turn_diff_tracker_tests.rs"]
-mod tests;

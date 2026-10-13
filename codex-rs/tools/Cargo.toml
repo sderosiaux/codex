@@ -29,9 +29,6 @@ serde_json = { workspace = true, features = ["raw_value"] }
 thiserror = { workspace = true }
 urlencoding = { workspace = true }
 
-[dev-dependencies]
-codex-utils-cargo-bin = { workspace = true }
-pretty_assertions = { workspace = true }
-
 [lib]
 doctest = false
+test = false

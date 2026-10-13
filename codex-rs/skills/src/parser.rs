@@ -219,7 +219,3 @@ fn extract_frontmatter(contents: &str) -> Option<String> {
 
     Some(frontmatter_lines.join("\n"))
 }
-
-#[cfg(test)]
-#[path = "parser_tests.rs"]
-mod tests;

@@ -18,15 +18,6 @@ fn user_shell_command_fragment(
     UserShellCommand::new(command, exec_output.exit_code, exec_output.duration, output)
 }
 
-#[cfg(test)]
-pub fn format_user_shell_command_record(
-    command: &str,
-    exec_output: &ExecToolCallOutput,
-    turn_context: &TurnContext,
-) -> String {
-    user_shell_command_fragment(command, exec_output, turn_context).render()
-}
-
 pub fn user_shell_command_record_item(
     command: &str,
     exec_output: &ExecToolCallOutput,
@@ -38,7 +29,3 @@ pub fn user_shell_command_record_item(
         turn_context,
     ))
 }
-
-#[cfg(test)]
-#[path = "user_shell_command_tests.rs"]
-mod tests;

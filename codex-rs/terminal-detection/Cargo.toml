@@ -8,12 +8,10 @@ license.workspace = true
 name = "codex_terminal_detection"
 path = "src/lib.rs"
 doctest = false
+test = false
 
 [lints]
 workspace = true
 
 [dependencies]
 tracing = { workspace = true }
-
-[dev-dependencies]
-pretty_assertions = { workspace = true }

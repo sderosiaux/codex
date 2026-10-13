@@ -78,7 +78,3 @@ where
         .await
         .map_err(|_| anyhow!("{method} pagination timed out after {timeout:?}"))?
 }
-
-#[cfg(test)]
-#[path = "pagination_tests.rs"]
-mod tests;

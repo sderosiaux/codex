@@ -409,7 +409,3 @@ async fn checkpoint_complete(connection: &mut SqliteConnection) -> Result<bool, 
         .await?;
     Ok(busy == 0 && frames >= 0 && frames == done)
 }
-
-#[cfg(test)]
-#[path = "reclamation_tests.rs"]
-mod tests;

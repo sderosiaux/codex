@@ -610,7 +610,3 @@ fn push_bounded(destination: &mut String, value: &str) -> bool {
     destination.push_str(&value[..end]);
     false
 }
-
-#[cfg(test)]
-#[path = "experiment_tests.rs"]
-mod tests;

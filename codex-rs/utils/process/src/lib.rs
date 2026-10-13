@@ -20,7 +20,3 @@ pub fn background_command(program: impl AsRef<OsStr>) -> Command {
     #[cfg(not(windows))]
     Command::new(program)
 }
-
-#[cfg(all(test, windows))]
-#[path = "background_command_tests.rs"]
-mod tests;

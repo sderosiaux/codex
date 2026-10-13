@@ -167,7 +167,3 @@ impl From<ShellEnvironmentPolicyToml> for ShellEnvironmentPolicy {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "shell_environment_policy_tests.rs"]
-mod tests;

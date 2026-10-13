@@ -10,10 +10,6 @@ use crate::seek_sequence;
 use crate::text_file::Replacement;
 use crate::text_file::SourceFile;
 
-#[cfg(test)]
-#[path = "file_update_tests.rs"]
-mod tests;
-
 pub(crate) struct AppliedPatch {
     pub(crate) original_contents: String,
     pub(crate) new_contents: String,

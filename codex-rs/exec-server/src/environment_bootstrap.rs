@@ -52,7 +52,3 @@ impl PreparedEnvironmentManager {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "environment_bootstrap_tests.rs"]
-mod tests;

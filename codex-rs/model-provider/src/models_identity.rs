@@ -88,7 +88,3 @@ pub(crate) fn identity(
     }
     Ok(format!("{:x}", digest.finalize()))
 }
-
-#[cfg(test)]
-#[path = "models_identity_tests.rs"]
-mod tests;

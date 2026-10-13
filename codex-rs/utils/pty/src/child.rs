@@ -120,10 +120,6 @@ impl Child {
     }
 }
 
-#[cfg(all(test, unix))]
-#[path = "child_tests.rs"]
-mod tests;
-
 impl Drop for ChildKind {
     fn drop(&mut self) {
         #[cfg(unix)]

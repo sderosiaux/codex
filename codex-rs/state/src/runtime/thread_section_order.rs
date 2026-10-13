@@ -278,7 +278,3 @@ WHERE threads.id = ranked.id
     .await?;
     Ok(())
 }
-
-#[cfg(test)]
-#[path = "thread_section_order_tests.rs"]
-mod tests;

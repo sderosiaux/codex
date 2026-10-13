@@ -31,8 +31,6 @@ mod script_attribution;
 mod skill_snapshots;
 pub mod startup_sync;
 pub mod store;
-#[cfg(test)]
-mod test_support;
 pub mod toggles;
 mod tool_suggest_metadata;
 

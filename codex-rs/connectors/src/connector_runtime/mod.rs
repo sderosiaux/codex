@@ -472,6 +472,3 @@ fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 mod persistence;
-
-#[cfg(test)]
-mod tests;

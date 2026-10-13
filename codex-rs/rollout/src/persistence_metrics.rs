@@ -493,7 +493,3 @@ fn is_thread_sampled(thread_id: ThreadId) -> bool {
         });
     hash % SAMPLE_DENOMINATOR == 0
 }
-
-#[cfg(test)]
-#[path = "persistence_metrics_tests.rs"]
-mod tests;

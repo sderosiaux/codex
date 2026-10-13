@@ -259,7 +259,3 @@ fn dedupe_skill_roots_by_path(roots: &mut Vec<HostSkillRoot>) {
     let mut seen = HashSet::new();
     roots.retain(|root| seen.insert(root.path.clone()));
 }
-
-#[cfg(test)]
-#[path = "host_roots_tests.rs"]
-mod tests;

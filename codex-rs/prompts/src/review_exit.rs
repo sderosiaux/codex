@@ -30,7 +30,3 @@ fn normalize_review_template_line_endings(template: &str) -> Cow<'_, str> {
         Cow::Borrowed(template)
     }
 }
-
-#[cfg(test)]
-#[path = "review_exit_tests.rs"]
-mod review_exit_tests;

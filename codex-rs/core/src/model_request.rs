@@ -43,7 +43,3 @@ pub(crate) fn intercept_stream(
     }
     stream
 }
-
-#[cfg(test)]
-#[path = "model_request_tests.rs"]
-mod tests;

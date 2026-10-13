@@ -6,7 +6,6 @@
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
 mod apply_patch;
-mod apps;
 mod client;
 mod client_common;
 mod model_request;
@@ -77,8 +76,6 @@ mod elicitation;
 mod environment_selection;
 pub mod exec;
 pub mod exec_env;
-#[cfg(test)]
-mod git_info_tests;
 mod hook_mcp_executor;
 mod hook_runtime;
 mod image_preparation;
@@ -112,7 +109,6 @@ mod skills;
 pub(crate) use skills::maybe_emit_implicit_skill_invocation;
 pub(crate) use skills::skills_load_input_from_config;
 mod stream_events_utils;
-pub mod test_support;
 mod unified_exec;
 pub use client::X_RESPONSESAPI_INCLUDE_TIMING_METRICS_HEADER;
 pub use codex_protocol::config_types::ModelProviderAuthInfo;

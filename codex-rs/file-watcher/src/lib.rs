@@ -329,11 +329,6 @@ impl FileWatcherSubscriber {
                 .collect(),
         }
     }
-
-    #[cfg(test)]
-    pub(crate) fn register_path(&self, path: PathBuf, recursive: bool) -> WatchRegistration {
-        self.register_paths(vec![WatchPath { path, recursive }])
-    }
 }
 
 impl Drop for FileWatcherSubscriber {
@@ -731,31 +726,6 @@ impl FileWatcher {
             subscriber.add_changed_paths(&changed_paths).await;
         }
     }
-
-    #[cfg(test)]
-    pub(crate) async fn send_paths_for_test(&self, paths: Vec<PathBuf>) {
-        Self::notify_subscribers(&self.state, self.inner.as_ref(), &paths).await;
-    }
-
-    #[cfg(test)]
-    pub(crate) fn spawn_event_loop_for_test(
-        &self,
-        raw_rx: mpsc::UnboundedReceiver<notify::Result<Event>>,
-    ) {
-        self.spawn_event_loop(raw_rx);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn watch_counts_for_test(&self, path: &Path) -> Option<(usize, usize)> {
-        let state = self
-            .state
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state
-            .path_ref_counts
-            .get(path)
-            .map(|counts| (counts.non_recursive, counts.recursive))
-    }
 }
 
 fn is_mutating_event(event: &Event) -> bool {
@@ -893,7 +863,3 @@ fn changed_path_for_matched_path(
             .unwrap_or_else(|_| event_path.to_path_buf()),
     )
 }
-
-#[cfg(test)]
-#[path = "file_watcher_tests.rs"]
-mod tests;

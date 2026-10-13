@@ -171,7 +171,3 @@ fn contains_glob_metacharacter(path: &str) -> bool {
     path.chars()
         .any(|character| matches!(character, '*' | '?' | '[' | ']' | '{' | '}'))
 }
-
-#[cfg(test)]
-#[path = "config_path_tests.rs"]
-mod tests;

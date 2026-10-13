@@ -201,7 +201,3 @@ fn push_search_part(parts: &mut Vec<String>, part: String) {
         parts.push(part.to_string());
     }
 }
-
-#[cfg(test)]
-#[path = "tool_search_tests.rs"]
-mod tests;

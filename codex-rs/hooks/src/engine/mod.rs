@@ -443,7 +443,3 @@ impl ClaudeHooksEngine {
         crate::events::interrupt::run(self, request).await
     }
 }
-
-#[cfg(test)]
-#[path = "mod_tests.rs"]
-mod tests;

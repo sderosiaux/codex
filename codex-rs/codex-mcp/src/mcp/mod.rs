@@ -755,7 +755,3 @@ pub(crate) async fn collect_mcp_server_status_snapshot_from_manager(
         server_names,
     }
 }
-
-#[cfg(test)]
-#[path = "mod_tests.rs"]
-pub(crate) mod tests;

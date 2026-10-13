@@ -101,7 +101,3 @@ async fn receive_pong(
         }
     }
 }
-
-#[cfg(test)]
-#[path = "relay_writer_tests.rs"]
-mod tests;

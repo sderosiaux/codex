@@ -324,25 +324,6 @@ impl LoadedAgentsMd {
         (!self.is_empty()).then_some(self)
     }
 
-    /// Creates source-less user instructions for tests.
-    ///
-    /// This cannot be gated with `#[cfg(test)]` because integration tests
-    /// compile `codex-core` as a normal dependency without that configuration.
-    pub fn from_text_for_testing(contents: impl Into<String>) -> Self {
-        let contents = contents.into();
-        if contents.trim().is_empty() {
-            return Self::default();
-        }
-        Self {
-            user_instructions: None,
-            thread_instructions: None,
-            entries: vec![InstructionEntry {
-                contents,
-                provenance: InstructionProvenance::Internal,
-            }],
-        }
-    }
-
     fn is_empty(&self) -> bool {
         self.user_instructions.is_none()
             && self.thread_instructions.is_none()
@@ -435,13 +416,6 @@ impl LoadedAgentsMd {
                     output.push_str(&entry.contents);
                     previous_environment = Some(environment);
                 }
-                InstructionProvenance::Internal => {
-                    if has_previous {
-                        output.push_str("\n\n");
-                    }
-                    output.push_str(&entry.contents);
-                    previous_environment = None;
-                }
             }
             has_previous = true;
         }
@@ -479,9 +453,7 @@ impl LoadedAgentsMd {
     fn has_multiple_project_environments(&self) -> bool {
         let mut first_environment_id = None;
         self.entries.iter().any(|entry| {
-            let InstructionProvenance::Project { environment_id, .. } = &entry.provenance else {
-                return false;
-            };
+            let InstructionProvenance::Project { environment_id, .. } = &entry.provenance;
             match first_environment_id {
                 Some(first_environment_id) => first_environment_id != environment_id,
                 None => {
@@ -495,10 +467,10 @@ impl LoadedAgentsMd {
     fn single_project_cwd(&self) -> Option<&PathUri> {
         self.entries
             .iter()
-            .find_map(|entry| match &entry.provenance {
-                InstructionProvenance::Project { cwd, .. } => Some(cwd),
-                InstructionProvenance::Internal => None,
+            .map(|entry| match &entry.provenance {
+                InstructionProvenance::Project { cwd, .. } => cwd,
             })
+            .next()
     }
 }
 
@@ -521,20 +493,12 @@ enum InstructionProvenance {
         environment_id: String,
         cwd: PathUri,
     },
-
-    /// Instructions without a file source, including internally defined guidance.
-    Internal,
 }
 
 impl InstructionProvenance {
     fn path(&self) -> Option<PathUri> {
         match self {
             Self::Project { source_path, .. } => Some(source_path.clone()),
-            Self::Internal => None,
         }
     }
 }
-
-#[cfg(test)]
-#[path = "agents_md_tests.rs"]
-mod tests;

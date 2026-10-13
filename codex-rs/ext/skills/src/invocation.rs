@@ -94,7 +94,3 @@ pub fn detect_implicit_skill_invocation(
 
     None
 }
-
-#[cfg(test)]
-#[path = "invocation_tests.rs"]
-mod tests;

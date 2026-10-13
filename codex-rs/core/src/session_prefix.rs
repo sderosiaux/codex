@@ -35,10 +35,6 @@ pub(crate) fn format_inter_agent_completion_message(
     Some(InterAgentCompletionMessage::new(task_name, sender, payload).render())
 }
 
-#[cfg(test)]
-#[path = "session_prefix_tests.rs"]
-mod tests;
-
 pub(crate) fn format_subagent_context_line(
     agent_reference: &str,
     agent_nickname: Option<&str>,

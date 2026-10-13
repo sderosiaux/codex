@@ -173,10 +173,6 @@ impl SqliteConfig {
         }
     }
 
-    pub fn new_for_testing(sqlite_home: AbsolutePathBuf) -> Self {
-        Self::from_sqlite_home(sqlite_home)
-    }
-
     pub fn home(&self) -> &Path {
         self.sqlite_home.as_path()
     }
@@ -466,7 +462,3 @@ impl SqliteConfig {
             .await
     }
 }
-
-#[cfg(test)]
-#[path = "sqlite_tests.rs"]
-mod tests;

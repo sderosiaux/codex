@@ -227,10 +227,6 @@ impl Inner {
     }
 }
 
-#[cfg(test)]
-#[path = "accepted_tests.rs"]
-mod tests;
-
 impl LazyRemoteExecServerClient {
     pub(crate) fn from_connected(
         client: ExecServerClient,

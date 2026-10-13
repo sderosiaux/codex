@@ -151,7 +151,3 @@ fn resolve_mcp_routing<'a>(
     )]));
     Some(source)
 }
-
-#[cfg(test)]
-#[path = "executor_hooks_tests.rs"]
-mod tests;

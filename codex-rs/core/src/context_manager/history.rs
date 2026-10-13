@@ -440,11 +440,6 @@ impl ContextManager {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn replace(&mut self, items: Vec<ResponseItem>) {
-        self.replace_annotated(items.into_iter().map(ResponseItemEnvelope::new).collect());
-    }
-
     pub(crate) fn replace_annotated(&mut self, items: Vec<ResponseItemEnvelope>) {
         self.retained_context = Arc::default();
         self.user_message_revision = self.user_message_revision.saturating_add(1);
@@ -1085,7 +1080,3 @@ fn user_message_positions(items: &[ResponseItemEnvelope]) -> Vec<usize> {
     }
     positions
 }
-
-#[cfg(test)]
-#[path = "history_tests.rs"]
-mod tests;

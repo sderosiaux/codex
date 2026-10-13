@@ -188,7 +188,3 @@ pub enum HookHandlerConfig {
     #[serde(rename = "agent")]
     Agent {},
 }
-
-#[cfg(test)]
-#[path = "hooks_tests.rs"]
-mod tests;

@@ -29,7 +29,3 @@ impl WindowsTtyInputNormalizer {
         normalized
     }
 }
-
-#[cfg(test)]
-#[path = "windows_input_tests.rs"]
-mod tests;

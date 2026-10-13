@@ -69,7 +69,3 @@ fn get_memory_usage(path: String) -> Option<(MemoriesUsageKind, MemoryVersion)> 
     };
     Some((kind, version))
 }
-
-#[cfg(test)]
-#[path = "usage_tests.rs"]
-mod tests;

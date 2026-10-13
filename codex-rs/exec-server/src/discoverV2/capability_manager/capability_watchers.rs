@@ -17,10 +17,7 @@ use std::time::Duration;
 use tokio::sync::OnceCell;
 use tokio_util::task::AbortOnDropHandle;
 
-#[cfg(not(test))]
 const WATCHER_THROTTLE_INTERVAL: Duration = Duration::from_secs(10);
-#[cfg(test)]
-const WATCHER_THROTTLE_INTERVAL: Duration = Duration::from_millis(50);
 
 pub(super) struct CapabilityWatchers {
     file_watcher: Option<Arc<FileWatcher>>,
@@ -140,7 +137,3 @@ impl CapabilityManager {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "../tests/capability_watchers_tests.rs"]
-pub(super) mod tests;

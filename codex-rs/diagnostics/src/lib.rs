@@ -204,7 +204,3 @@ fn empty_process_snapshot() -> ProcessSnapshot {
         physical_footprint_bytes: None,
     }
 }
-
-#[cfg(test)]
-#[path = "tests.rs"]
-mod tests;

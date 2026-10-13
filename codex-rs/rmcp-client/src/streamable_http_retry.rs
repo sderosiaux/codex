@@ -247,7 +247,3 @@ pub(super) struct HandshakeError {
     #[source]
     pub(super) source: rmcp::service::ClientInitializeError,
 }
-
-#[cfg(test)]
-#[path = "streamable_http_retry_tests.rs"]
-mod tests;

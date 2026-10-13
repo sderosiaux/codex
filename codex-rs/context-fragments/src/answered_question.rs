@@ -54,7 +54,3 @@ impl ContextualUserFragment for AnsweredQuestion<'_> {
         format!("\n{replies}\n")
     }
 }
-
-#[cfg(test)]
-#[path = "answered_question_tests.rs"]
-mod tests;

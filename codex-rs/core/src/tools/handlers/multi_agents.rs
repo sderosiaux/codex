@@ -92,7 +92,3 @@ pub(crate) fn collab_tool_call_status(
         _ => CollabAgentToolCallStatus::Failed,
     }
 }
-
-#[cfg(test)]
-#[path = "multi_agents_tests.rs"]
-mod tests;

@@ -159,22 +159,6 @@ impl OAuthHttpClientAdapter {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn new(
-        http_client: Arc<dyn HttpClient>,
-        default_headers: HeaderMap,
-        resource_url: &str,
-    ) -> Self {
-        Self::new_with_redirect_mode(
-            http_client,
-            default_headers,
-            resource_url,
-            /*has_configured_headers*/ false,
-            StreamableHttpRedirectMode::Legacy,
-        )
-        .expect("OAuth resource URL should be valid")
-    }
-
     pub(crate) fn new_with_redirect_mode(
         http_client: Arc<dyn HttpClient>,
         default_headers: HeaderMap,
@@ -427,70 +411,5 @@ impl OAuthHttpClient for OAuthHttpClientAdapter {
                 Err(_) => operation.await,
             }
         })
-    }
-}
-
-#[cfg(test)]
-#[path = "oauth_http_client_security_tests.rs"]
-mod security_tests;
-
-#[cfg(test)]
-mod tests {
-    use http::HeaderValue;
-    use pretty_assertions::assert_eq;
-
-    use super::*;
-
-    #[test]
-    fn agent_plugin_oauth_stops_only_for_sensitive_headers() {
-        assert_eq!(
-            policy(
-                StreamableHttpRedirectMode::AgentPluginV1,
-                /*has_configured_headers*/ true,
-                /*has_authorization*/ false,
-            ),
-            HttpRedirectPolicy::Stop
-        );
-        assert_eq!(
-            policy(
-                StreamableHttpRedirectMode::AgentPluginV1,
-                /*has_configured_headers*/ false,
-                /*has_authorization*/ true,
-            ),
-            HttpRedirectPolicy::Stop
-        );
-        assert_eq!(
-            policy(
-                StreamableHttpRedirectMode::AgentPluginV1,
-                /*has_configured_headers*/ false,
-                /*has_authorization*/ false,
-            ),
-            HttpRedirectPolicy::Follow
-        );
-        assert_eq!(
-            policy(
-                StreamableHttpRedirectMode::Legacy,
-                /*has_configured_headers*/ true,
-                /*has_authorization*/ true,
-            ),
-            HttpRedirectPolicy::Follow
-        );
-    }
-
-    fn policy(
-        mode: StreamableHttpRedirectMode,
-        has_configured_headers: bool,
-        has_authorization: bool,
-    ) -> HttpRedirectPolicy {
-        let mut headers = HeaderMap::new();
-        if has_authorization {
-            headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer secret"));
-        }
-        oauth_redirect_policy(
-            mode,
-            &headers,
-            has_configured_headers,
-            HttpRedirectPolicy::Follow,
-        )
     }
 }

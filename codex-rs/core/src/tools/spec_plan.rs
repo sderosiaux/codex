@@ -35,7 +35,6 @@ use crate::tools::handlers::multi_agents::WaitAgentHandler;
 use crate::tools::handlers::multi_agents_common::DEFAULT_WAIT_TIMEOUT_MS;
 use crate::tools::handlers::multi_agents_common::MAX_WAIT_TIMEOUT_MS;
 use crate::tools::handlers::multi_agents_common::MIN_WAIT_TIMEOUT_MS;
-use crate::tools::handlers::multi_agents_spec::MULTI_AGENT_V1_NAMESPACE;
 use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
 use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
 use crate::tools::handlers::multi_agents_v2::FollowupTaskHandler as FollowupTaskHandlerV2;
@@ -49,8 +48,6 @@ use crate::tools::handlers::view_image_spec::ViewImageToolOptions;
 use crate::tools::hosted_spec::WebSearchToolOptions;
 use crate::tools::hosted_spec::create_web_search_tool;
 use crate::tools::multi_agent_tool::multi_agent_v2_handler;
-#[cfg(test)]
-use crate::tools::registry::RegisteredTool;
 use crate::tools::registry::ToolExposure;
 use crate::tools::registry::ToolRegistry;
 use crate::tools::router::ToolRouter;
@@ -239,62 +236,6 @@ fn apply_mcp_tool_exposure_policy(
     }
 }
 
-#[cfg(test)]
-#[instrument(level = "trace", skip_all)]
-pub(crate) fn build_core_tool_registry(
-    turn_context: &TurnContext,
-    model_info: &ModelInfo,
-    environments: &TurnEnvironmentSnapshot,
-    mcp: &codex_mcp::McpBinding,
-    tool_suggest_candidates: Option<&crate::tools::router::ToolSuggestCandidates>,
-    wait_for_environment_tool_config: Option<&Arc<crate::WaitForEnvironmentToolConfig>>,
-) -> ToolRegistry {
-    let default_agent_type_description =
-        crate::agent::role::spawn_tool_spec::build(&std::collections::BTreeMap::new());
-    let context = CoreToolPlanContext {
-        turn_context,
-        model_info,
-        environments,
-        mcp,
-        tool_suggest_candidates,
-        wait_for_environment_tool_config,
-        default_agent_type_description: &default_agent_type_description,
-        wait_agent_timeouts: wait_agent_timeout_options(turn_context),
-    };
-    let mut registry = ToolRegistry::default();
-    add_core_tool_sources(&context, &mut registry);
-    registry
-}
-
-#[cfg(test)]
-#[instrument(level = "trace", skip_all)]
-pub(crate) fn append_source_tools(
-    turn_context: &TurnContext,
-    model_info: &ModelInfo,
-    registry: &mut ToolRegistry,
-    mcp_tools: Vec<RegisteredTool>,
-    extension_tool_executors: impl IntoIterator<
-        Item = Arc<dyn for<'call> ToolExecutor<ExtensionToolCall<'call>>>,
-    >,
-    dynamic_tools: &[DynamicToolSpec],
-) -> Vec<ToolSpec> {
-    for tool in mcp_tools {
-        registry.register_external_with_exposure(tool.runtime, tool.exposure);
-    }
-    let standalone_web_search_tool = append_extension_tool_executors(
-        turn_context,
-        model_info,
-        extension_tool_executors,
-        registry,
-    );
-    append_dynamic_tool_runtimes(dynamic_tools, registry);
-    hosted_model_tool_specs(
-        turn_context,
-        model_info,
-        standalone_web_search_tool.as_slice(),
-    )
-}
-
 #[instrument(level = "trace", skip_all)]
 pub(crate) fn extension_tool_executors<'a>(
     session: &'a Session,
@@ -433,13 +374,11 @@ pub(crate) fn finalize_tool_router(
     let tool_namespaces_info = include_tool_namespaces_info
         .then(|| collect_tool_namespaces_info(&registry, &model_visible_specs))
         .filter(|info| !info.is_empty());
-    let child_management_tools = required_child_management_tool_names(turn_context, model_info);
 
     Ok(ToolRouter::from_parts(
         registry,
         model_visible_specs,
         tool_namespaces_info,
-        &child_management_tools,
     ))
 }
 
@@ -513,45 +452,6 @@ fn collab_tools_enabled(turn_context: &TurnContext, model_info: &ModelInfo) -> b
                 || model_info.multi_agent_version == Some(MultiAgentVersion::V2)
         }
     }
-}
-
-fn required_child_management_tool_names(
-    turn_context: &TurnContext,
-    model_info: &ModelInfo,
-) -> Vec<ToolName> {
-    if !collab_tools_enabled(turn_context, model_info) {
-        return Vec::new();
-    }
-
-    let (namespace, names): (_, &[&str]) = match turn_context.multi_agent_version {
-        MultiAgentVersion::Disabled => return Vec::new(),
-        MultiAgentVersion::V1 => (
-            Some(MULTI_AGENT_V1_NAMESPACE),
-            &["send_input", "wait_agent", "resume_agent", "close_agent"],
-        ),
-        MultiAgentVersion::V2 => (
-            turn_context.config.multi_agent_v2.tool_namespace.as_deref(),
-            if turn_context.config.multi_agent_v2.disable_direct_message {
-                &["interrupt_agent", "list_agents"]
-            } else {
-                &[
-                    "send_message",
-                    "followup_task",
-                    "interrupt_agent",
-                    "list_agents",
-                ]
-            },
-        ),
-    };
-    let mut tools = names
-        .iter()
-        .map(|name| ToolName::new(namespace.map(str::to_owned), (*name).to_owned()))
-        .collect::<Vec<_>>();
-    if multi_agent_v2_enabled(turn_context) && turn_context.config.multi_agent_v2.wait_agent_enabled
-    {
-        tools.push(ToolName::new(namespace.map(str::to_owned), "wait_agent"));
-    }
-    tools
 }
 
 fn image_generation_available(turn_context: &TurnContext, model_info: &ModelInfo) -> bool {
@@ -1155,7 +1055,3 @@ fn append_extension_tool_executors(
 
     standalone_web_search_tool
 }
-
-#[cfg(test)]
-#[path = "spec_plan_tests.rs"]
-mod tests;

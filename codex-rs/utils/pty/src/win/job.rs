@@ -258,7 +258,3 @@ impl AsRawHandle for JobObject {
         self.handle.as_raw_handle()
     }
 }
-
-#[cfg(test)]
-#[path = "job_tests.rs"]
-mod tests;

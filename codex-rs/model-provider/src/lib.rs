@@ -7,7 +7,6 @@ mod models_endpoint;
 mod models_identity;
 mod provider;
 mod shared_state;
-pub mod test_support;
 mod workspace_routing;
 pub use workspace_routing::ACCOUNT_ROUTING_HEADER;
 pub use workspace_routing::ResolvedResponsesProvider;
@@ -40,7 +39,3 @@ pub use provider::ProviderAuthRecoveryMessages;
 pub use provider::ProviderUnauthorizedRecovery;
 pub use provider::SharedModelProvider;
 pub use provider::create_model_provider;
-
-#[cfg(test)]
-#[path = "workspace_routing_tests.rs"]
-mod workspace_routing_tests;

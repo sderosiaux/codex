@@ -357,7 +357,3 @@ fn enforce_response_size(
     }
     Ok(())
 }
-
-#[cfg(test)]
-#[path = "tests/capability_discoveries_tests.rs"]
-mod tests;

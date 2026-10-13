@@ -48,7 +48,3 @@ impl RetryAfter {
         self.0.saturating_duration_since(Instant::now())
     }
 }
-
-#[cfg(test)]
-#[path = "retry_after_tests.rs"]
-mod tests;

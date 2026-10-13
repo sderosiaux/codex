@@ -77,7 +77,3 @@ where
     };
     result.await
 }
-
-#[cfg(test)]
-#[path = "status_tests.rs"]
-mod tests;

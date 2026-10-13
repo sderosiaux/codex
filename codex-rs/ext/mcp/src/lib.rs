@@ -8,9 +8,6 @@ use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
 use codex_mcp::hosted_plugin_runtime_mcp_server_config;
 
 mod cloud_plugin;
-#[cfg(test)]
-#[path = "event_stream_tests.rs"]
-mod event_stream_tests;
 mod plugin;
 mod plugin_contributor;
 mod plugin_contributor_state;
@@ -28,10 +25,6 @@ pub use plugin_contributor_state::PluginsThreadState;
 pub use plugin_providers::PluginProviders;
 pub use stream_manager::McpEventStreamManager;
 pub use stream_manager::McpEventStreamUpdate;
-
-#[cfg(test)]
-#[path = "stream_manager_tests.rs"]
-mod stream_manager_tests;
 
 struct HostedPluginRuntimeExtension;
 
@@ -66,7 +59,3 @@ impl McpServerContributor<Config> for HostedPluginRuntimeExtension {
 pub fn install(builder: &mut ExtensionRegistryBuilder<Config>) {
     builder.mcp_server_contributor(std::sync::Arc::new(HostedPluginRuntimeExtension));
 }
-
-#[cfg(test)]
-#[path = "lib_tests.rs"]
-mod tests;

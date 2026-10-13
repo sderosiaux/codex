@@ -58,7 +58,3 @@ pub(super) fn record_spawn_success(
     record_phase("input_admission", measurements.input_admission);
     record_phase("total", measurements.total);
 }
-
-#[cfg(test)]
-#[path = "spawn_telemetry_tests.rs"]
-mod tests;

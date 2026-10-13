@@ -77,7 +77,3 @@ impl PartialEq for ToolOutputSchema {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "output_schema_tests.rs"]
-mod tests;

@@ -23,10 +23,6 @@ use crate::ThreadStoreError;
 use crate::ThreadStoreResult;
 use crate::TurnPage;
 
-#[cfg(test)]
-#[path = "read_tests.rs"]
-mod tests;
-
 #[derive(Clone, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub(super) enum CursorScope {
