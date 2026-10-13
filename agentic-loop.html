@@ -1,0 +1,766 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>codex · ce qui fait tourner la boucle</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #f6f7f9;
+    --surface: #ffffff;
+    --ink: #1a2230;
+    --ink-soft: #4a5566;
+    --ink-faint: #7b8696;
+    --rule: #d6dce4;
+    --rule-soft: #e7ebf0;
+    --loop: #2753d9;
+    --loop-tint: #e8eefc;
+    --trigger: #0e8a7e;
+    --trigger-tint: #e3f4f1;
+    --exit-ok: #1a2230;
+    --exit-bad: #b4372b;
+    --exit-bad-tint: #fbe9e6;
+    --hook: #7b4fd0;
+    --hook-tint: #f0eafb;
+    --compact: #b8690f;
+    --compact-tint: #fbefdf;
+    --sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+    --step--1: 0.8125rem;
+    --step-0: 0.9375rem;
+    --step-1: 1.125rem;
+    --step-2: 1.5rem;
+    --step-3: 2.25rem;
+    --step-4: 3.25rem;
+    --radius-s: 4px;
+    --radius-m: 8px;
+    --gutter: clamp(20px, 4vw, 48px);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--paper); color: var(--ink); font-family: var(--sans); font-size: var(--step-0); line-height: 1.55; -webkit-font-smoothing: antialiased; }
+  code { font-family: var(--mono); font-size: 0.86em; }
+  :focus-visible { outline: 2px solid var(--loop); outline-offset: 2px; border-radius: 3px; }
+  .wrap { max-width: 1240px; margin: 0 auto; padding: 0 var(--gutter); }
+
+  header { padding: 52px 0 10px; }
+  h1 { font-size: var(--step-4); line-height: 1.02; letter-spacing: -0.035em; margin: 0 0 16px; }
+  .lede { font-size: var(--step-1); color: var(--ink-soft); max-width: 66ch; margin: 0; }
+
+  /* three answers */
+  .answers { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; margin: 34px 0 0; border-top: 1px solid var(--rule); }
+  .answers > div { padding: 20px 22px 18px 0; }
+  .answers > div + div { padding-left: 22px; border-left: 1px solid var(--rule); }
+  .answers h2 { font-size: var(--step-1); margin: 0 0 10px; letter-spacing: -0.01em; display: flex; align-items: center; gap: 10px; }
+  .answers h2 i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; flex: none; }
+  .answers ol, .answers ul { margin: 0; padding-left: 20px; color: var(--ink-soft); }
+  .answers li { margin: 6px 0; }
+  .answers li b { color: var(--ink); font-weight: 600; }
+  .answers p.note { margin: 12px 0 0; font-size: var(--step--1); color: var(--ink-faint); }
+
+  /* stage */
+  section.stage { padding: 48px 0 24px; }
+  .stage h2 { font-size: var(--step-3); letter-spacing: -0.03em; line-height: 1.1; margin: 0 0 8px; }
+  .stage p.intro { color: var(--ink-soft); max-width: 72ch; margin: 0 0 22px; }
+
+  .player { background: var(--surface); border: 1px solid var(--rule); border-radius: var(--radius-m); padding: 14px 16px; margin-bottom: 16px; position: sticky; top: 0; z-index: 5; }
+  .scenarios { display: flex; flex-wrap: wrap; gap: 8px; }
+  .scenarios button, .controls button {
+    font: inherit; font-size: var(--step--1); color: var(--ink); background: var(--paper);
+    border: 1px solid var(--rule); border-radius: 999px; padding: 6px 12px; cursor: pointer;
+    transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
+  }
+  .scenarios button:hover { border-color: var(--loop); }
+  .scenarios button[aria-pressed="true"] { background: var(--loop); border-color: var(--loop); color: var(--surface); }
+  .narration { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 14px; align-items: center; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--rule-soft); min-height: 44px; }
+  .narration .count { font-family: var(--mono); font-size: var(--step--1); color: var(--loop); white-space: nowrap; }
+  .narration .text { font-size: var(--step-0); }
+  .narration .text .who { font-weight: 600; margin-right: 6px; }
+  .controls { display: flex; gap: 6px; }
+  .controls button { border-radius: var(--radius-s); padding: 6px 10px; }
+  .controls button:disabled { opacity: 0.4; cursor: default; }
+
+  .layout { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 22px; align-items: start; }
+  .chart { background: var(--surface); border: 1px solid var(--rule); border-radius: var(--radius-m); padding: 6px; }
+  .chart svg { display: block; width: 100%; height: auto; }
+
+  /* svg */
+  .region { fill: none; stroke-width: 1.5; }
+  .region.outer { stroke: var(--rule); fill: #fafbfc; }
+  .region.inner { stroke: color-mix(in srgb, var(--loop) 35%, white); fill: color-mix(in srgb, var(--loop-tint) 45%, white); }
+  .region-label { font-family: var(--sans); font-size: 13px; font-weight: 600; fill: var(--ink-soft); }
+  .region-label.inner { fill: var(--loop); }
+  .region-sub { font-family: var(--sans); font-size: 12px; fill: var(--ink-faint); }
+
+  .edge { fill: none; stroke: var(--ink-faint); stroke-width: 1.6; stroke-opacity: 0.7; transition: stroke 160ms ease, stroke-width 160ms ease, stroke-opacity 160ms ease; }
+  .edge.loop { stroke: var(--loop); stroke-opacity: 0.45; }
+  .edge.exit { stroke: var(--exit-bad); stroke-opacity: 0.5; }
+  .edge.ok { stroke: var(--ink); stroke-opacity: 0.55; }
+  .edge.dashed { stroke-dasharray: 5 5; }
+  .edge.ghost { stroke: transparent; }
+  .edge.lit { stroke: var(--loop); stroke-width: 3; stroke-opacity: 1; }
+  .edge-label { font-family: var(--sans); font-size: 12px; fill: var(--ink-faint); pointer-events: none; }
+  .edge-label.loop { fill: var(--loop); }
+  .edge-label.rail { fill: var(--exit-bad); }
+
+  .node { cursor: pointer; }
+  .node .shape { stroke-width: 1.6; transition: fill 160ms ease, stroke-width 160ms ease; }
+  .node.step .shape { fill: var(--surface); stroke: var(--ink-soft); }
+  .node.trigger .shape { fill: var(--trigger-tint); stroke: var(--trigger); }
+  .node.gate .shape { fill: var(--surface); stroke: var(--ink); }
+  .node.hookgate .shape { fill: var(--hook-tint); stroke: var(--hook); }
+  .node.compact .shape { fill: var(--compact-tint); stroke: var(--compact); stroke-dasharray: 4 4; }
+  .node.side .shape { fill: var(--surface); stroke: var(--loop); }
+  .node.exit .shape { fill: var(--exit-bad-tint); stroke: var(--exit-bad); }
+  .node.done .shape { fill: var(--ink); stroke: var(--ink); }
+  .node .t { font-family: var(--sans); font-size: 14px; font-weight: 600; fill: var(--ink); text-anchor: middle; pointer-events: none; }
+  .node .s { font-family: var(--sans); font-size: 12px; fill: var(--ink-faint); text-anchor: middle; pointer-events: none; }
+  .node.done .t { fill: var(--surface); }
+  .node.done .s { fill: #c3cad6; }
+  .node.exit .t { fill: var(--exit-bad); }
+  .node:hover .shape, .node:focus-visible .shape { stroke-width: 2.6; }
+  .node.selected .shape { stroke-width: 3; }
+  .node.current .shape { fill: var(--loop); stroke: var(--loop); }
+  .node.current .t { fill: var(--surface); }
+  .node.current .s { fill: #dbe4ff; }
+  .node:focus { outline: none; }
+  .callout rect { fill: var(--loop-tint); stroke: color-mix(in srgb, var(--loop) 40%, white); }
+  .callout text { font-family: var(--sans); font-size: 12.5px; fill: var(--ink-soft); }
+  .callout text.h { font-weight: 600; fill: var(--loop); }
+  .reasons { font-family: var(--sans); font-size: 11.5px; fill: var(--ink-faint); text-anchor: middle; }
+
+  /* detail panel */
+  .detail { position: sticky; top: 132px; background: var(--surface); border: 1px solid var(--rule); border-radius: var(--radius-m); padding: 20px 20px 16px; max-height: calc(100vh - 150px); overflow: auto; }
+  .detail .kind { font-size: var(--step--1); color: var(--loop); margin-bottom: 6px; }
+  .detail h3 { margin: 0 0 10px; font-size: var(--step-2); letter-spacing: -0.02em; line-height: 1.15; }
+  .detail p { margin: 0 0 12px; color: var(--ink-soft); }
+  .detail ul { margin: 0 0 12px; padding-left: 18px; color: var(--ink-soft); }
+  .detail li { margin: 5px 0; }
+  .detail .refs { border-top: 1px solid var(--rule-soft); padding-top: 10px; display: grid; gap: 4px; }
+  .detail .refs code { color: var(--ink-soft); overflow-wrap: anywhere; }
+
+  /* nesting explainer */
+  section.nesting { padding: 40px 0 10px; }
+  .nest { display: grid; gap: 0; max-width: 980px; }
+  .nest .lvl { border: 1.5px solid var(--rule); border-radius: var(--radius-m); padding: 16px 18px 18px; background: var(--surface); }
+  .nest .lvl .lvl { margin-top: 14px; }
+  .nest .lvl.l2 { border-color: color-mix(in srgb, var(--loop) 40%, white); background: color-mix(in srgb, var(--loop-tint) 45%, white); }
+  .nest .lvl.l3 { border-color: var(--loop); background: var(--surface); }
+  .nest h3 { margin: 0 0 4px; font-size: var(--step-1); }
+  .nest p { margin: 0; color: var(--ink-soft); font-size: var(--step--1); max-width: 78ch; }
+  .nest code { color: var(--ink); }
+
+  footer { padding: 48px 0 56px; color: var(--ink-faint); font-size: var(--step--1); }
+  footer .wrap { border-top: 1px solid var(--rule); padding-top: 16px; }
+
+  @media (max-width: 1080px) {
+    .layout { grid-template-columns: 1fr; }
+    .detail { position: static; max-height: none; }
+    .answers { grid-template-columns: 1fr; }
+    .answers > div + div { border-left: 0; border-top: 1px solid var(--rule); padding-left: 0; }
+    .player { position: static; }
+  }
+  @media (max-width: 640px) {
+    h1 { font-size: var(--step-3); }
+    .narration { grid-template-columns: 1fr; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <h1>Ce qui fait tourner la boucle</h1>
+    <p class="lede">Dans ce fork de codex, la boucle agentique tient dans trois boucles imbriquées autour d'un appel au modèle. Tout ce qui suit est lu dans le code du harness (chemins relatifs à <code>codex-rs/</code>), pas dans une description générale des agents.</p>
+    <div class="answers">
+      <div>
+        <h2><i style="background:var(--trigger)"></i>Ce qui démarre un tour</h2>
+        <ol>
+          <li><b>Ton prompt.</b> Le CLI envoie <code>Op::TurnInput</code> en mode <code>StartIfIdle</code>.</li>
+          <li><b>Un message <code>trigger_turn</code></b> d'un autre agent : <code>spawn_agent</code> et <code>followup_task</code> réveillent ainsi un sous-agent.</li>
+          <li><b>Ce même message, arrivé trop tard</b> pour le tour en cours : le harness démarre un nouveau tour tout seul à la fin du tour, ou après un Ctrl-C.</li>
+        </ol>
+        <p class="note">Il faut un thread libre, sans message <code>trigger_turn</code> en attente : ce message passe avant ton prompt. <code>Op::Compact</code> lance une compaction, pas la boucle.</p>
+      </div>
+      <div>
+        <h2><i style="background:var(--loop)"></i>Ce qui relance la boucle</h2>
+        <ul>
+          <li>le modèle a appelé <b>au moins un outil</b> ;</li>
+          <li>le serveur a répondu <b><code>end_turn: false</code></b> ;</li>
+          <li>le flux a été <b>coupé pour livrer du courrier</b> d'agent ;</li>
+          <li><b>de l'input attend</b>, courrier compris tant que la réponse finale n'est pas affichée ;</li>
+          <li>un <b>hook Stop bloque</b> l'arrêt avec une consigne.</li>
+        </ul>
+        <p class="note">Aucun plafond d'itérations. Le modèle ne dit jamais « j'ai fini » : il arrête d'appeler des outils.</p>
+      </div>
+      <div>
+        <h2><i style="background:var(--exit-bad)"></i>Ce qui l'arrête</h2>
+        <ul>
+          <li>une réponse <b>sans appel d'outil</b> que rien ne relance ;</li>
+          <li>un hook qui <b>bloque l'input</b> ou demande l'arrêt ;</li>
+          <li>une <b>erreur non réessayable</b> : fenêtre dépassée, limite d'usage, erreur fatale d'outil ;</li>
+          <li><b>Ctrl-C</b>, la seule fin qui donne <code>TurnAborted</code>.</li>
+        </ul>
+        <p class="note">Tout le reste finit par <code>TurnComplete</code>, avec l'erreur attachée s'il y en a une.</p>
+      </div>
+    </div>
+  </div>
+</header>
+
+<section class="stage" aria-labelledby="stage-title">
+  <div class="wrap">
+    <h2 id="stage-title">La cinématique complète</h2>
+    <p class="intro">Choisis un scénario pour le rejouer pas à pas sur l'organigramme, ou clique n'importe quel nœud pour voir ce qu'il fait, ses conditions et les fichiers concernés.</p>
+
+    <div class="player" role="region" aria-label="Scénarios">
+      <div class="scenarios" id="scenarios"></div>
+      <div class="narration">
+        <span class="count" id="count">—</span>
+        <span class="text" id="narr">Choisis un scénario.</span>
+        <span class="controls">
+          <button id="prev" aria-label="Étape précédente">Précédent</button>
+          <button id="play" aria-label="Lecture automatique">Lecture</button>
+          <button id="next" aria-label="Étape suivante">Suivant</button>
+        </span>
+      </div>
+    </div>
+
+    <div class="layout">
+      <figure class="chart" style="margin:0">
+        <svg id="flow" viewBox="0 0 900 1680" role="img" aria-labelledby="flow-title">
+          <title id="flow-title">Organigramme de la boucle agentique de codex : déclencheurs, admission, tâche, boucle d'échantillonnage, décisions et sorties.</title>
+        </svg>
+      </figure>
+      <aside class="detail" id="detail" aria-live="polite"></aside>
+    </div>
+  </div>
+</section>
+
+<section class="nesting" aria-labelledby="nest-title">
+  <div class="wrap">
+    <h2 id="nest-title" style="font-size:var(--step-3);letter-spacing:-0.03em;margin:0 0 8px">Trois boucles l'une dans l'autre</h2>
+    <p style="color:var(--ink-soft);max-width:72ch;margin:0 0 22px">C'est ce qui rend la cinématique moins linéaire qu'on ne l'imagine : chaque niveau a sa propre condition de sortie.</p>
+    <div class="nest">
+      <div class="lvl">
+        <h3>La tâche du tour</h3>
+        <p><code>RegularTask::run</code> (<code>core/src/tasks/regular.rs</code>) appelle <code>run_turn</code>, puis le rappelle avec un input vide tant que la file contient de l'input arrivé après la décision d'arrêt. Elle sort sur une erreur terminale ou une file vide.</p>
+        <div class="lvl l2">
+          <h3>La boucle d'échantillonnage</h3>
+          <p><code>run_turn</code> (<code>core/src/session/turn.rs</code>) vide l'input en attente, appelle le modèle, récupère les sorties d'outils, puis reboucle tant que <code>needs_follow_up</code> est vrai ou qu'un hook Stop bloque. C'est elle, la boucle agentique.</p>
+          <div class="lvl l3">
+            <h3>La requête au modèle</h3>
+            <p><code>run_sampling_request</code> réessaie le même prompt sur erreur réessayable : 5 fois avec backoff, puis bascule WebSocket → HTTPS pour 5 essais de plus. Quand la connexion est impossible, il réessaie sans limite, avec 5 à 60 s d'attente. À l'intérieur, <code>try_run_sampling_request</code> lit le flux et lance les outils au fil de l'eau.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer><div class="wrap" id="foot">Lu dans le code de sderosiaux/codex, branche trim-to-loop, commit c7a5dd44fa. Les chemins sont relatifs à codex-rs/.</div></footer>
+
+<script>
+// ---------------------------------------------------------------------------
+// Nodes: geometry (centre x,y, width, height) + what the code does there.
+// Paths are relative to codex-rs/.
+// ---------------------------------------------------------------------------
+const N = {
+  T3: { x: 170, y: 56, w: 210, h: 58, cls: "trigger", t: "Courrier en attente", s: "relance automatique",
+    kind: "déclencheur", title: "Relance automatique",
+    body: "À la fin de chaque tour, et après un Ctrl-C, maybe_start_turn_for_pending_work regarde la boîte aux lettres. Si un message trigger_turn y attend, un nouveau tour démarre avec ce courrier comme input, sans intervention de ta part.",
+    list: ["le courrier sans trigger_turn ne relance rien : il attend le prochain tour", "le code gère aussi un « sommeil durable » réveillé par n'importe quel courrier, mais rien ne le pose dans ce fork"],
+    refs: ["core/src/tasks/mod.rs maybe_start_turn_for_pending_work_with_sub_id", "core/src/session/turn_input.rs reserve_pending_work_turn"] },
+  T1: { x: 430, y: 56, w: 210, h: 58, cls: "trigger", t: "Ton prompt", s: "codex \"…\" ou le REPL",
+    kind: "déclencheur", title: "Ton prompt",
+    body: "Le CLI appelle start_turn_if_idle, qui envoie Op::TurnInput en mode StartIfIdle. submission_loop le passe à turn_input::handle. Ensuite le CLI lit les événements jusqu'à TurnComplete ou TurnAborted.",
+    list: ["seul mode utilisé par notre CLI : il n'injecte jamais d'input dans un tour en cours", "le moteur connaît aussi StartOrSteer, Steer et ContinueIfIdle"],
+    refs: ["cli/src/main.rs run_turn", "core/src/session/handlers.rs submission_loop", "core/src/session/turn_input.rs handle"] },
+  T2: { x: 690, y: 56, w: 210, h: 58, cls: "trigger", t: "Message trigger_turn", s: "un agent en réveille un autre",
+    kind: "déclencheur", title: "Message qui réveille un agent",
+    body: "Op::InterAgentCommunication dépose le message dans la boîte aux lettres du thread. S'il porte trigger_turn et que le thread est libre, un tour démarre aussitôt avec ce message comme input.",
+    list: ["spawn_agent et followup_task envoient avec trigger_turn", "send_message et le rapport d'un enfant qui termine n'en ont pas : ils attendent", "thread occupé : le message rejoint le tour en cours, ou le suivant si la réponse finale est déjà affichée"],
+    refs: ["core/src/session/handlers.rs inter_agent_communication", "core/src/agent/control/delivery.rs", "core/src/agent/control/completion.rs", "core/src/tools/handlers/multi_agents_v2/spawn.rs"] },
+  G: { x: 430, y: 172, w: 230, h: 86, cls: "gate", shape: "diamond", t: "Admission", s: "le thread est-il libre ?",
+    kind: "décision", title: "Admission du tour",
+    body: "start_if_idle refuse le tour dans quatre cas. Sinon il réserve le tour actif, construit le TurnContext (modèle, mode multi-agent, skills) et lance une RegularTask dans sa propre tâche tokio.",
+    list: ["un message trigger_turn attend : il passe en premier, et son tour est lancé à la place du tien (PendingTriggerTurn)", "un tour est déjà actif (NotIdle)", "la session s'arrête (ServerDraining)", "démarrage automatique en mode Plan (PlanMode)"],
+    refs: ["core/src/session/turn_input.rs start_if_idle", "core/src/tasks/mod.rs start_task"] },
+  X1: { x: 825, y: 172, w: 120, h: 40, cls: "exit", shape: "pill", t: "NotSubmitted", s: "",
+    kind: "sortie", title: "Tour refusé",
+    body: "Le CLI reçoit NotSubmitted avec la raison et s'arrête sur « turn was not started ». Rien n'a été envoyé au modèle.",
+    list: [], refs: ["cli/src/main.rs run_turn"] },
+
+  N1: { x: 430, y: 280, w: 260, h: 52, cls: "step", t: "Tâche lancée", s: "TurnStarted, préchauffage",
+    kind: "étape", title: "La tâche démarre",
+    body: "RegularTask émet TurnStarted, laisse les extensions faire leur préparation de début de tour, puis reprend la connexion au modèle préchauffée au démarrage de la session.",
+    list: ["si la préparation est annulée, l'input est enregistré et la tâche s'arrête là"],
+    refs: ["core/src/tasks/regular.rs run", "core/src/session/startup_prewarm.rs"] },
+  N2: { x: 430, y: 380, w: 260, h: 80, cls: "step", t: "Préparer le tour", s: "AGENTS.md, outils, MCP, contexte",
+    kind: "étape", title: "Préparation du tour",
+    body: "Avant la première requête, run_turn met en place tout ce que le modèle verra.",
+    list: ["compaction préalable si la fenêtre est déjà pleine, ou si le nouveau modèle a une fenêtre plus petite", "serveurs MCP requis par les mentions et les skills", "en parallèle : relecture d'AGENTS.md et liste d'outils, connexions MCP comprises", "premier tour : contexte initial complet ; tours suivants : seulement ce qui a changé", "skills mentionnés injectés", "hooks SessionStart : un hook peut arrêter le tour ici"],
+    refs: ["core/src/session/turn.rs run_turn", "core/src/session/mod.rs record_context_updates_and_set_reference_context_item", "core/src/agents_md.rs", "core/src/tools/spec_plan.rs"] },
+  N3: { x: 430, y: 495, w: 240, h: 84, cls: "hookgate", shape: "diamond", t: "UserPromptSubmit", s: "l'input passe ?",
+    kind: "hook", title: "Hooks sur l'input",
+    body: "Chaque élément d'input passe par les hooks UserPromptSubmit. Un hook peut le bloquer ou lui ajouter du contexte. L'input accepté est enregistré comme message utilisateur.",
+    list: ["si tout l'input est bloqué, run_turn s'arrête sans jamais appeler le modèle"],
+    refs: ["core/src/session/turn.rs run_hooks_and_record_inputs", "core/src/hook_runtime.rs inspect_pending_input"] },
+  X2: { x: 825, y: 495, w: 120, h: 40, cls: "exit", shape: "pill", t: "Input bloqué", s: "",
+    kind: "sortie de run_turn", title: "Input bloqué par un hook",
+    body: "run_turn rend la main sans requête au modèle. Comme toutes les sorties rouges, ça ne ferme pas le tour : on retombe sur la vérification de la tâche, puis sur TurnComplete.",
+    list: [], refs: ["core/src/session/turn.rs run_turn"] },
+
+  N4: { x: 430, y: 600, w: 260, h: 52, cls: "step", t: "Vider l'input en attente", s: "début de chaque itération",
+    kind: "étape", title: "Début d'itération",
+    body: "Chaque itération récupère ce qui attend : input injecté, consigne d'un hook Stop, courrier d'agent. Exception : à la première itération d'un tour, l'input frais passe seul et la file attend la requête suivante.",
+    list: ["le courrier n'entre dans le tour que tant que la réponse finale n'a pas été affichée ; ensuite, il attend le tour suivant", "mêmes hooks UserPromptSubmit : si tout est bloqué, run_turn s'arrête", "si de l'input est arrivé, le contexte de l'étape est recapturé, MCP requis compris", "puis rappel d'heure éventuel et changements du world state"],
+    refs: ["core/src/session/turn.rs run_turn (début de la boucle)", "core/src/session/input_queue.rs get_pending_input", "core/src/state/turn.rs MailboxDeliveryPhase"] },
+  N5: { x: 430, y: 700, w: 260, h: 56, cls: "step", t: "Requête au modèle", s: "historique + outils",
+    kind: "étape", title: "Requête au modèle",
+    body: "build_prompt assemble les instructions de base, l'historique et les outils visibles, avec parallel_tool_calls activé. La requête part en streaming vers l'API Responses.",
+    list: ["WebSocket préchauffé si possible, sinon HTTP SSE sur /responses", "en cas d'erreur, le même prompt repart (losange « Erreur ? »)"],
+    refs: ["core/src/session/turn.rs run_sampling_request", "core/src/session/turn.rs build_prompt", "core/src/client.rs"] },
+  R: { x: 665, y: 700, w: 160, h: 78, cls: "gate", shape: "diamond", t: "Erreur ?", s: "réessayable ?",
+    kind: "décision", title: "Erreur pendant la requête",
+    body: "run_sampling_request boucle sur le même prompt tant que handle_response_stream_error accepte de réessayer.",
+    list: ["fenêtre dépassée : pas de nouvel essai, compteur marqué plein, compaction au tour suivant", "limite d'usage : pas de nouvel essai", "filtre de contenu : une consigne est ajoutée à l'historique, puis nouvel essai", "connexion impossible : nouvel essai sans limite, de 5 s à 60 s d'attente", "autre erreur réessayable : 5 essais avec backoff (Retry-After respecté), puis bascule WebSocket → HTTPS et 5 nouveaux essais", "erreur non réessayable : fin"],
+    refs: ["core/src/responses_retry.rs handle_response_stream_error", "core/src/session/turn.rs run_sampling_request", "model-provider-info/src/lib.rs stream_max_retries"] },
+  X3: { x: 825, y: 700, w: 120, h: 40, cls: "exit", shape: "pill", t: "Erreur", s: "",
+    kind: "sortie de run_turn", title: "Fin sur erreur",
+    body: "Un événement Error part vers le CLI et run_turn s'arrête. L'erreur est attachée au tour : la tâche ne relance rien, et TurnComplete la porte. Le CLI l'affiche ; en one-shot, il sort en erreur.",
+    list: ["aussi atteint par une erreur fatale d'outil, une image invalide, une compaction ratée", "un hook AfterAgent qui abandonne émet aussi Error, sans marquer le tour en échec"],
+    refs: ["core/src/session/turn.rs run_turn (bras Err)", "core/src/session/mod.rs send_event (terminal_error)"] },
+  N6: { x: 430, y: 800, w: 260, h: 56, cls: "step", t: "Lire le flux", s: "texte, raisonnement, appels",
+    kind: "étape", title: "Lecture du flux",
+    body: "Texte et raisonnement arrivent en deltas et partent au fil de l'eau vers le CLI. Chaque appel d'outil terminé est enregistré tout de suite, et son exécution démarre sans attendre la fin du flux.",
+    list: ["appel d'outil → needs_follow_up", "response.completed avec end_turn: false → needs_follow_up", "courrier en attente après un raisonnement ou un commentaire → flux coupé pour le livrer, needs_follow_up", "input injecté pendant la requête → requête préemptée ; notre CLI n'injecte jamais, ce cas ne se produit pas"],
+    refs: ["core/src/session/turn.rs try_run_sampling_request", "core/src/stream_events_utils.rs handle_output_item_done", "core/src/session/input_queue.rs watch_user_input"] },
+  TOOL: { x: 665, y: 800, w: 160, h: 64, cls: "side", t: "Exécuter l'outil", s: "hooks Pre / Post",
+    kind: "étape", title: "Exécution d'un outil",
+    body: "Chaque appel passe par le registre. Les outils parallélisables tournent ensemble, les autres un par un (verrou lecture/écriture). Les hooks encadrent l'appel.",
+    list: ["PreToolUse : bloquer (la raison revient au modèle) ou réécrire l'entrée", "PostToolUse : ajouter du contexte, rejeter le résultat ou remplacer ce que voit le modèle", "erreur d'outil : renvoyée au modèle comme sortie, la boucle continue", "erreur fatale : fin sur erreur", "wait_agent et sleep attendent dans le tour et se réveillent dès qu'un input ou du courrier arrive", "Ctrl-C : l'outil reçoit « aborted by user »"],
+    refs: ["core/src/tools/parallel.rs handle_tool_call", "core/src/tools/registry.rs", "core/src/hook_runtime.rs run_pre_tool_use_hooks", "core/src/tools/handlers/sleep.rs", "core/src/tools/handlers/multi_agents_v2/wait.rs"] },
+  N7: { x: 430, y: 940, w: 260, h: 52, cls: "step", t: "Récupérer les sorties", s: "historique, compteur",
+    kind: "étape", title: "Sorties dans l'historique",
+    body: "Une fois le flux terminé, drain_in_flight attend tous les outils lancés et ajoute leurs sorties à l'historique dans l'ordre des appels, tronquées selon la politique du modèle. TokenCount et TurnDiff partent vers le CLI.",
+    list: ["les hooks asynchrones terminés entre-temps sont traités ici"],
+    refs: ["core/src/session/turn.rs drain_in_flight", "core/src/context_manager/history.rs"] },
+  N8: { x: 430, y: 1045, w: 240, h: 90, cls: "gate", shape: "diamond", t: "Reboucler ?", s: "needs_follow_up",
+    kind: "décision", title: "La décision de la boucle",
+    body: "needs_follow_up = besoin exprimé pendant le flux (outil appelé, end_turn: false, flux coupé) OU input en attente. C'est la seule condition. Le modèle ne dit jamais « j'ai fini » : il arrête d'appeler des outils.",
+    list: ["oui, et fenêtre ≥ 90 % (ou new_context_window demandé) → compaction, puis on reboucle", "oui → on reboucle", "non → hooks Stop", "aucun plafond d'itérations : seule la fenêtre de contexte borne la boucle, et la compaction la repousse"],
+    refs: ["core/src/session/turn.rs run_turn (après run_sampling_request)", "core/src/session/context_window.rs context_window_token_status"] },
+  C: { x: 165, y: 820, w: 120, h: 62, cls: "compact", t: "Compaction", s: "si fenêtre ≥ 90 %",
+    kind: "étape", title: "Compaction en plein tour",
+    body: "run_auto_compact résume l'historique, côté OpenAI si le provider le permet, sinon en local. L'historique est remplacé, le contexte initial réinjecté, les hooks SessionStart repassent, et la boucle reprend.",
+    list: ["hooks PreCompact et PostCompact", "seuil : 90 % de la fenêtre du modèle, ou model_auto_compact_token_limit s'il est plus bas", "échec : fin sur erreur"],
+    refs: ["core/src/session/turn.rs run_auto_compact", "core/src/compact_remote_v2.rs", "core/src/compact.rs", "protocol/src/openai_models.rs auto_compact_token_limit"] },
+  N10: { x: 430, y: 1160, w: 240, h: 84, cls: "hookgate", shape: "diamond", t: "Hooks Stop", s: "on s'arrête ?",
+    kind: "hook", title: "Hooks Stop",
+    body: "Quand plus rien ne relance la boucle, les hooks Stop ont le dernier mot (SubagentStop pour un sous-agent).",
+    list: ["bloquer avec une consigne : elle est injectée comme message et on reboucle ; stop_hook_active passe à vrai, le hook peut s'en servir pour ne pas relancer à l'infini", "bloquer sans consigne : ignoré, avec un warning", "should_stop : sortie immédiate de run_turn"],
+    refs: ["core/src/session/turn.rs run_turn", "core/src/hook_runtime.rs run_turn_stop_hooks"] },
+  X4: { x: 825, y: 1160, w: 120, h: 40, cls: "exit", shape: "pill", t: "should_stop", s: "",
+    kind: "sortie de run_turn", title: "Arrêt demandé par un hook",
+    body: "Un hook Stop a renvoyé should_stop : run_turn sort tout de suite, sans AfterAgent ni compaction post-tour.",
+    list: [], refs: ["core/src/session/turn.rs run_turn"] },
+  N11: { x: 430, y: 1240, w: 260, h: 50, cls: "step", t: "Après l'agent", s: "notify, compaction post-tour",
+    kind: "étape", title: "Fin de la boucle",
+    body: "Le hook AfterAgent lance le programme notify de config.toml. S'il échoue en mode abandon, une erreur part. Ensuite, compaction post-tour si model_post_turn_compact_threshold_percent est supérieur à 0, ce qui n'est pas le cas par défaut.",
+    list: [],
+    refs: ["core/src/hook_runtime.rs run_legacy_after_agent_hook", "hooks/src/legacy_notify.rs"] },
+  N12: { x: 430, y: 1340, w: 240, h: 80, cls: "gate", shape: "diamond", t: "Relancer run_turn ?", s: "input arrivé, sans erreur",
+    kind: "décision", title: "Boucle externe de la tâche",
+    body: "Toutes les sorties de run_turn arrivent ici, normales ou non. RegularTask rappelle run_turn avec un input vide tant que la file contient de l'input ; cette fois, la file est vidée dès la première itération.",
+    list: ["erreur attachée au tour → non : l'input reste en file et sera enregistré à la clôture"],
+    refs: ["core/src/tasks/regular.rs run"] },
+  N13: { x: 430, y: 1450, w: 260, h: 52, cls: "done", t: "TurnComplete", s: "on_task_finished",
+    kind: "fin du tour", title: "Clôture du tour",
+    body: "L'input resté en file est enregistré dans l'historique, TurnComplete part (avec l'erreur s'il y en a une), et le thread redevient inactif. Le CLI imprime les tokens : en one-shot il sort, dans le REPL il attend le prompt suivant.",
+    list: [],
+    refs: ["core/src/tasks/mod.rs on_task_finished", "cli/src/main.rs run_turn"] },
+  X7: { x: 825, y: 1450, w: 120, h: 52, cls: "exit", shape: "pill", t: "TurnAborted", s: "Ctrl-C, partout",
+    kind: "fin du tour", title: "Interruption",
+    body: "Ctrl-C envoie Op::Interrupt. Les tâches sont annulées avec 100 ms de grâce, un marqueur d'interruption rejoint l'historique, les hooks Interrupt passent, l'input en file est effacé et TurnAborted part vers le CLI.",
+    list: ["ensuite, comme après TurnComplete, le harness regarde la boîte aux lettres", "Op::Compact interrompt aussi le tour en cours (raison Replaced), sans cette relance"],
+    refs: ["core/src/session/handlers.rs interrupt", "core/src/tasks/mod.rs abort_all_tasks", "core/src/tasks/mod.rs handle_task_abort"] },
+  N14: { x: 430, y: 1550, w: 240, h: 76, cls: "gate", shape: "diamond", t: "trigger_turn ?", s: "courrier en attente",
+    kind: "décision", title: "Du travail en attente ?",
+    body: "Juste après la clôture, le harness regarde la boîte aux lettres. Un message trigger_turn arrivé trop tard pour le tour qui vient de finir relance aussitôt un nouveau tour.",
+    list: [], refs: ["core/src/tasks/mod.rs maybe_start_turn_for_pending_work"] },
+  X6: { x: 430, y: 1642, w: 150, h: 40, cls: "step", shape: "pill", t: "Thread inactif", s: "",
+    kind: "repos", title: "Rien à faire",
+    body: "Le thread attend un prompt de ta part ou un message trigger_turn d'un autre agent. Le courrier sans trigger_turn s'accumule et sera lu au prochain tour.",
+    list: [], refs: [] }
+};
+
+// Edges: explicit polylines so the drawing stays readable.
+// `ghost` edges overlay the exit rail and only show when a scenario lights them.
+const E = [
+  { id: "T1-G", a: "T1", b: "G", pts: [[430, 85], [430, 128]], cls: "" },
+  { id: "T2-G", a: "T2", b: "G", pts: [[690, 85], [690, 108], [430, 108], [430, 128]], cls: "" },
+  { id: "T3-G", a: "T3", b: "G", pts: [[170, 85], [170, 108], [430, 108], [430, 128]], cls: "" },
+  { id: "G-X1", a: "G", b: "X1", pts: [[545, 172], [764, 172]], cls: "exit", label: "refusé", lx: 575, ly: 164 },
+  { id: "G-N1", a: "G", b: "N1", pts: [[430, 215], [430, 253]], cls: "", label: "admis", lx: 438, ly: 240 },
+  { id: "N1-N2", a: "N1", b: "N2", pts: [[430, 306], [430, 339]], cls: "" },
+  { id: "N2-N3", a: "N2", b: "N3", pts: [[430, 420], [430, 452]], cls: "" },
+  { id: "N3-X2", a: "N3", b: "X2", pts: [[550, 495], [764, 495]], cls: "exit", label: "tout bloqué", lx: 575, ly: 487 },
+  { id: "N3-N4", a: "N3", b: "N4", pts: [[430, 537], [430, 573]], cls: "" },
+  { id: "N4-N5", a: "N4", b: "N5", pts: [[430, 626], [430, 671]], cls: "" },
+  { id: "N5-R", a: "N5", b: "R", pts: [[560, 700], [584, 700]], cls: "exit" },
+  { id: "R-N5", a: "R", b: "N5", pts: [[665, 661], [665, 646], [520, 646], [520, 671]], cls: "loop", label: "réessayer", lx: 560, ly: 640 },
+  { id: "R-X3", a: "R", b: "X3", pts: [[745, 700], [764, 700]], cls: "exit" },
+  { id: "N5-N6", a: "N5", b: "N6", pts: [[430, 728], [430, 771]], cls: "" },
+  { id: "N6-TOOL", a: "N6", b: "TOOL", pts: [[560, 800], [584, 800]], cls: "" },
+  { id: "TOOL-N7", a: "TOOL", b: "N7", pts: [[665, 832], [665, 940], [561, 940]], cls: "", label: "sortie", lx: 672, ly: 890 },
+  { id: "N6-N7", a: "N6", b: "N7", pts: [[430, 828], [430, 913]], cls: "", label: "fin du flux ou coupure", lx: 438, ly: 875 },
+  { id: "N7-N8", a: "N7", b: "N8", pts: [[430, 966], [430, 999]], cls: "" },
+  { id: "N8-N4", a: "N8", b: "N4", pts: [[310, 1045], [255, 1045], [255, 600], [299, 600]], cls: "loop", label: "oui : on reboucle", lx: 249, ly: 1049, end: true },
+  { id: "N8-C", a: "N8", b: "C", pts: [[310, 1045], [255, 1045], [255, 850], [226, 850]], cls: "loop dashed" },
+  { id: "C-N4", a: "C", b: "N4", pts: [[226, 790], [255, 790], [255, 600], [299, 600]], cls: "loop dashed" },
+  { id: "N8-N10", a: "N8", b: "N10", pts: [[430, 1090], [430, 1117]], cls: "", label: "non", lx: 438, ly: 1108 },
+  { id: "N10-N4", a: "N10", b: "N4", pts: [[310, 1160], [255, 1160], [255, 600], [299, 600]], cls: "loop", label: "bloque + consigne", lx: 249, ly: 1164, end: true },
+  { id: "N10-X4", a: "N10", b: "X4", pts: [[550, 1160], [764, 1160]], cls: "exit", label: "should_stop", lx: 575, ly: 1152 },
+  { id: "N10-N11", a: "N10", b: "N11", pts: [[430, 1202], [430, 1214]], cls: "" },
+  { id: "N11-N12", a: "N11", b: "N12", pts: [[430, 1265], [430, 1299]], cls: "" },
+  { id: "X2-N12", a: "X2", b: "N12", pts: [[825, 515], [825, 1340], [551, 1340]], cls: "exit ghost" },
+  { id: "X3-N12", a: "X3", b: "N12", pts: [[825, 720], [825, 1340], [551, 1340]], cls: "exit ghost" },
+  { id: "X4-N12", a: "X4", b: "N12", pts: [[825, 1180], [825, 1340], [551, 1340]], cls: "exit ghost" },
+  { id: "N12-N2", a: "N12", b: "N2", pts: [[310, 1340], [82, 1340], [82, 380], [299, 380]], cls: "loop", label: "oui : relance run_turn", lx: 90, ly: 1331 },
+  { id: "N12-N13", a: "N12", b: "N13", pts: [[430, 1380], [430, 1423]], cls: "", label: "non", lx: 438, ly: 1405 },
+  { id: "N13-N14", a: "N13", b: "N14", pts: [[430, 1476], [430, 1511]], cls: "" },
+  { id: "X7-N14", a: "X7", b: "N14", pts: [[825, 1476], [825, 1550], [551, 1550]], cls: "dashed", label: "aussi après Ctrl-C", lx: 568, ly: 1542 },
+  { id: "N14-T3", a: "N14", b: "T3", pts: [[310, 1550], [36, 1550], [36, 56], [64, 56]], cls: "loop", label: "oui : nouveau tour", lx: 44, ly: 1541 },
+  { id: "N14-X6", a: "N14", b: "X6", pts: [[430, 1588], [430, 1621]], cls: "", label: "non", lx: 438, ly: 1610 }
+];
+
+// ---------------------------------------------------------------------------
+// Scenarios: [node, narration]. Prefix "parent:" / "enfant:" names the actor.
+// ---------------------------------------------------------------------------
+const END = [["N12", "Rien en file : la tâche s'arrête."], ["N13", "TurnComplete : le CLI imprime les tokens."], ["N14", "Aucun message trigger_turn."], ["X6", "Le thread attend ton prochain prompt."]];
+const START = [["G", "Aucun tour actif : admis."], ["N1", "TurnStarted part vers le CLI."], ["N2", "AGENTS.md relu, outils et MCP prêts, contexte injecté."], ["N3", "Aucun hook ne bloque : ton prompt est enregistré."]];
+const S = [
+  { id: "simple", label: "Une question, sans outil", steps: [
+    ["T1", "Tu lances codex \"explique ce repo\"."],
+    ...START,
+    ["N4", "Première itération : ton prompt passe seul."],
+    ["N5", "Première requête au modèle."],
+    ["N6", "Le texte arrive en deltas, aucun appel d'outil."],
+    ["N7", "Aucune sortie d'outil à récupérer."],
+    ["N8", "needs_follow_up = faux : on tente de s'arrêter."],
+    ["N10", "Aucun hook Stop ne bloque."],
+    ["N11", "notify est lancé s'il est configuré."],
+    ...END,
+  ]},
+  { id: "tools", label: "Le modèle appelle des outils", steps: [
+    ["T1", "Tu demandes « fais passer les tests »."],
+    ...START,
+    ["N4", "Itération 1."], ["N5", "Requête au modèle."],
+    ["N6", "Le modèle demande exec_command(\"cargo test\")."],
+    ["TOOL", "Les tests tournent dans un pty local, la sortie est capturée."],
+    ["N7", "La sortie, deux tests rouges, rejoint l'historique."],
+    ["N8", "Un outil a été appelé : on reboucle."],
+    ["N4", "Itération 2."], ["N5", "Le modèle relit l'historique, échec compris."],
+    ["N6", "Il demande apply_patch."], ["TOOL", "Le patch est appliqué."],
+    ["N7", "Le résultat du patch rejoint l'historique."],
+    ["N8", "Encore un outil : on reboucle."],
+    ["N4", "Itération 3."], ["N5", "Nouvelle requête."],
+    ["N6", "Il relance exec_command(\"cargo test\")."], ["TOOL", "Les tests passent."],
+    ["N7", "Sortie verte dans l'historique."],
+    ["N8", "Un outil a été appelé : on reboucle une dernière fois."],
+    ["N4", "Itération 4."], ["N5", "Nouvelle requête."],
+    ["N6", "Le modèle répond en texte, sans aucun appel."],
+    ["N7", "Rien à récupérer."],
+    ["N8", "Plus d'appel : on sort de la boucle."],
+    ["N10", "Aucun hook Stop ne bloque."], ["N11", "notify."],
+    ...END,
+  ]},
+  { id: "compact", label: "Le contexte déborde", steps: [
+    ["T1", "Tu demandes d'analyser un gros fichier de logs."],
+    ...START,
+    ["N4", "Itération 1."], ["N5", "Requête."],
+    ["N6", "Le modèle lance cat sur le fichier."],
+    ["TOOL", "La sortie est énorme ; elle sera tronquée."],
+    ["N7", "Elle rejoint l'historique."],
+    ["N8", "Outil appelé, et la fenêtre dépasse 90 %."],
+    ["C", "Compaction : historique résumé, contexte initial réinjecté, SessionStart repasse."],
+    ["N4", "On reprend la boucle avec un historique allégé."],
+    ["N5", "Requête."], ["N6", "Le modèle conclut en texte."], ["N7", "Rien à récupérer."],
+    ["N8", "Plus d'appel."], ["N10", "Pas de blocage."], ["N11", "notify."],
+    ...END,
+  ]},
+  { id: "stophook", label: "Un hook Stop relance", steps: [
+    ["T1", "Tu demandes une correction ; un hook Stop vérifie les tests."],
+    ...START,
+    ["N4", "Itération 1."], ["N5", "Requête."],
+    ["N6", "Le modèle répond « c'est corrigé », sans lancer les tests."],
+    ["N7", "Rien à récupérer."],
+    ["N8", "Aucun outil : on tente de s'arrêter."],
+    ["N10", "Le hook Stop voit des tests rouges : il bloque, avec une consigne."],
+    ["N4", "La consigne est injectée comme message ; stop_hook_active passe à vrai."],
+    ["N5", "Requête."], ["N6", "Le modèle lance les tests."],
+    ["TOOL", "Il corrige ce qui restait."], ["N7", "Sorties récupérées."],
+    ["N8", "Outil appelé : on reboucle."],
+    ["N4", "Itération suivante."], ["N5", "Requête."], ["N6", "Réponse finale en texte."], ["N7", "Rien à récupérer."],
+    ["N8", "Plus d'appel."],
+    ["N10", "Le hook laisse passer cette fois."],
+    ["N11", "notify."],
+    ...END,
+  ]},
+  { id: "subagent", label: "Sous-agent", steps: [
+    ["T1", "parent: Tu demandes d'auditer deux modules en parallèle."],
+    ["G", "parent: Admis."], ["N1", "parent: La tâche démarre."], ["N2", "parent: Contexte prêt."], ["N3", "parent: Prompt enregistré."],
+    ["N4", "parent: Itération 1."], ["N5", "parent: Requête."],
+    ["N6", "parent: Le modèle appelle spawn_agent."],
+    ["TOOL", "parent: Un thread enfant est créé dans le même process ; un message trigger_turn lui est déposé."],
+    ["N7", "parent: La sortie de spawn_agent rejoint l'historique."],
+    ["N8", "parent: Outil appelé : le parent reboucle et continue son propre travail."],
+    ["T2", "enfant: Le message trigger_turn réveille l'enfant, qui est libre."],
+    ["G", "enfant: Admis."],
+    ["N1", "enfant: Sa propre tâche démarre, en parallèle du parent."],
+    ["N2", "enfant: Même config, mêmes MCP, mêmes extensions."],
+    ["N3", "enfant: Le message devient son input."],
+    ["N4", "enfant: Itération 1."], ["N5", "enfant: Requête."],
+    ["N6", "enfant: Il lit le code."], ["TOOL", "enfant: exec_command, rg…"], ["N7", "enfant: Sorties récupérées."],
+    ["N8", "enfant: Il reboucle tant qu'il appelle des outils."],
+    ["N4", "enfant: …"], ["N5", "enfant: Requête."], ["N6", "enfant: Il rédige son rapport, sans appel d'outil."], ["N7", "enfant: Rien à récupérer."],
+    ["N8", "enfant: Plus d'appel."],
+    ["N10", "enfant: SubagentStop au lieu de Stop."],
+    ["N11", "enfant: Fin de boucle."], ["N12", "enfant: Rien en file."],
+    ["N13", "enfant: TurnComplete. Son rapport part en courrier vers le parent, sans trigger_turn."],
+    ["N5", "parent: Pendant ce temps, le parent est en pleine requête."],
+    ["N6", "parent: Après un raisonnement, du courrier attend : le flux est coupé pour le livrer."],
+    ["N7", "parent: Rien à récupérer."],
+    ["N8", "parent: Flux coupé, courrier en attente : on reboucle."],
+    ["N4", "parent: Le rapport de l'enfant devient de l'input."],
+    ["N5", "parent: Requête."], ["N6", "parent: Synthèse finale en texte."], ["N7", "parent: Rien à récupérer."],
+    ["N8", "parent: Plus d'appel."], ["N10", "parent: Pas de blocage."], ["N11", "parent: notify."],
+    ["N12", "parent: Rien en file."], ["N13", "parent: TurnComplete."], ["N14", "parent: Aucun trigger_turn."], ["X6", "parent: Le thread attend."],
+  ]},
+  { id: "wake", label: "Courrier arrivé trop tard", steps: [
+    ["N5", "enfant: L'enfant fait sa dernière requête."],
+    ["N6", "enfant: Il affiche sa réponse finale : à partir de là, le courrier attend le tour suivant."],
+    ["T2", "parent: Le parent envoie followup_task, avec trigger_turn. L'enfant est occupé : le message attend dans sa boîte."],
+    ["N7", "enfant: Rien à récupérer."],
+    ["N8", "enfant: Le courrier n'appartient plus à ce tour : rien ne relance."],
+    ["N10", "enfant: Pas de blocage."], ["N11", "enfant: Fin de boucle."], ["N12", "enfant: Rien en file pour ce tour."],
+    ["N13", "enfant: TurnComplete."],
+    ["N14", "enfant: Un message trigger_turn attend."],
+    ["T3", "enfant: Un nouveau tour démarre tout seul."],
+    ["G", "enfant: Admis."], ["N1", "enfant: La tâche démarre."], ["N2", "enfant: Contexte prêt."],
+    ["N3", "enfant: Le followup_task devient l'input."],
+    ["N4", "enfant: La boucle repart."],
+  ]},
+  { id: "network", label: "Coupure réseau", steps: [
+    ["T1", "Ton prompt."], ...START,
+    ["N4", "Itération 1."],
+    ["N5", "Requête envoyée sur le WebSocket."],
+    ["R", "Le flux se coupe : erreur réessayable, « Reconnecting… »."],
+    ["N5", "Même prompt, nouvel essai après backoff."],
+    ["R", "Cinq échecs : bascule WebSocket → HTTPS, compteur remis à zéro."],
+    ["N5", "La requête repart en HTTP SSE."],
+    ["N6", "La réponse arrive."], ["N7", "Rien à récupérer."], ["N8", "Plus d'appel."], ["N10", "Pas de blocage."],
+    ["N11", "notify."],
+    ...END,
+  ]},
+  { id: "usage", label: "Limite d'usage", steps: [
+    ["T1", "Ton prompt."], ...START,
+    ["N4", "Itération 1."], ["N5", "Requête."],
+    ["R", "UsageLimitReached : aucun nouvel essai."],
+    ["X3", "Un événement Error part ; l'erreur est attachée au tour."],
+    ["N12", "Erreur attachée : la tâche ne relance pas run_turn."],
+    ["N13", "TurnComplete porte l'erreur ; le CLI l'affiche et sort en erreur."],
+    ["N14", "Aucun trigger_turn."], ["X6", "Le thread attend."],
+  ]},
+  { id: "interrupt", label: "Ctrl-C pendant un outil", steps: [
+    ["T1", "Ton prompt."], ...START,
+    ["N4", "Itération 1."], ["N5", "Requête."],
+    ["N6", "Le modèle lance un build qui dure."],
+    ["TOOL", "Tu appuies sur Ctrl-C : le CLI envoie Op::Interrupt."],
+    ["X7", "Annulation, 100 ms de grâce, l'outil reçoit « aborted by user », hooks Interrupt, TurnAborted."],
+    ["N14", "Le harness regarde quand même la boîte aux lettres."],
+    ["X6", "Rien : le thread attend."],
+  ]}
+];
+
+// ---------------------------------------------------------------------------
+// Drawing
+// ---------------------------------------------------------------------------
+const NS = "http://www.w3.org/2000/svg";
+const svg = document.getElementById("flow");
+const css = getComputedStyle(document.documentElement);
+const tok = (name) => css.getPropertyValue(name).trim();
+function el(name, attrs, parent) {
+  const n = document.createElementNS(NS, name);
+  for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+  (parent || svg).appendChild(n);
+  return n;
+}
+const defs = el("defs", {});
+for (const [id, color] of [["a-default", tok("--ink-faint")], ["a-loop", tok("--loop")], ["a-exit", tok("--exit-bad")], ["a-lit", tok("--loop")]]) {
+  const m = el("marker", { id, viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto-start-reverse" }, defs);
+  el("path", { d: "M0 1 L9 5 L0 9 z", fill: color }, m);
+}
+
+// regions
+el("rect", { x: 60, y: 232, width: 690, height: 1163, rx: 12, class: "region outer" });
+el("text", { x: 76, y: 254, class: "region-label" }).textContent = "Tâche du tour";
+el("text", { x: 76, y: 270, class: "region-sub" }).textContent = "RegularTask : boucle externe";
+el("rect", { x: 100, y: 548, width: 650, height: 728, rx: 12, class: "region inner" });
+el("text", { x: 116, y: 570, class: "region-label inner" }).textContent = "Boucle d'échantillonnage";
+el("text", { x: 116, y: 586, class: "region-sub" }).textContent = "run_turn : la boucle agentique";
+
+// callout: the loop conditions
+const co = el("g", { class: "callout" });
+el("rect", { x: 562, y: 996, width: 186, height: 112, rx: 8 }, co);
+[["On reboucle si :", "h"], ["• un outil a été appelé", ""], ["• end_turn: false", ""], ["• flux coupé (courrier)", ""], ["• de l'input attend", ""]]
+  .forEach(([txt, c], i) => { el("text", { x: 576, y: 1020 + i * 19, class: c }, co).textContent = txt; });
+
+// refusal reasons under X1
+["courrier prioritaire", "tour déjà actif", "arrêt en cours", "mode Plan (auto)"].forEach((r, i) => {
+  el("text", { x: 825, y: 210 + i * 15, class: "reasons" }).textContent = r;
+});
+
+// exit rail: every early exit of run_turn drains back into the task check
+el("path", { d: "M825 515 L825 1340 L551 1340", class: "edge exit dashed", "marker-end": "url(#a-exit)" });
+el("text", { x: 843, y: 930, class: "edge-label rail", transform: "rotate(90 843 930)", "text-anchor": "middle" }).textContent = "quitte run_turn";
+
+// edges
+const edgeEls = {};
+const markerFor = (cls) => cls.includes("loop") ? "a-loop" : cls.includes("exit") ? "a-exit" : "a-default";
+for (const e of E) {
+  const d = e.pts.map((p, i) => (i ? "L" : "M") + p[0] + " " + p[1]).join(" ");
+  const p = el("path", { d, class: "edge " + e.cls, "marker-end": e.cls.includes("ghost") ? "none" : `url(#${markerFor(e.cls)})` });
+  p.dataset.marker = p.getAttribute("marker-end");
+  edgeEls[e.id] = p;
+  if (e.label) {
+    el("text", { x: e.lx, y: e.ly, class: "edge-label" + (e.cls.includes("loop") ? " loop" : ""), "text-anchor": e.end ? "end" : "start" }).textContent = e.label;
+  }
+}
+
+// nodes
+const nodeEls = {};
+for (const [id, n] of Object.entries(N)) {
+  const g = el("g", { class: `node ${n.cls}`, tabindex: "0", role: "button", "aria-label": n.t });
+  const { x, y, w, h } = n;
+  if (n.shape === "diamond") {
+    el("polygon", { points: `${x},${y - h / 2} ${x + w / 2},${y} ${x},${y + h / 2} ${x - w / 2},${y}`, class: "shape" }, g);
+  } else if (n.shape === "pill") {
+    el("rect", { x: x - w / 2, y: y - h / 2, width: w, height: h, rx: h / 2, class: "shape" }, g);
+  } else {
+    el("rect", { x: x - w / 2, y: y - h / 2, width: w, height: h, rx: 7, class: "shape" }, g);
+  }
+  const hasSub = n.s && n.s.length;
+  el("text", { x, y: hasSub ? y - 3 : y + 5, class: "t" }, g).textContent = n.t;
+  if (hasSub) el("text", { x, y: y + 14, class: "s" }, g).textContent = n.s;
+  g.addEventListener("click", () => { stopPlay(); showNode(id, true); });
+  g.addEventListener("keydown", (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); stopPlay(); showNode(id, true); } });
+  nodeEls[id] = g;
+}
+
+// ---------------------------------------------------------------------------
+// Detail panel
+// ---------------------------------------------------------------------------
+const detail = document.getElementById("detail");
+function showNode(id, select) {
+  const n = N[id];
+  if (select) for (const [k, g] of Object.entries(nodeEls)) g.classList.toggle("selected", k === id);
+  detail.innerHTML = `
+    <div class="kind">${n.kind}</div>
+    <h3>${n.title}</h3>
+    <p>${n.body}</p>
+    ${n.list.length ? `<ul>${n.list.map((x) => `<li>${x}</li>`).join("")}</ul>` : ""}
+    ${n.refs.length ? `<div class="refs">${n.refs.map((r) => `<code>${r}</code>`).join("")}</div>` : ""}`;
+}
+detail.innerHTML = `<div class="kind">mode d'emploi</div><h3>Lis l'organigramme de haut en bas</h3>
+  <p>En vert, ce qui déclenche un tour. En bleu, la boucle et ses retours. En violet, les hooks qui peuvent bloquer ou relancer. En orange pointillé, la compaction.</p>
+  <p>En rouge, les sorties anticipées de run_turn : elles ne ferment pas le tour, elles retombent sur la vérification de la tâche. En noir, TurnComplete, la fin normale de tout tour qui n'a pas été interrompu.</p>`;
+
+// ---------------------------------------------------------------------------
+// Scenario player
+// ---------------------------------------------------------------------------
+const scenBox = document.getElementById("scenarios");
+const countEl = document.getElementById("count");
+const narrEl = document.getElementById("narr");
+const btnPrev = document.getElementById("prev");
+const btnNext = document.getElementById("next");
+const btnPlay = document.getElementById("play");
+let current = null, index = -1, timer = null;
+const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+for (const s of S) {
+  const b = document.createElement("button");
+  b.textContent = s.label;
+  b.setAttribute("aria-pressed", "false");
+  b.addEventListener("click", () => startScenario(s, b));
+  scenBox.appendChild(b);
+}
+
+function clearLit() {
+  for (const p of Object.values(edgeEls)) { p.classList.remove("lit"); p.setAttribute("marker-end", p.dataset.marker); }
+  for (const g of Object.values(nodeEls)) g.classList.remove("current");
+}
+function edgeBetween(a, b) { return E.find((e) => e.a === a && e.b === b); }
+function render() {
+  clearLit();
+  if (!current || index < 0) return;
+  // Light every edge traversed so far; the current node is the strongest mark.
+  for (let i = 1; i <= index; i++) {
+    const e = edgeBetween(current.steps[i - 1][0], current.steps[i][0]);
+    if (e) { edgeEls[e.id].classList.add("lit"); edgeEls[e.id].setAttribute("marker-end", "url(#a-lit)"); }
+  }
+  const [nodeId, text] = current.steps[index];
+  nodeEls[nodeId].classList.add("current");
+  const m = text.match(/^(parent|enfant):\s*(.*)$/);
+  narrEl.innerHTML = m ? `<span class="who">${m[1]}</span>${m[2]}` : text;
+  countEl.textContent = `${index + 1} / ${current.steps.length}`;
+  btnPrev.disabled = index === 0;
+  btnNext.disabled = index === current.steps.length - 1;
+  showNode(nodeId, false);
+  const r = nodeEls[nodeId].getBoundingClientRect();
+  if (r.top < 140 || r.bottom > window.innerHeight - 20) {
+    window.scrollBy({ top: r.top - window.innerHeight / 2, behavior: reduce ? "auto" : "smooth" });
+  }
+}
+function startScenario(s, button) {
+  stopPlay();
+  for (const b of scenBox.children) b.setAttribute("aria-pressed", String(b === button));
+  current = s; index = 0;
+  for (const g of Object.values(nodeEls)) g.classList.remove("selected");
+  render();
+  if (!reduce) play();
+}
+function step(d) {
+  if (!current) return;
+  index = Math.max(0, Math.min(current.steps.length - 1, index + d));
+  render();
+}
+function play() {
+  if (!current) return;
+  if (index >= current.steps.length - 1) { index = 0; render(); }
+  btnPlay.textContent = "Pause";
+  timer = setInterval(() => {
+    if (index >= current.steps.length - 1) { stopPlay(); return; }
+    step(1);
+  }, 1300);
+}
+function stopPlay() {
+  if (timer) clearInterval(timer);
+  timer = null;
+  btnPlay.textContent = "Lecture";
+}
+btnPrev.addEventListener("click", () => { stopPlay(); step(-1); });
+btnNext.addEventListener("click", () => { stopPlay(); step(1); });
+btnPlay.addEventListener("click", () => { timer ? stopPlay() : play(); });
+btnPrev.disabled = btnNext.disabled = true;
+document.addEventListener("keydown", (e) => {
+  if (!current || e.target.closest("button, .node")) return;
+  if (e.key === "ArrowRight") { stopPlay(); step(1); }
+  if (e.key === "ArrowLeft") { stopPlay(); step(-1); }
+});
+</script>
+</body>
+</html>
