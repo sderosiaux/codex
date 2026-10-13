@@ -13,21 +13,16 @@ use crate::function_tool::FunctionCallError;
 use crate::parse_turn_item;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
-use crate::session::turn_context::TurnContext;
 use crate::tools::call_trace;
 use crate::tools::parallel::ToolCallRuntime;
 use crate::tools::router::ToolRouter;
-use codex_memories_read::citations::parse_memory_citation;
-use codex_memories_read::citations::thread_ids_from_memory_citation;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result;
-use codex_protocol::memory_citation::MemoryCitation;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
-use codex_rollout::state_db;
 use codex_utils_stream_parser::strip_proposed_plan_blocks;
 use futures::Future;
 use tracing::debug;
@@ -41,22 +36,6 @@ fn strip_hidden_assistant_markup(text: &str, plan_mode: bool) -> String {
     } else {
         without_citations
     }
-}
-
-fn strip_hidden_assistant_markup_and_parse_memory_citation(
-    text: &str,
-    plan_mode: bool,
-) -> (
-    String,
-    Option<codex_protocol::memory_citation::MemoryCitation>,
-) {
-    let (without_citations, citations) = strip_citations(text);
-    let visible_text = if plan_mode {
-        strip_proposed_plan_blocks(&without_citations)
-    } else {
-        without_citations
-    };
-    (visible_text, parse_memory_citation(citations))
 }
 
 pub(crate) fn raw_assistant_output_text_from_item(item: &ResponseItem) -> Option<String> {
@@ -75,7 +54,7 @@ pub(crate) fn raw_assistant_output_text_from_item(item: &ResponseItem) -> Option
     None
 }
 
-/// Persist a completed model response item and record any cited memory usage.
+/// Persist a completed model response item.
 pub(crate) async fn record_completed_response_item(
     sess: &Session,
     step_context: &StepContext,
@@ -133,84 +112,6 @@ pub(crate) async fn record_completed_response_item_with_finalized_facts(
             .defer_mailbox_delivery_to_next_turn(&sess.active_turn, &turn_context.sub_id)
             .await;
     }
-    mark_thread_memory_mode_polluted_if_external_context(sess, turn_context, item).await;
-    let memory_usage_db = match sess.services.state_db.as_ref() {
-        Some(db) => db
-            .memories_for_version(turn_context.config.memories.version)
-            .await
-            .ok(),
-        None => None,
-    };
-    let has_memory_citation = if let Some(memory_citation) =
-        finalized_facts.and_then(|facts| facts.memory_citation.as_ref())
-    {
-        record_stage1_output_usage_for_memory_citation(memory_usage_db.as_ref(), memory_citation)
-            .await
-    } else {
-        record_stage1_output_usage_and_detect_memory_citation(memory_usage_db.as_ref(), item).await
-    };
-    if has_memory_citation {
-        sess.record_memory_citation_for_turn(&turn_context.sub_id)
-            .await;
-    }
-}
-
-fn response_item_may_include_external_context(item: &ResponseItem) -> bool {
-    matches!(
-        item,
-        ResponseItem::ToolSearchCall { .. }
-            | ResponseItem::ToolSearchOutput { .. }
-            | ResponseItem::WebSearchCall { .. }
-            | ResponseItem::FunctionCallOutput { call_id: None, .. }
-    )
-}
-
-pub(crate) async fn mark_thread_memory_mode_polluted_if_external_context(
-    sess: &Session,
-    turn_context: &TurnContext,
-    item: &ResponseItem,
-) {
-    if !turn_context.config.memories.disable_on_external_context
-        || !response_item_may_include_external_context(item)
-    {
-        return;
-    }
-    state_db::mark_thread_memory_mode_polluted(
-        sess.services.state_db.as_deref(),
-        sess.thread_id,
-        "record_completed_response_item",
-    )
-    .await;
-}
-
-async fn record_stage1_output_usage_and_detect_memory_citation(
-    state_db_ctx: Option<&codex_state::MemoryStore>,
-    item: &ResponseItem,
-) -> bool {
-    let Some(raw_text) = raw_assistant_output_text_from_item(item) else {
-        return false;
-    };
-
-    let (_, citations) = strip_citations(&raw_text);
-    let Some(memory_citation) = parse_memory_citation(citations) else {
-        return false;
-    };
-    record_stage1_output_usage_for_memory_citation(state_db_ctx, &memory_citation).await
-}
-
-async fn record_stage1_output_usage_for_memory_citation(
-    state_db_ctx: Option<&codex_state::MemoryStore>,
-    memory_citation: &MemoryCitation,
-) -> bool {
-    let thread_ids = thread_ids_from_memory_citation(memory_citation);
-    if thread_ids.is_empty() {
-        return true;
-    }
-
-    if let Some(db) = state_db_ctx {
-        let _ = db.record_stage1_output_usage(&thread_ids).await;
-    }
-    true
 }
 
 /// Handle a completed output item from the model stream, recording it and
@@ -262,7 +163,6 @@ pub(crate) struct FinalizedTurnItem {
 
 #[derive(Clone, Default)]
 pub(crate) struct FinalizedTurnItemFacts {
-    pub(crate) memory_citation: Option<MemoryCitation>,
     pub(crate) last_agent_message: Option<String>,
     pub(crate) defers_mailbox_delivery_to_next_turn: bool,
 }
@@ -275,36 +175,30 @@ pub(crate) async fn finalize_non_tool_response_item(
 ) -> Option<FinalizedTurnItem> {
     let turn_item =
         handle_non_tool_response_item(sess, contributor_policy, item, plan_mode).await?;
-    let (memory_citation, last_agent_message, defers_mailbox_delivery_to_next_turn) =
-        match &turn_item {
-            TurnItem::AgentMessage(agent_message) => {
-                let combined = agent_message
-                    .content
-                    .iter()
-                    .map(|entry| match entry {
-                        codex_protocol::items::AgentMessageContent::Text { text } => text.as_str(),
-                    })
-                    .collect::<String>();
-                let last_agent_message = if combined.trim().is_empty() {
-                    None
-                } else {
-                    Some(combined)
-                };
-                let defers_mailbox_delivery_to_next_turn =
-                    matches!(agent_message.phase, Some(MessagePhase::FinalAnswer) | None)
-                        && last_agent_message.is_some();
-                (
-                    agent_message.memory_citation.clone(),
-                    last_agent_message,
-                    defers_mailbox_delivery_to_next_turn,
-                )
-            }
-            _ => (None, None, false),
-        };
+    let (last_agent_message, defers_mailbox_delivery_to_next_turn) = match &turn_item {
+        TurnItem::AgentMessage(agent_message) => {
+            let combined = agent_message
+                .content
+                .iter()
+                .map(|entry| match entry {
+                    codex_protocol::items::AgentMessageContent::Text { text } => text.as_str(),
+                })
+                .collect::<String>();
+            let last_agent_message = if combined.trim().is_empty() {
+                None
+            } else {
+                Some(combined)
+            };
+            let defers_mailbox_delivery_to_next_turn =
+                matches!(agent_message.phase, Some(MessagePhase::FinalAnswer) | None)
+                    && last_agent_message.is_some();
+            (last_agent_message, defers_mailbox_delivery_to_next_turn)
+        }
+        _ => (None, false),
+    };
     Some(FinalizedTurnItem {
         turn_item,
         facts: FinalizedTurnItemFacts {
-            memory_citation,
             last_agent_message,
             defers_mailbox_delivery_to_next_turn,
         },
@@ -471,13 +365,9 @@ pub(crate) async fn finalize_turn_item(
                 codex_protocol::items::AgentMessageContent::Text { text } => text.as_str(),
             })
             .collect::<String>();
-        let (stripped, memory_citation) =
-            strip_hidden_assistant_markup_and_parse_memory_citation(&combined, plan_mode);
+        let stripped = strip_hidden_assistant_markup(&combined, plan_mode);
         agent_message.content =
             vec![codex_protocol::items::AgentMessageContent::Text { text: stripped }];
-        if agent_message.memory_citation.is_none() {
-            agent_message.memory_citation = memory_citation;
-        }
     }
 }
 

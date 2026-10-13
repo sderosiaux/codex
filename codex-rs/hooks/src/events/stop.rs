@@ -8,7 +8,6 @@ use codex_protocol::protocol::HookOutputEntry;
 use codex_protocol::protocol::HookOutputEntryKind;
 use codex_protocol::protocol::HookRunStatus;
 use codex_protocol::protocol::HookRunSummary;
-use codex_protocol::protocol::HookSource;
 use codex_utils_absolute_path::AbsolutePathBuf;
 
 use super::common;
@@ -37,8 +36,6 @@ pub struct StopRequest {
 #[derive(Debug, Clone)]
 pub enum StopHookTarget {
     Stop,
-    /// Internal memory work runs policy and executor hooks, not project completion checks.
-    MemoryConsolidation,
     SubagentStop {
         agent_id: String,
         agent_type: String,
@@ -49,29 +46,20 @@ pub enum StopHookTarget {
 impl StopHookTarget {
     fn event_name(&self) -> HookEventName {
         match self {
-            Self::Stop | Self::MemoryConsolidation => HookEventName::Stop,
+            Self::Stop => HookEventName::Stop,
             Self::SubagentStop { .. } => HookEventName::SubagentStop,
         }
     }
 
     fn matcher_input(&self) -> Option<&str> {
         match self {
-            Self::Stop | Self::MemoryConsolidation => None,
+            Self::Stop => None,
             Self::SubagentStop { agent_type, .. } => Some(agent_type.as_str()),
         }
     }
 
     fn select_handlers(&self, handlers: &[ConfiguredHandler]) -> Vec<ConfiguredHandler> {
         dispatcher::select_handlers(handlers, self.event_name(), self.matcher_input())
-            .into_iter()
-            .filter(|handler| {
-                !matches!(self, Self::MemoryConsolidation)
-                    || match handler.source {
-                        HookSource::User | HookSource::Project | HookSource::SessionFlags => false,
-                        HookSource::System | HookSource::Unknown => true,
-                    }
-            })
-            .collect()
     }
 }
 
@@ -120,7 +108,7 @@ pub(crate) async fn run(engine: &ClaudeHooksEngine, request: StopRequest) -> Sto
     }
 
     let input_json = match request.target {
-        StopHookTarget::Stop | StopHookTarget::MemoryConsolidation => {
+        StopHookTarget::Stop => {
             let input = StopCommandInput {
                 session_id: request.session_id.to_string(),
                 turn_id: request.turn_id.clone(),

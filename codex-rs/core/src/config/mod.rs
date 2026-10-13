@@ -11,14 +11,11 @@ use codex_config::ProfileV2Name;
 use codex_config::ThreadConfigLoader;
 use codex_config::config_toml::ConfigToml;
 use codex_config::config_toml::DEFAULT_PROJECT_DOC_MAX_BYTES;
-use codex_config::config_toml::ThreadStoreToml;
 use codex_config::config_toml::validate_model_providers;
 use codex_config::loader::load_config_layers_state;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_config::types::AuthKeyringBackendKind;
-use codex_config::types::History;
 use codex_config::types::McpServerConfig;
-use codex_config::types::MemoriesConfig;
 use codex_config::types::OAuthCredentialsStoreMode;
 use codex_exec_server::ExecutorFileSystem;
 use codex_exec_server::LOCAL_FS;
@@ -67,7 +64,6 @@ use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_rmcp_client::McpOAuthRefreshMode;
-pub use codex_thread_store::ExtraConfig;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_absolute_path::AbsolutePathBufGuard;
 use codex_utils_path_uri::PathUri;
@@ -144,18 +140,6 @@ const LOCAL_DEV_BUILD_VERSION: &str = "0.0.0";
 pub const CONFIG_TOML_FILE: &str = "config.toml";
 const CONFIG_PROFILE_V2_SUFFIX: &str = ".config.toml";
 
-fn resolve_sqlite_home_env(resolved_cwd: &Path) -> Option<AbsolutePathBuf> {
-    let raw = std::env::var(codex_state::SQLITE_HOME_ENV).ok()?;
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    Some(AbsolutePathBuf::resolve_path_against_base(
-        trimmed,
-        resolved_cwd,
-    ))
-}
-
 fn resolve_cli_auth_credentials_store_mode(
     configured: AuthCredentialsStoreMode,
     package_version: &str,
@@ -180,16 +164,6 @@ fn resolve_mcp_oauth_credentials_store_mode(
         ) => OAuthCredentialsStoreMode::File,
         (_, mode) => mode,
     }
-}
-
-/// Configured thread persistence backend.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub enum ThreadStoreConfig {
-    /// Persist threads locally using rollout JSONL files and sqlite metadata.
-    #[default]
-    Local,
-    /// In-memory thread store for test and debug configurations.
-    InMemory { id: String },
 }
 
 /// Application configuration loaded from disk and merged with overrides.
@@ -393,27 +367,12 @@ pub struct Config {
     /// Maximum token budget allowed for a goal and default budget for new goals.
     pub max_goal_token_budget: Option<i64>,
 
-    /// Memories subsystem settings.
-    pub memories: MemoriesConfig,
-
     /// Directory containing all Codex state (defaults to `~/.codex` but can be
     /// overridden by the `CODEX_HOME` environment variable).
     pub codex_home: AbsolutePathBuf,
 
-    /// Resolved configuration shared by all Codex SQLite databases.
-    pub sqlite: codex_state::SqliteConfig,
-
     /// Directory where Codex writes log files (defaults to `$CODEX_HOME/log`).
     pub log_dir: PathBuf,
-
-    /// Settings that govern if and what will be written to `~/.codex/history.jsonl`.
-    pub history: History,
-
-    /// When true, session is not persisted on disk. Default to `false`
-    pub ephemeral: bool,
-
-    /// Optional extra configuration fields for the thread.
-    pub extra_config: Option<ExtraConfig>,
 
     /// Path to the current Codex executable. This cannot be set in the config
     /// file: it must be set in code via [`ConfigOverrides`].
@@ -450,8 +409,6 @@ pub struct Config {
     /// Bounded, product-owned metadata attached to every Responses API request.
     pub responses_api_metadata: BTreeMap<String, String>,
 
-    /// Experimental / do not use. Selects the thread persistence backend.
-    pub experimental_thread_store: ThreadStoreConfig,
     /// When set, restricts ChatGPT login to one or more workspace identifiers.
     pub forced_chatgpt_workspace_id: Option<Vec<String>>,
 
@@ -680,7 +637,6 @@ pub struct MultiAgentV2Config {
     pub expose_spawn_agent_model_overrides: bool,
     pub wait_agent_enabled: bool,
     pub disable_direct_message: bool,
-    pub message_board_in_memory: bool,
     pub message_board_remote: Option<codex_features::RemoteMessageBoardConfigToml>,
 }
 
@@ -702,7 +658,6 @@ impl MultiAgentV2Config {
             expose_spawn_agent_model_overrides: true,
             wait_agent_enabled: true,
             disable_direct_message: false,
-            message_board_in_memory: false,
             message_board_remote: None,
         }
     }
@@ -881,10 +836,6 @@ async fn config_toml_from_layers(layers: &ConfigLayerStack) -> std::io::Result<C
 }
 
 impl Config {
-    pub fn sqlite_config(&self) -> &codex_state::SqliteConfig {
-        &self.sqlite
-    }
-
     pub(crate) fn multi_agent_version_override(&self) -> Option<MultiAgentVersion> {
         if self.features.enabled(Feature::MultiAgentV2) {
             Some(MultiAgentVersion::V2)
@@ -1372,14 +1323,6 @@ pub fn set_default_oss_provider(codex_home: &Path, provider: &str) -> std::io::R
         .map_err(|err| std::io::Error::other(format!("failed to persist config.toml: {err}")))
 }
 
-fn thread_store_config(thread_store: Option<ThreadStoreToml>) -> ThreadStoreConfig {
-    match thread_store {
-        Some(ThreadStoreToml::Local {}) => ThreadStoreConfig::Local,
-        Some(ThreadStoreToml::InMemory { id }) => ThreadStoreConfig::InMemory { id },
-        None => ThreadStoreConfig::Local,
-    }
-}
-
 fn is_session_layer(source: &ConfigLayerSource) -> bool {
     matches!(source, ConfigLayerSource::SessionFlags)
 }
@@ -1400,7 +1343,6 @@ pub struct ConfigOverrides {
     pub compact_prompt: Option<String>,
     pub show_raw_agent_reasoning: Option<bool>,
     pub tools_web_search_request: Option<bool>,
-    pub ephemeral: Option<bool>,
     /// Explicit absolute runtime workspace roots for this session. When set,
     /// this is the full runtime root list rather than an additive override.
     pub workspace_roots: Option<Vec<AbsolutePathBuf>>,
@@ -1509,9 +1451,6 @@ fn resolve_multi_agent_v2_config(config_toml: &ConfigToml) -> MultiAgentV2Config
     let disable_direct_message = base
         .and_then(|config| config.disable_direct_message)
         .unwrap_or(default.disable_direct_message);
-    let message_board_in_memory = base
-        .and_then(|config| config.message_board_in_memory)
-        .unwrap_or(default.message_board_in_memory);
     let subagent_developer_instructions = base
         .and_then(|config| config.subagent_developer_instructions.as_ref())
         .map(|instructions| instructions.trim().to_string());
@@ -1543,7 +1482,6 @@ fn resolve_multi_agent_v2_config(config_toml: &ConfigToml) -> MultiAgentV2Config
         expose_spawn_agent_model_overrides,
         wait_agent_enabled,
         disable_direct_message,
-        message_board_in_memory,
         message_board_remote: base.and_then(|config| config.message_board_remote.clone()),
     }
 }
@@ -1865,13 +1803,6 @@ impl Config {
     ) -> std::io::Result<Self> {
         // Keep the large config-construction future off small test thread stacks.
         Box::pin(async move {
-        if cfg.experimental_thread_store_endpoint.is_some() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "`experimental_thread_store_endpoint` is no longer supported; remove it from config.toml",
-            ));
-        }
-
         validate_model_providers(&cfg.model_providers)
             .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidInput, message))?;
         if cfg.model_post_turn_compact_threshold_percent.is_some_and(|percent| percent > 100) {
@@ -1903,7 +1834,6 @@ impl Config {
             compact_prompt,
             show_raw_agent_reasoning,
             tools_web_search_request: override_tools_web_search_request,
-            ephemeral,
             workspace_roots: workspace_roots_override,
         } = overrides;
 
@@ -1963,7 +1893,6 @@ impl Config {
                 }
             }
         }))?;
-        let memories_config: MemoriesConfig = cfg.memories.clone().unwrap_or_default().into();
 
         let workspace_roots_explicit = workspace_roots_override.is_some();
         let mut workspace_roots =
@@ -2032,8 +1961,6 @@ impl Config {
 
         let shell_environment_policy = ShellEnvironmentPolicy::from(cfg.shell_environment_policy);
         let allow_login_shell = cfg.allow_login_shell.unwrap_or(true);
-
-        let history = cfg.history.unwrap_or_default();
 
         if multi_agent_v2.max_concurrent_threads_per_session == 0 {
             return Err(std::io::Error::new(
@@ -2238,13 +2165,6 @@ impl Config {
             .as_ref()
             .map(AbsolutePathBuf::to_path_buf)
             .unwrap_or_else(|| codex_home.join("log").to_path_buf());
-        let sqlite_home_env = resolve_sqlite_home_env(&resolved_cwd);
-        let sqlite_home = cfg
-            .sqlite_home
-            .as_ref()
-            .cloned()
-            .or(sqlite_home_env)
-            .unwrap_or_else(|| codex_home.clone());
         let otel = otel::resolve_config(cfg.otel.unwrap_or_default(), &mut startup_warnings);
         let config = Self {
             model,
@@ -2333,16 +2253,11 @@ impl Config {
                     })
                 })
                 .transpose()?,
-            memories: memories_config,
             agent_interrupt_message_enabled,
             codex_home,
-            sqlite: codex_state::SqliteConfig::from_sqlite_home(sqlite_home),
             log_dir,
             config_layer_stack,
             application_auth_route_config: None,
-            history,
-            ephemeral: ephemeral.unwrap_or_default(),
-            extra_config: None,
             codex_self_exe,
 
             hide_agent_reasoning: cfg.hide_agent_reasoning.unwrap_or(false),
@@ -2360,7 +2275,6 @@ impl Config {
                 .unwrap_or("https://chatgpt.com/backend-api/".to_string()),
             respect_system_proxy,
             responses_api_metadata: cfg.responses_api_metadata.unwrap_or_default(),
-            experimental_thread_store: thread_store_config(cfg.experimental_thread_store),
             forced_chatgpt_workspace_id,
             forced_login_method,
             web_search_mode,

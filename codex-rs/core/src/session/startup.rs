@@ -10,7 +10,6 @@ use std::sync::PoisonError;
 
 use crate::agent::control::AgentTreeMembership;
 use crate::agent::control::AgentTreeTeardownGuard;
-use crate::thread_manager::thread_store_error_kind;
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErrKind;
 use codex_protocol::protocol::Op;
@@ -88,17 +87,7 @@ impl SessionStartup {
                 super::handlers::shutdown_session_runtime(session).await;
             }
             let mut persistence = std::mem::take(&mut *self.persistence.lock().await);
-            if let Err(error) = persistence.discard().await {
-                if let Some(teardown) = teardown.as_ref() {
-                    teardown.record_shutdown_failure(
-                        "discard_persistence",
-                        thread_store_error_kind(&error),
-                    );
-                }
-                tracing::warn!(
-                    "failed to discard thread persistence for failed session init: {error}"
-                );
-            }
+            persistence.discard().await;
         }
         if let Some(teardown) = teardown {
             teardown.complete();

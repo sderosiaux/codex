@@ -11,7 +11,6 @@ use codex_history::CodexHarnessMetadata;
 use codex_history::ResponseItemEnvelope;
 use codex_history::RolloutItem;
 use codex_protocol::models::ResponseItem;
-use codex_thread_store::PersistContext;
 
 use super::Session;
 use super::TurnContext;
@@ -84,8 +83,6 @@ impl Session {
                 .map_err(std::io::Error::other)?;
         }
         // A failed append or checkpoint must not change live authorization or its revision.
-        self.try_ensure_rollout_materialized(PersistContext::ThreadPreparation)
-            .await?;
         self.state.lock().await.history.record_annotated_items(
             std::slice::from_mut(&mut item),
             context.model_info().truncation_policy.into(),

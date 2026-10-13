@@ -8,10 +8,8 @@ use crate::HooksToml;
 use crate::profile_toml::ConfigProfile;
 use crate::types::AnalyticsConfigToml;
 use crate::types::AuthCredentialsStoreMode;
-use crate::types::History;
 use crate::types::McpEnterpriseManagedAuthConfig;
 use crate::types::McpServerConfig;
-use crate::types::MemoriesToml;
 use crate::types::OAuthCredentialsStoreMode;
 use crate::types::OtelConfigToml;
 use crate::types::ShellEnvironmentPolicyToml;
@@ -49,10 +47,6 @@ const RESERVED_MODEL_PROVIDER_IDS: [&str; 5] = [
 ];
 
 pub const DEFAULT_PROJECT_DOC_MAX_BYTES: usize = 32 * 1024;
-
-fn default_history() -> Option<History> {
-    Some(History::default())
-}
 
 const fn default_project_doc_max_bytes() -> Option<usize> {
     Some(DEFAULT_PROJECT_DOC_MAX_BYTES)
@@ -271,14 +265,6 @@ pub struct ConfigToml {
     #[serde(default)]
     pub profiles: HashMap<String, ConfigProfile>,
 
-    /// Settings that govern if and what will be written to `~/.codex/history.jsonl`.
-    #[serde(default = "default_history")]
-    pub history: Option<History>,
-
-    /// Directory where Codex stores the SQLite state DB.
-    /// Defaults to `$CODEX_SQLITE_HOME` when set. Otherwise uses `$CODEX_HOME`.
-    pub sqlite_home: Option<AbsolutePathBuf>,
-
     /// Directory where Codex writes log files. Setting this value explicitly
     /// also enables the TUI text log in this directory.
     /// Defaults to `$CODEX_HOME/log`.
@@ -319,14 +305,6 @@ pub struct ConfigToml {
     /// Base URL override for the built-in `openai` model provider.
     pub openai_base_url: Option<String>,
 
-    /// Removed. Former remote thread-store endpoint setting kept only so we can
-    /// fail fast instead of silently falling back to local persistence.
-    #[schemars(skip)]
-    pub experimental_thread_store_endpoint: Option<String>,
-
-    /// Experimental / do not use. Selects the thread store implementation.
-    pub experimental_thread_store: Option<ThreadStoreToml>,
-
     /// Controls the web search tool mode: disabled, cached, indexed, or live.
     pub web_search: Option<WebSearchMode>,
 
@@ -338,9 +316,6 @@ pub struct ConfigToml {
 
     /// Goal-related settings.
     pub goals: Option<GoalsToml>,
-
-    /// Memories subsystem settings.
-    pub memories: Option<MemoriesToml>,
 
     /// User-level skill config entries keyed by SKILL.md path.
     pub skills: Option<SkillsConfig>,
@@ -378,16 +353,6 @@ pub struct ConfigToml {
     pub experimental_compact_prompt_file: Option<AbsolutePathBuf>,
     /// Preferred OSS provider for local models, e.g. "lmstudio" or "ollama".
     pub oss_provider: Option<String>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ThreadStoreToml {
-    Local {},
-    #[schemars(skip)]
-    InMemory {
-        id: String,
-    },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, JsonSchema)]

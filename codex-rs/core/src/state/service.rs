@@ -14,7 +14,6 @@ use crate::tools::ExecutedToolCalls;
 use crate::tools::handlers::ToolSearchHandlerCache;
 use crate::unified_exec::UnifiedExecProcessManager;
 use arc_swap::ArcSwap;
-use codex_attachment_store::AttachmentStore;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionRegistry;
 use codex_hooks::Hooks;
@@ -24,7 +23,6 @@ use codex_models_manager::manager::SharedModelsManager;
 use codex_otel::SessionTelemetry;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
 use codex_protocol::mcp::ClientMcpExtensions;
-use codex_rollout::state_db::StateDbHandle;
 use codex_skills_extension::HostSkillsService;
 use codex_thread_store::LiveThread;
 use codex_thread_store::ThreadStore;
@@ -59,10 +57,8 @@ pub(crate) struct SessionServices {
     pub(crate) selected_capability_roots: Vec<SelectedCapabilityRoot>,
     pub(crate) agent_control: Arc<dyn AgentControl>,
     pub(crate) local_agent_runtime: LocalAgentRuntime,
-    pub(crate) state_db: Option<StateDbHandle>,
     pub(crate) live_thread: Option<LiveThread>,
-    pub(crate) image_store: Arc<dyn AttachmentStore>,
-    pub(crate) thread_store: Arc<dyn ThreadStore>,
+    pub(crate) thread_store: Arc<ThreadStore>,
     pub(crate) attestation_provider: Option<Arc<dyn AttestationProvider>>,
     pub(crate) time_provider: Arc<dyn TimeProvider>,
     /// Session-scoped model client shared across turns.

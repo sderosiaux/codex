@@ -15,8 +15,6 @@ use codex_agent_message_board_client::AccessToken;
 use codex_agent_message_board_client::RemoteAgentMessageBoard;
 use codex_agent_message_board_extension::AgentMessageBoard;
 use codex_agent_message_board_extension::InMemoryMessageBoards;
-use codex_agent_message_board_extension::LocalAgentMessageBoard;
-use codex_agent_message_board_extension::LocalBoardConnection;
 use codex_agent_message_board_extension::MessageBoardHost;
 use codex_agent_message_board_extension::NotificationDelivery;
 use codex_agent_message_board_extension::PostPreview;
@@ -36,7 +34,7 @@ use std::sync::Arc;
 use std::sync::Weak;
 
 /// Registers the configured board for opted-in MAv2 runtimes.
-/// Training can share an in-memory board per tree, including ephemeral sessions.
+/// Boards live in memory per tree unless a remote board is configured.
 pub fn install_agent_message_board(
     registry: &mut ExtensionRegistryBuilder<Config>,
     manager: Weak<ThreadManager>,
@@ -59,16 +57,8 @@ pub fn install_agent_message_board(
         |config: &Config| config.multi_agent_v2.tool_namespace.clone(),
         move |input: &ThreadStartInput<'_, Config>, tree, caller| {
             let config = input.config;
-            let connection = input.thread_store.get::<LocalBoardConnection>();
-            let in_memory = config.multi_agent_v2.message_board_in_memory;
-            // Automatic boards need MAv2 and persistent storage. An explicit host
-            // connection also works for isolated, ephemeral runtimes.
-            if connection.is_none()
-                && (!config.features.enabled(Feature::AgentMessageBoard)
-                    || !config.features.enabled(Feature::MultiAgentV2)
-                    || (config.ephemeral
-                        && !in_memory
-                        && config.multi_agent_v2.message_board_remote.is_none()))
+            if !config.features.enabled(Feature::AgentMessageBoard)
+                || !config.features.enabled(Feature::MultiAgentV2)
             {
                 return Box::pin(async { Ok(None) });
             }
@@ -78,12 +68,11 @@ pub fn install_agent_message_board(
                 tree,
                 caller,
                 expected_turn_id: None,
-                connection: connection.clone(),
             });
             Box::pin(async move {
-                let board: Arc<dyn AgentMessageBoard> = if let Some(connection) = connection {
-                    Arc::new(connection.open(host).await?)
-                } else if let Some(remote) = config.multi_agent_v2.message_board_remote.clone() {
+                let board: Arc<dyn AgentMessageBoard> = if let Some(remote) =
+                    config.multi_agent_v2.message_board_remote.clone()
+                {
                     let token = match remote.bearer_token_env_var {
                         Some(name) => std::env::var(name).map_err(|_| CodexErr::InvalidRequest(
                             "message-board credential environment variable is missing or invalid".into(),
@@ -106,12 +95,8 @@ pub fn install_agent_message_board(
                             Box::pin(async move { host.current_time(caller).await })
                         });
                     input.thread_store.get_or_init(|| board)
-                } else if in_memory {
-                    Arc::new(in_memory_boards.open(tree, host).await)
                 } else {
-                    Arc::new(
-                        LocalAgentMessageBoard::open(config.sqlite_config(), tree, host).await?,
-                    )
+                    Arc::new(in_memory_boards.open(tree, host).await)
                 };
                 Ok(Some(board))
             })
@@ -125,7 +110,6 @@ struct LocalBoardHost {
     tree: SessionId,
     caller: ThreadId,
     expected_turn_id: Option<String>,
-    connection: Option<Arc<LocalBoardConnection>>,
 }
 
 impl LocalBoardHost {
@@ -134,16 +118,8 @@ impl LocalBoardHost {
             .manager
             .upgrade()
             .ok_or_else(|| CodexErr::ThreadNotFound(caller))?;
-        if let Some(connection) = &self.connection {
-            return manager.get_thread_for_board(caller, connection).await;
-        }
         let actor = manager.get_thread(caller).await?;
-        if actor.session.session_id() != self.tree
-            || actor
-                .thread_extension_data()
-                .get::<LocalBoardConnection>()
-                .is_some()
-        {
+        if actor.session.session_id() != self.tree {
             return Err(CodexErr::InvalidRequest(
                 "agent belongs to another message board".into(),
             ));
@@ -153,9 +129,6 @@ impl LocalBoardHost {
 
     async fn registered_path(&self, actor: &CodexThread) -> Result<AgentPath> {
         let caller = actor.session.thread_id;
-        if let Some(connection) = &self.connection {
-            return connection.caller_path(caller);
-        }
         let path = actor
             .session_source
             .get_agent_path()
@@ -191,19 +164,6 @@ impl MessageBoardHost for LocalBoardHost {
 
     fn resolve_agent(&self, path: AgentPath) -> BoxFuture<'_, Result<ThreadId>> {
         Box::pin(async move {
-            if self.connection.is_some() {
-                let caller = path
-                    .as_str()
-                    .strip_prefix("/root/")
-                    .and_then(|id| ThreadId::from_string(id).ok())
-                    .ok_or_else(|| {
-                        CodexErr::InvalidRequest("invalid connected board agent path".into())
-                    })?;
-                return self
-                    .actor(caller)
-                    .await
-                    .map(|actor| actor.session.thread_id);
-            }
             let actor = self.actor(self.caller).await?;
             actor
                 .session

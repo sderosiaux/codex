@@ -134,7 +134,6 @@ impl ToolExecutor<ToolInvocation> for RequestUserInputAsyncHandler {
                     text: messages.join("\n\n"),
                 }],
                 phase: Some(MessagePhase::FinalAnswer),
-                memory_citation: None,
                 delivery: Some(AgentMessageDelivery::Async),
                 questions: Some(args.questions),
             });

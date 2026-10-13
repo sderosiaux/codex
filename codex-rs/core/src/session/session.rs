@@ -17,7 +17,6 @@ use crate::responses_metadata::CompactionTurnMetadata;
 use crate::shell_snapshot::ShellSnapshot;
 use crate::state::ActiveTurn;
 use crate::turn_metadata::ExecutionMetadata;
-use codex_attachment_store::AttachmentStore;
 use codex_extension_api::ExtensionDataInit;
 use codex_login::auth::AgentIdentityAuthPolicy;
 use codex_model_provider::SharedModelProvider;
@@ -68,7 +67,6 @@ pub(crate) struct Session {
     pub(crate) input_queue: InputQueue,
     pub(crate) services: SessionServices,
     pub(super) git_enrichment_policy: GitEnrichmentPolicy,
-    pub(super) fork_persistence: ForkPersistence,
     pub(super) history_initialization: HistoryInitialization,
     pub(super) forked_from_ordinal_exclusive: Option<u64>,
     pub(super) next_internal_sub_id: AtomicU64,
@@ -103,8 +101,6 @@ pub(crate) struct SessionConfiguration {
     pub(super) runtime_workspace_roots: Vec<AbsolutePathBuf>,
     /// Directory containing all Codex state for this session.
     pub(super) codex_home: AbsolutePathBuf,
-    /// Optional user-facing name for the thread, updated during the session.
-    pub(super) thread_name: Option<String>,
 
     // TODO(pakrym): Remove config from here
     pub(super) original_config_do_not_use: Arc<Config>,
@@ -157,7 +153,6 @@ impl SessionConfiguration {
                 environment_selections,
             ),
             workspace_roots,
-            ephemeral: self.original_config_do_not_use.ephemeral,
             reasoning_effort: self.step_settings.collaboration_mode.reasoning_effort(),
             reasoning_summary: self.step_settings.reasoning_summary,
             personality: self.step_settings.personality,
@@ -409,7 +404,6 @@ impl Session {
         agent_status: watch::Sender<AgentStatus>,
         mut initial_history: InitialHistory,
         history_initialization: HistoryInitialization,
-        fork_persistence: ForkPersistence,
         session_source: SessionSource,
         skills_service: Arc<HostSkillsService>,
         mcp_manager: Arc<McpManager>,
@@ -420,8 +414,7 @@ impl Session {
         reserved_thread_id: Option<ThreadId>,
         environment_manager: Arc<EnvironmentManager>,
         inherited_environments: Option<TurnEnvironmentSnapshot>,
-        image_store: Arc<dyn AttachmentStore>,
-        thread_store: Arc<dyn ThreadStore>,
+        thread_store: Arc<ThreadStore>,
         attestation_provider: Option<Arc<dyn AttestationProvider>>,
         external_time_provider: Option<Arc<dyn TimeProvider>>,
         multi_agent_version: Option<MultiAgentVersion>,
@@ -460,29 +453,24 @@ impl Session {
             .forked_from_thread_id
             .or_else(|| initial_history.forked_from_id());
         session_configuration.forked_from_thread_id = forked_from_id;
-        let forked_from_ordinal_exclusive = match &fork_persistence {
-            ForkPersistence::Referenced { history_base, .. } => {
-                history_base.map(|position| position.end_ordinal_exclusive)
+        let forked_from_ordinal_exclusive = match &initial_history {
+            // The resumed thread's canonical SessionMeta comes first. Never inspect inherited
+            // metadata: an ancestor's history_base describes a different fork boundary.
+            InitialHistory::Resumed(resumed) => {
+                resumed.history.first().and_then(|item| match item {
+                    RolloutItem::SessionMeta(line) if line.meta.id == resumed.conversation_id => {
+                        let meta = &line.meta;
+                        let parent_id = meta.forked_from_id?;
+                        meta.forked_from_ordinal_exclusive.or_else(|| {
+                            meta.history_base
+                                .filter(|base| base.thread_id == parent_id)
+                                .map(|base| base.end_ordinal_exclusive)
+                        })
+                    }
+                    _ => None,
+                })
             }
-            ForkPersistence::Copied | ForkPersistence::CopiedDeferred => match &initial_history {
-                InitialHistory::Resumed(resumed) => {
-                    // Both local and CCA thread stores place the resumed thread's
-                    // canonical SessionMeta first. Never inspect inherited metadata:
-                    // an ancestor's history_base describes a different fork boundary.
-                    resumed.history.first().and_then(|item| match item {
-                        RolloutItem::SessionMeta(meta)
-                            if meta.meta.id == resumed.conversation_id =>
-                        {
-                            codex_rollout::forked_from_ordinal_exclusive(
-                                &meta.meta,
-                                resumed.rollout_path.as_deref(),
-                            )
-                        }
-                        _ => None,
-                    })
-                }
-                InitialHistory::New | InitialHistory::Cleared | InitialHistory::Forked(_) => None,
-            },
+            InitialHistory::New | InitialHistory::Cleared | InitialHistory::Forked(_) => None,
         }
         .filter(|_| forked_from_id.is_some());
         let parent_thread_id = session_configuration
@@ -528,22 +516,6 @@ impl Session {
                 .runtime()
                 .root_thread_instructions_provider(thread_id, instructions.thread_provider);
         }
-        // Ephemeral forks reuse cache routing, without sharing storage or lifecycle identity.
-        let fork_cache_key = match &initial_history {
-            InitialHistory::Forked(items)
-                if config.ephemeral
-                    && !session_configuration.session_source.is_non_root_agent() =>
-            {
-                items.iter().find_map(|item| match item {
-                    RolloutItem::SessionMeta(meta) => Some(meta.meta.session_id.to_string()),
-                    _ => None,
-                })
-            }
-            InitialHistory::New
-            | InitialHistory::Cleared
-            | InitialHistory::Resumed(_)
-            | InitialHistory::Forked(_) => None,
-        };
         let resumed_session_id = match &initial_history {
             InitialHistory::Resumed(resumed) => {
                 resumed.history.iter().find_map(|item| match item {
@@ -638,137 +610,78 @@ impl Session {
         // - initialize thread persistence with new or resumed session info
         // - perform default shell discovery
         // - load history metadata (skipped for subagents)
-        let persistence_auth = futures::FutureExt::shared(auth_manager.auth());
-        let mcp_auth = persistence_auth.clone();
         let thread_persistence_fut = async {
-            if config.ephemeral {
-                Ok::<_, anyhow::Error>((None, LiveThreadInitGuard::new(/*live_thread*/ None), None))
-            } else {
-                let mut local_guard = LiveThreadInitGuard::default();
-                let mut resume_context = None;
-                let mut managed_guard = match &startup {
-                    Some(startup) => Some(startup.persistence.lock().await),
-                    None => None,
-                };
-                let guard = managed_guard.as_deref_mut().unwrap_or(&mut local_guard);
-                let live_thread = match &initial_history {
-                    InitialHistory::New | InitialHistory::Cleared | InitialHistory::Forked(_) => {
-                        let auth = persistence_auth.await;
-                        let params = CreateThreadParams {
-                            creator_user_id: auth.as_ref().and_then(CodexAuth::get_chatgpt_user_id),
-                            creator_account_id: auth.as_ref().and_then(CodexAuth::get_account_id),
-                            session_id,
-                            thread_id,
-                            extra_config: config.extra_config.clone(),
-                            forked_from_id,
-                            parent_thread_id,
-                            source: session_source,
-                            thread_source: session_configuration.thread_source.clone(),
-                            originator: session_configuration.originator.clone(),
-                            base_instructions: BaseInstructions {
-                                text: session_configuration.base_instructions.clone(),
-                                provenance: base_instructions_provenance.clone(),
-                            },
-                            dynamic_tools: session_configuration.dynamic_tools.clone(),
-                            selected_capability_roots: selected_capability_roots.clone(),
-                            multi_agent_version: initial_multi_agent_version,
-                            history_mode: session_configuration.history_mode,
-                            history_base: match &fork_persistence {
-                                ForkPersistence::Copied | ForkPersistence::CopiedDeferred => None,
-                                ForkPersistence::Referenced { history_base, .. } => *history_base,
-                            },
-                            subagent_history_start_ordinal: None,
-                            initial_window_id: initial_auto_compact_window_ids
-                                .window_id
-                                .to_string(),
-                            runtime_workspace_roots: Some(config.workspace_roots.clone()),
-                            metadata: ThreadPersistenceMetadata {
-                                cwd: Some(config.cwd.to_path_buf()),
-                                model_provider: config.model_provider_id.clone(),
-                                memory_mode: if config.memories.generate_memories {
-                                    ThreadMemoryMode::Enabled
-                                } else {
-                                    ThreadMemoryMode::Disabled
-                                },
-                            },
-                        };
-                        if is_paginated_subagent
-                            && matches!(
-                                &fork_persistence,
-                                ForkPersistence::Copied | ForkPersistence::CopiedDeferred
-                            )
-                            && let InitialHistory::Forked(items) = &initial_history
-                        {
-                            LiveThread::create_with_inherited_model_context(
-                                Arc::clone(&thread_store),
-                                params,
-                                items,
-                                guard,
-                            )
+            let mut local_guard = LiveThreadInitGuard::default();
+            let mut resume_context = None;
+            let mut managed_guard = match &startup {
+                Some(startup) => Some(startup.persistence.lock().await),
+                None => None,
+            };
+            let guard = managed_guard.as_deref_mut().unwrap_or(&mut local_guard);
+            let live_thread = match &initial_history {
+                InitialHistory::New | InitialHistory::Cleared | InitialHistory::Forked(_) => {
+                    let params = CreateThreadParams {
+                        session_id,
+                        thread_id,
+                        forked_from_id,
+                        parent_thread_id,
+                        source: session_source,
+                        thread_source: session_configuration.thread_source.clone(),
+                        originator: session_configuration.originator.clone(),
+                        base_instructions: BaseInstructions {
+                            text: session_configuration.base_instructions.clone(),
+                            provenance: base_instructions_provenance.clone(),
+                        },
+                        dynamic_tools: session_configuration.dynamic_tools.clone(),
+                        selected_capability_roots: selected_capability_roots.clone(),
+                        multi_agent_version: initial_multi_agent_version,
+                        history_mode: session_configuration.history_mode,
+                        subagent_history_start_ordinal: None,
+                        initial_window_id: initial_auto_compact_window_ids.window_id.to_string(),
+                        runtime_workspace_roots: Some(config.workspace_roots.clone()),
+                        cwd: config.cwd.to_path_buf(),
+                        model_provider: config.model_provider_id.clone(),
+                    };
+                    if is_paginated_subagent && let InitialHistory::Forked(items) = &initial_history
+                    {
+                        LiveThread::create_with_inherited_model_context(
+                            Arc::clone(&thread_store),
+                            params,
+                            items,
+                            guard,
+                        )
+                        .await?
+                    } else {
+                        guard
+                            .acquire(LiveThread::create(Arc::clone(&thread_store), params))
                             .await?
-                        } else {
-                            guard
-                                .acquire(LiveThread::create(Arc::clone(&thread_store), params))
-                                .await?
-                        }
                     }
-                    InitialHistory::Resumed(resumed_history) => {
-                        let params = ResumeThreadParams {
-                            history_revision: resumed_history.history_revision.clone(),
-                            thread_id: resumed_history.conversation_id,
-                            rollout_path: resumed_history.rollout_path.clone(),
-                            history: Some(resumed_history.history.clone()),
-                            include_archived: true,
-                            metadata: ThreadPersistenceMetadata {
-                                cwd: Some(config.cwd.to_path_buf()),
-                                model_provider: config.model_provider_id.clone(),
-                                memory_mode: if config.memories.generate_memories {
-                                    ThreadMemoryMode::Enabled
-                                } else {
-                                    ThreadMemoryMode::Disabled
-                                },
-                            },
-                        };
-                        let store = Arc::clone(&thread_store);
-                        let history_mode = session_configuration.history_mode;
-                        let (context_tx, context_rx) = tokio::sync::oneshot::channel();
-                        let live_thread = guard
-                            .acquire(async move {
-                                let (live_thread, history) =
-                                    LiveThread::resume(store, history_mode, params).await?;
-                                // Cancellation still leaves the writer with the acquisition guard.
-                                let _ = context_tx.send(history);
-                                Ok(live_thread)
-                            })
-                            .await?;
-                        resume_context = Some(context_rx.await?);
-                        live_thread
-                    }
-                };
-                Ok((Some(live_thread), local_guard, resume_context))
-            }
+                }
+                InitialHistory::Resumed(resumed_history) => {
+                    let params = ResumeThreadParams {
+                        thread_id: resumed_history.conversation_id,
+                        history: Some(resumed_history.history.clone()),
+                    };
+                    let store = Arc::clone(&thread_store);
+                    let (context_tx, context_rx) = tokio::sync::oneshot::channel();
+                    let live_thread = guard
+                        .acquire(async move {
+                            let (live_thread, history) = LiveThread::resume(store, params).await?;
+                            let _ = context_tx.send(history);
+                            Ok(live_thread)
+                        })
+                        .await?;
+                    resume_context = Some(context_rx.await?);
+                    live_thread
+                }
+            };
+            Ok::<_, anyhow::Error>((Some(live_thread), local_guard, resume_context))
         }
         .instrument(info_span!(
             "session_init.thread_persistence",
             otel.name = "session_init.thread_persistence",
-            session_init.ephemeral = config.ephemeral,
         ));
-        let state_db_fut = async {
-            if config.ephemeral {
-                None
-            } else if let Some(local_store) =
-                thread_store.as_any().downcast_ref::<LocalThreadStore>()
-            {
-                local_store.state_db().await
-            } else {
-                None
-            }
-        }
-        .instrument(info_span!(
-            "session_init.state_db",
-            otel.name = "session_init.state_db",
-            session_init.ephemeral = config.ephemeral,
-        ));
+        let mcp_auth = auth_manager.auth();
 
         let mut mcp_auth_changes = auth_manager.auth_change_receiver();
         let config_for_mcp = Arc::clone(&config);
@@ -790,8 +703,8 @@ impl Session {
         ));
 
         // Join all independent futures.
-        let (thread_persistence_result, state_db_ctx, (auth, mcp_config)) =
-            tokio::join!(thread_persistence_fut, state_db_fut, auth_and_mcp_fut);
+        let (thread_persistence_result, (auth, mcp_config)) =
+            tokio::join!(thread_persistence_fut, auth_and_mcp_fut);
 
         let (live_thread, mut live_thread_init, resume_context) = thread_persistence_result
             .map_err(|e| {
@@ -803,13 +716,7 @@ impl Session {
                 && let Some(history) = resume_context
             {
                 resumed.history = history;
-                resumed.history_revision = None;
             }
-            let rollout_path = if let Some(live_thread) = live_thread.as_ref() {
-                live_thread.local_rollout_path().await?
-            } else {
-                None
-            };
             let mut post_session_configured_events = Vec::<Event>::new();
 
             for usage in config.features.legacy_feature_usages() {
@@ -936,7 +843,6 @@ impl Session {
                     config.codex_home.clone(),
                     thread_id,
                     session_telemetry.clone(),
-                    state_db_ctx.clone(),
                 )
             } else {
                 ShellSnapshot::disabled()
@@ -964,22 +870,9 @@ impl Session {
                 "session_init.skill_warmup",
                 otel.name = "session_init.skill_warmup",
             ));
-            let thread_name_lookup = async {
-                if config.ephemeral && matches!(&initial_history, InitialHistory::Forked(_)) {
-                    None
-                } else {
-                    thread_title_from_thread_store(live_thread.as_ref(), &thread_store, thread_id)
-                        .await
-                }
-            }
-            .instrument(info_span!(
-                "session_init.thread_name_lookup",
-                otel.name = "session_init.thread_name_lookup",
-            ));
-            let (instruction_refresh, skill_errors, thread_name) = tokio::join!(
+            let (instruction_refresh, skill_errors) = tokio::join!(
                 agents_md_manager.refresh(config.as_ref(), &resolved_environments),
                 skill_warmup,
-                thread_name_lookup,
             );
             let (agents_md_result, instruction_warnings) = instruction_refresh;
             // TODO(anp): Present AGENTS.md discovery errors more clearly to the user.
@@ -997,7 +890,6 @@ impl Session {
                     err.message
                 );
             }
-            session_configuration.thread_name = thread_name.clone();
             let mut state = SessionState::new_with_auto_compact_window_ids(
                 session_configuration.clone(),
                 initial_auto_compact_window_ids,
@@ -1042,7 +934,6 @@ impl Session {
                     .on_thread_start(codex_extension_api::ThreadStartInput {
                         config: config.as_ref(),
                         session_source: &session_configuration.session_source,
-                        persistent_thread_state_available: state_db_ctx.is_some(),
                         environments: environment_selections,
                         extension_metrics: Some(Arc::clone(&extension_metrics)),
                         session_store: &session_extension_data,
@@ -1055,15 +946,8 @@ impl Session {
                 crate::state::ExecutedToolCalls::new(&config.features, &initial_history);
             let codex_responses_headers =
                 thread_extension_data.get::<crate::CodexResponsesHeaders>();
-            // Ephemeral title requests use request-level effort even when managed settings
-            // enable overrides. The client-supplied tag selects cache behavior, not permissions.
-            let title_request = config.ephemeral
-                && matches!(
-                    session_configuration.thread_source.as_ref(),
-                    Some(ThreadSource::Feature(feature)) if feature == "thread_title"
-                );
             let reasoning_effort_override_enabled =
-                config.features.enabled(Feature::ReasoningEffortOverride) && !title_request;
+                config.features.enabled(Feature::ReasoningEffortOverride);
             let services = SessionServices {
                 // Start with an empty connection set. The initialized set is
                 // published after SessionConfigured so MCP events follow it.
@@ -1092,9 +976,7 @@ impl Session {
                 client_mcp_extensions,
                 local_agent_runtime,
                 agent_control,
-                state_db: state_db_ctx.clone(),
                 live_thread: live_thread.clone(),
-                image_store,
                 thread_store: Arc::clone(&thread_store),
                 attestation_provider: attestation_provider.clone(),
                 time_provider,
@@ -1130,7 +1012,7 @@ impl Session {
                     InitialHistory::Resumed(_) | InitialHistory::Forked(_)
                 ))
                 .with_session_context(
-                    fork_cache_key,
+                    /*fork_cache_key*/ None,
                     tx_event.clone(),
                     codex_responses_headers,
                     crate::cyber_access_program::ApiKeyCyberAccessPrograms::from_config(&config),
@@ -1164,7 +1046,6 @@ impl Session {
                 ),
                 services,
                 git_enrichment_policy,
-                fork_persistence,
                 history_initialization,
                 forked_from_ordinal_exclusive,
                 next_internal_sub_id: AtomicU64::new(0),
@@ -1184,12 +1065,10 @@ impl Session {
                     forked_from_id: thread_config.forked_from_thread_id,
                     parent_thread_id: thread_config.parent_thread_id,
                     thread_source: thread_config.thread_source,
-                    thread_name: session_configuration.thread_name.clone(),
                     model: thread_config.model,
                     model_provider_id: thread_config.model_provider_id,
                     service_tier: thread_config.service_tier,
                     reasoning_effort: thread_config.reasoning_effort,
-                    rollout_path,
                 }),
             })
             .chain(post_session_configured_events.into_iter());
@@ -1250,11 +1129,6 @@ impl Session {
                     initial_auto_compact_window_ids,
                 );
             }
-            if matches!(&sess.fork_persistence, ForkPersistence::Referenced { .. }) {
-                // Keep the source reserved until the child's history reference is durable.
-                sess.try_ensure_rollout_materialized(PersistContext::Standard)
-                    .await?;
-            }
             {
                 let mut state = sess.state.lock().await;
                 state.queue_pending_session_start_source(session_start_source);
@@ -1268,11 +1142,7 @@ impl Session {
                 Ok(sess)
             }
             Err(err) => {
-                if let Err(error) = live_thread_init.discard().await {
-                    tracing::warn!(
-                        "failed to discard thread persistence for failed session init: {error}"
-                    );
-                }
+                live_thread_init.discard().await;
                 Err(err)
             }
         }

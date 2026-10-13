@@ -21,7 +21,7 @@ impl TurnTokenUsage {
         total.add_assign(usage);
     }
 
-    pub(crate) fn emit(self, fallback: &SessionTelemetry, tmp_mem: (&str, &str)) {
+    pub(crate) fn emit(self, fallback: &SessionTelemetry) {
         let mut usage = self.by_model.into_values().collect::<Vec<_>>();
         // Preserve zero-valued completion samples for turns without reported usage.
         // Do not create a sample for the selected model if only compaction ran.
@@ -40,7 +40,7 @@ impl TurnTokenUsage {
                 telemetry.histogram(
                     TURN_TOKEN_USAGE_METRIC,
                     value.max(0),
-                    &[("token_type", token_type), tmp_mem],
+                    &[("token_type", token_type)],
                 );
             }
         }

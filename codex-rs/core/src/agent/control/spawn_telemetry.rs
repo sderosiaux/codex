@@ -14,7 +14,6 @@ pub(super) struct SpawnMeasurements {
     pub(super) residency_reservation: Option<Duration>,
     pub(super) fork_context: Option<Duration>,
     pub(super) child_create: Duration,
-    pub(super) durability_wait: Duration,
     pub(super) input_admission: Duration,
     pub(super) total: Duration,
 }
@@ -54,7 +53,6 @@ pub(super) fn record_spawn_success(
         record_phase("fork_context", duration);
     }
     record_phase("child_create", measurements.child_create);
-    record_phase("durability_wait", measurements.durability_wait);
     record_phase("input_admission", measurements.input_admission);
     record_phase("total", measurements.total);
 }

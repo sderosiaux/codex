@@ -5,21 +5,9 @@ use crate::agent::control::AgentTreeShutdownState;
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
-use codex_thread_store::ThreadStoreError;
 use std::fmt;
 use std::sync::Arc;
 use uuid::Uuid;
-
-/// Return a stable, payload-free category for a thread-store error.
-pub(crate) fn thread_store_error_kind(error: &ThreadStoreError) -> &'static str {
-    match error {
-        ThreadStoreError::ThreadNotFound { .. } => "thread_store_not_found",
-        ThreadStoreError::InvalidRequest { .. } => "thread_store_invalid_request",
-        ThreadStoreError::Conflict { .. } => "thread_store_conflict",
-        ThreadStoreError::Unsupported { .. } => "thread_store_unsupported",
-        ThreadStoreError::Internal { .. } => "thread_store_internal",
-    }
-}
 
 /// A safely loggable reason that a tracked part of an agent tree failed to shut down.
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -186,7 +186,6 @@ pub(crate) enum CodexResponsesRequestKind {
     Turn,
     Prewarm,
     Compaction(CompactionTurnMetadata),
-    Memory,
 }
 
 impl CodexResponsesRequestKind {
@@ -195,12 +194,7 @@ impl CodexResponsesRequestKind {
             CodexResponsesRequestKind::Turn => ("turn", None),
             CodexResponsesRequestKind::Prewarm => ("prewarm", None),
             CodexResponsesRequestKind::Compaction(metadata) => ("compaction", Some(metadata)),
-            CodexResponsesRequestKind::Memory => ("memory", None),
         }
-    }
-
-    fn has_thread_identity(self) -> bool {
-        !matches!(self, CodexResponsesRequestKind::Memory)
     }
 }
 
@@ -415,17 +409,12 @@ impl CodexResponsesMetadata {
             let (request_kind, compaction) = request_kind.metadata();
             (Some(request_kind), compaction)
         });
-        let has_thread_identity =
-            request_kind.is_none_or(CodexResponsesRequestKind::has_thread_identity);
-        let has_request_identity =
-            request_kind.is_some_and(CodexResponsesRequestKind::has_thread_identity);
+        let has_request_identity = request_kind.is_some();
         CodexTurnMetadataPayload {
             installation_id: has_request_identity.then_some(self.installation_id.as_str()),
-            session_id: has_thread_identity.then_some(self.session_id.as_str()),
-            thread_id: has_thread_identity.then_some(self.thread_id.as_str()),
-            agent_name: has_thread_identity
-                .then_some(self.agent_name.as_deref())
-                .flatten(),
+            session_id: Some(self.session_id.as_str()),
+            thread_id: Some(self.thread_id.as_str()),
+            agent_name: self.agent_name.as_deref(),
             turn_id: self.turn_id.as_deref(),
             window_id: has_request_identity.then_some(self.window_id.as_str()),
             window_number: has_request_identity.then_some(self.window_number).flatten(),
@@ -460,11 +449,9 @@ pub(crate) fn subagent_header_value(session_source: &SessionSource) -> Option<St
         SessionSource::SubAgent(subagent_source) => match subagent_source {
             SubAgentSource::Review => Some("review".to_string()),
             SubAgentSource::Compact => Some("compact".to_string()),
-            SubAgentSource::MemoryConsolidation => Some("memory_consolidation".to_string()),
             SubAgentSource::ThreadSpawn { .. } => Some("collab_spawn".to_string()),
             SubAgentSource::Other(label) => Some(label.clone()),
         },
-        SessionSource::Internal(source) => Some(source.to_string()),
         SessionSource::Cli
         | SessionSource::VSCode
         | SessionSource::Exec
@@ -482,7 +469,6 @@ pub(crate) fn subagent_metadata_kind(session_source: &SessionSource) -> Option<S
         | SessionSource::Exec
         | SessionSource::Mcp
         | SessionSource::Custom(_)
-        | SessionSource::Internal(_)
         | SessionSource::Unknown => None,
     }
 }

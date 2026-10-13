@@ -231,9 +231,6 @@
             "apply_patch_streaming_events": {
               "type": "boolean"
             },
-            "background_paginated_rollout_migration": {
-              "type": "boolean"
-            },
             "codex_hooks": {
               "type": "boolean"
             },
@@ -303,9 +300,6 @@
             "instant_interrupt": {
               "type": "boolean"
             },
-            "local_thread_store_compression": {
-              "type": "boolean"
-            },
             "login_shell_package_path": {
               "type": "boolean"
             },
@@ -313,12 +307,6 @@
               "type": "boolean"
             },
             "mcp_oauth_refresh_coordination": {
-              "type": "boolean"
-            },
-            "memories": {
-              "type": "boolean"
-            },
-            "memory_tool": {
               "type": "boolean"
             },
             "model_catalog_in_context": {
@@ -793,47 +781,6 @@
       },
       "type": "object"
     },
-    "History": {
-      "additionalProperties": false,
-      "description": "Settings that govern if and what will be written to `~/.codex/history.jsonl`.",
-      "properties": {
-        "max_bytes": {
-          "default": null,
-          "description": "If set, the maximum size of the history file in bytes. The oldest entries are dropped once the file exceeds this limit.",
-          "format": "uint",
-          "minimum": 0.0,
-          "type": "integer"
-        },
-        "persistence": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/HistoryPersistence"
-            }
-          ],
-          "default": "save-all",
-          "description": "If true, history entries will not be written to disk."
-        }
-      },
-      "type": "object"
-    },
-    "HistoryPersistence": {
-      "oneOf": [
-        {
-          "description": "Save all history entries to disk.",
-          "enum": [
-            "save-all"
-          ],
-          "type": "string"
-        },
-        {
-          "description": "Do not write history to disk.",
-          "enum": [
-            "none"
-          ],
-          "type": "string"
-        }
-      ]
-    },
     "HookHandlerConfig": {
       "oneOf": [
         {
@@ -1204,92 +1151,6 @@
         }
       ]
     },
-    "MemoriesToml": {
-      "additionalProperties": false,
-      "description": "Memories settings loaded from config.toml.",
-      "properties": {
-        "consolidation_model": {
-          "description": "Model used for memory consolidation.",
-          "type": "string"
-        },
-        "dedicated_tools": {
-          "description": "When `true`, expose dedicated memory tools through the extension tool surface.",
-          "type": "boolean"
-        },
-        "disable_on_external_context": {
-          "description": "When `true`, external context sources mark the thread `memory_mode` as `\"polluted\"`.",
-          "type": "boolean"
-        },
-        "dual_write": {
-          "description": "Generate both versions while the selected version supplies context.",
-          "type": "boolean"
-        },
-        "extract_model": {
-          "description": "Model used for thread summarisation.",
-          "type": "string"
-        },
-        "generate_memories": {
-          "description": "When `false`, newly created threads are stored with `memory_mode = \"disabled\"` in the state DB.",
-          "type": "boolean"
-        },
-        "max_raw_memories_for_consolidation": {
-          "description": "Maximum number of recent raw memories retained for global consolidation.",
-          "format": "uint",
-          "maximum": 4096.0,
-          "minimum": 1.0,
-          "type": "integer"
-        },
-        "max_rollout_age_days": {
-          "description": "Maximum age of the threads used for memories.",
-          "format": "int64",
-          "type": "integer"
-        },
-        "max_rollouts_per_startup": {
-          "description": "Maximum number of rollout candidates processed per pass.",
-          "format": "uint",
-          "maximum": 128.0,
-          "minimum": 1.0,
-          "type": "integer"
-        },
-        "max_unused_days": {
-          "description": "Maximum number of days since a memory was last used before it becomes ineligible for phase 2 selection.",
-          "format": "int64",
-          "type": "integer"
-        },
-        "min_rate_limit_remaining_percent": {
-          "description": "Minimum remaining percentage required in Codex rate-limit windows before memory startup runs.",
-          "format": "int64",
-          "maximum": 100.0,
-          "minimum": 0.0,
-          "type": "integer"
-        },
-        "min_rollout_idle_hours": {
-          "description": "Minimum idle time between last thread activity and memory creation (hours). > 12h recommended.",
-          "format": "int64",
-          "type": "integer"
-        },
-        "use_memories": {
-          "description": "When `false`, skip injecting memory usage instructions into developer prompts.",
-          "type": "boolean"
-        },
-        "version": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/MemoryVersion"
-            }
-          ],
-          "description": "Selects the memory pipeline; v1 remains the default."
-        }
-      },
-      "type": "object"
-    },
-    "MemoryVersion": {
-      "enum": [
-        "v1",
-        "v2"
-      ],
-      "type": "string"
-    },
     "ModelProviderAuthInfo": {
       "additionalProperties": false,
       "description": "Configuration for obtaining a provider bearer token from a command.",
@@ -1551,17 +1412,13 @@
           "minimum": 0.0,
           "type": "integer"
         },
-        "message_board_in_memory": {
-          "description": "Keep the message board in memory for a training session, including ephemeral sessions.",
-          "type": "boolean"
-        },
         "message_board_remote": {
           "allOf": [
             {
               "$ref": "#/definitions/RemoteMessageBoardConfigToml"
             }
           ],
-          "description": "Use a session-scoped remote board instead of local storage."
+          "description": "Use a session-scoped remote board instead of the in-memory board."
         },
         "min_wait_timeout_ms": {
           "format": "int64",
@@ -2289,24 +2146,6 @@
         }
       ]
     },
-    "ThreadStoreToml": {
-      "oneOf": [
-        {
-          "properties": {
-            "type": {
-              "enum": [
-                "local"
-              ],
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "type": "object"
-        }
-      ]
-    },
     "TokenBudgetConfigToml": {
       "additionalProperties": false,
       "properties": {
@@ -2552,14 +2391,6 @@
     "experimental_compact_prompt_file": {
       "$ref": "#/definitions/AbsolutePathBuf"
     },
-    "experimental_thread_store": {
-      "allOf": [
-        {
-          "$ref": "#/definitions/ThreadStoreToml"
-        }
-      ],
-      "description": "Experimental / do not use. Selects the thread store implementation."
-    },
     "features": {
       "additionalProperties": false,
       "default": null,
@@ -2575,9 +2406,6 @@
           "type": "boolean"
         },
         "apply_patch_streaming_events": {
-          "type": "boolean"
-        },
-        "background_paginated_rollout_migration": {
           "type": "boolean"
         },
         "codex_hooks": {
@@ -2649,9 +2477,6 @@
         "instant_interrupt": {
           "type": "boolean"
         },
-        "local_thread_store_compression": {
-          "type": "boolean"
-        },
         "login_shell_package_path": {
           "type": "boolean"
         },
@@ -2659,12 +2484,6 @@
           "type": "boolean"
         },
         "mcp_oauth_refresh_coordination": {
-          "type": "boolean"
-        },
-        "memories": {
-          "type": "boolean"
-        },
-        "memory_tool": {
           "type": "boolean"
         },
         "model_catalog_in_context": {
@@ -2833,18 +2652,6 @@
       "description": "When set to `true`, `AgentReasoning` events will be hidden from the UI/output. Defaults to `false`.",
       "type": "boolean"
     },
-    "history": {
-      "allOf": [
-        {
-          "$ref": "#/definitions/History"
-        }
-      ],
-      "default": {
-        "max_bytes": null,
-        "persistence": "save-all"
-      },
-      "description": "Settings that govern if and what will be written to `~/.codex/history.jsonl`."
-    },
     "hooks": {
       "allOf": [
         {
@@ -2918,14 +2725,6 @@
       "default": {},
       "description": "Definition for MCP servers that Codex can reach out to for tool calls.",
       "type": "object"
-    },
-    "memories": {
-      "allOf": [
-        {
-          "$ref": "#/definitions/MemoriesToml"
-        }
-      ],
-      "description": "Memories subsystem settings."
     },
     "model": {
       "description": "Optional override of model selection.",
@@ -3110,14 +2909,6 @@
         }
       ],
       "description": "User-level skill config entries keyed by SKILL.md path."
-    },
-    "sqlite_home": {
-      "allOf": [
-        {
-          "$ref": "#/definitions/AbsolutePathBuf"
-        }
-      ],
-      "description": "Directory where Codex stores the SQLite state DB. Defaults to `$CODEX_SQLITE_HOME` when set. Otherwise uses `$CODEX_HOME`."
     },
     "suppress_unstable_features_warning": {
       "description": "Suppress warnings about unstable (under development) features.",

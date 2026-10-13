@@ -32,7 +32,7 @@ pub(super) fn usage_hint_text(step_context: &StepContext) -> Option<MultiAgentRo
         | SessionSource::Mcp
         | SessionSource::Custom(_)
         | SessionSource::Unknown => snapshot.root,
-        SessionSource::Internal(_) | SessionSource::SubAgent(_) => None,
+        SessionSource::SubAgent(_) => None,
     }
 }
 
@@ -116,6 +116,6 @@ pub(crate) fn effective_multi_agent_mode(step_context: &StepContext) -> Option<M
         | SessionSource::Mcp
         | SessionSource::Custom(_)
         | SessionSource::Unknown => Some(multi_agent_mode),
-        SessionSource::Internal(_) | SessionSource::SubAgent(_) => None,
+        SessionSource::SubAgent(_) => None,
     }
 }

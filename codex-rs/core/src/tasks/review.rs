@@ -26,7 +26,6 @@ use crate::session::turn_context::TurnContext;
 use crate::state::TaskKind;
 use codex_features::Feature;
 use codex_protocol::user_input::UserInput;
-use codex_thread_store::PersistContext;
 
 use super::SessionTask;
 use super::SessionTaskResult;
@@ -267,12 +266,5 @@ pub(crate) async fn exit_review_mode(
                 internal_chat_message_metadata_passthrough: None,
             },
         )
-        .await;
-
-    // Review turns can run before any regular user turn, so explicitly
-    // materialize rollout persistence. Do this after emitting review output so
-    // file creation + git metadata collection cannot delay client-facing items.
-    session
-        .ensure_rollout_materialized(PersistContext::Standard)
         .await;
 }

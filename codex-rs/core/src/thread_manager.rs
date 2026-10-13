@@ -6,9 +6,7 @@ pub use shutdown::AgentTreeShutdown;
 pub use shutdown::AgentTreeShutdownFailure;
 pub use shutdown::AgentTreeShutdownFailureReason;
 pub use shutdown::AgentTreeShutdownReport;
-pub(crate) use shutdown::thread_store_error_kind;
 
-use crate::CodexThreadSettingsOverrides;
 use crate::agent::AgentStatus;
 use crate::agent::LocalAgentControl;
 use crate::agent::api::AgentConfigUpdate;
@@ -18,13 +16,10 @@ use crate::agents_md_manager::SessionInstructions;
 use crate::attestation::AttestationProvider;
 use crate::codex_thread::CodexThread;
 use crate::config::Config;
-use crate::config::ThreadStoreConfig;
 use crate::current_time::TimeProvider;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::environment_selection::default_thread_environment_requests;
 use crate::mcp::McpManager;
-use crate::rollout::truncation;
-use crate::session::ForkPersistence;
 use crate::session::GitEnrichmentPolicy;
 use crate::session::INITIAL_SUBMIT_ID;
 use crate::session::SessionIo;
@@ -35,14 +30,8 @@ use crate::session::startup::SessionStartup;
 use crate::session::startup::SessionStartupGuard;
 use crate::tasks::InterruptedTurnHistoryMarker;
 use crate::tasks::interrupted_turn_history_marker;
+use crate::thread_rollout_truncation::user_message_positions_in_rollout;
 use crate::thread_startup_metadata::ThreadStartupMetadata;
-use codex_agent_graph_store::AgentGraphStore;
-use codex_agent_graph_store::LocalAgentGraphStore;
-use codex_agent_message_board_extension::LocalAgentMessageBoard;
-use codex_app_server_protocol::ThreadHistoryBuilder;
-use codex_app_server_protocol::TurnStatus;
-use codex_attachment_store::AttachmentStore;
-use codex_attachment_store::InlineAttachmentStore;
 use codex_exec_server::EnvironmentManager;
 use codex_extension_api::ExtensionDataInit;
 use codex_extension_api::ExtensionRegistry;
@@ -53,7 +42,6 @@ use codex_extension_api::empty_extension_registry;
 use codex_features::Feature;
 use codex_history::HistoryInitialization;
 use codex_history::InitialHistory;
-use codex_history::ResumedHistory;
 use codex_history::RolloutItem;
 use codex_login::AuthManager;
 use codex_login::default_client::CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR;
@@ -81,22 +69,10 @@ use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnEnvironmentRequest;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::protocol::W3cTraceContext;
-use codex_rollout::state_db::StateDbHandle;
 use codex_skills_extension::HostSkillsService;
-use codex_thread_store::InMemoryThreadStore;
-use codex_thread_store::LoadThreadHistoryParams;
-use codex_thread_store::LocalThreadStore;
-use codex_thread_store::LocalThreadStoreConfig;
-use codex_thread_store::MoveThreadToSectionParams;
-use codex_thread_store::PreparedFork;
-use codex_thread_store::ReadThreadByRolloutPathParams;
-use codex_thread_store::ReadThreadParams;
-use codex_thread_store::StoredModelContext;
 use codex_thread_store::StoredThread;
-use codex_thread_store::ThreadMetadataPatch;
 use codex_thread_store::ThreadStore;
 use codex_thread_store::ThreadStoreError;
-use codex_thread_store::UpdateThreadMetadataParams;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_git_discovery::GitRootDiscovery;
 use futures::StreamExt;
@@ -105,14 +81,12 @@ use futures::stream::FuturesUnordered;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::future::Future;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio::sync::broadcast;
-use tracing::instrument;
 use tracing::warn;
 
 const THREAD_CREATED_CHANNEL_CAPACITY: usize = 1024;
@@ -131,51 +105,6 @@ pub struct NewThread {
     pub thread_id: ThreadId,
     pub thread: Arc<CodexThread>,
     pub session_configured: SessionConfiguredEvent,
-}
-
-// TODO(ccunningham): Add an explicit non-interrupting live-turn snapshot once
-// core can represent sampling boundaries directly instead of relying on
-// whichever items happened to be persisted mid-turn.
-//
-// Two likely future variants:
-// - `TruncateToLastSamplingBoundary` for callers that want a coherent fork from
-//   the last stable model boundary without synthesizing an interrupt.
-// - `WaitUntilNextSamplingBoundary` (or similar) for callers that prefer to
-//   fork after the next sampling boundary rather than interrupting immediately.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ForkSnapshot {
-    /// Fork a committed prefix ending strictly before the nth user message.
-    ///
-    /// When `n` is within range, this cuts before that 0-based user-message
-    /// boundary. When `n` is out of range and the source thread is currently
-    /// mid-turn, this instead cuts before the active turn's opening boundary
-    /// so the fork drops the unfinished turn suffix. When `n` is out of range
-    /// and the source thread is already at a turn boundary, this returns the
-    /// full committed history unchanged.
-    TruncateBeforeNthUserMessage(usize),
-
-    /// Fork the current persisted history as if the source thread had been
-    /// interrupted now.
-    ///
-    /// If the persisted snapshot ends mid-turn, this appends the same
-    /// `<turn_aborted>` marker produced by a real interrupt. If the snapshot is
-    /// already at a turn boundary, this returns the current persisted history
-    /// unchanged.
-    Interrupted,
-}
-
-struct ForkHistory {
-    snapshot: ForkSnapshot,
-    initial_history: InitialHistory,
-    persistence: ForkPersistence,
-}
-
-/// Preserve legacy `fork_legacy_thread(usize, ...)` callsites by mapping them to the
-/// existing truncate-before-nth-user-message snapshot mode.
-impl From<usize> for ForkSnapshot {
-    fn from(value: usize) -> Self {
-        Self::TruncateBeforeNthUserMessage(value)
-    }
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -197,18 +126,6 @@ pub struct ThreadManager {
     state: Arc<ThreadManagerState>,
 }
 
-/// Captured parent identity for an internal child, including inline parents that
-/// do not have a public entry in the thread manager. Authentication and the shared
-/// agent budget remain bound to the parent that created this value.
-#[derive(Clone)]
-pub struct InternalSessionParent {
-    pub(crate) thread_id: ThreadId,
-    pub(crate) auth_manager: Arc<AuthManager>,
-    pub(crate) agent_control: AgentControlInit,
-    pub(crate) originator: String,
-    pub(crate) inherited_instructions: Option<SessionInstructions>,
-}
-
 pub struct StartThreadOptions {
     pub config: Config,
     /// Host-owned provider for this root thread's additional instructions.
@@ -226,8 +143,6 @@ pub struct StartThreadOptions {
     pub thread_instructions_provider: Option<Arc<dyn ThreadInstructionsProvider>>,
     pub allow_provider_model_fallback: bool,
     pub initial_history: InitialHistory,
-    /// Parent captured for `start_thread`, including a parent not in the live registry.
-    pub internal_parent: Option<InternalSessionParent>,
     pub history_mode: Option<ThreadHistoryMode>,
     pub session_source: Option<SessionSource>,
     pub thread_source: Option<ThreadSource>,
@@ -254,7 +169,6 @@ impl StartThreadOptions {
             thread_instructions_provider: None,
             allow_provider_model_fallback: false,
             initial_history: InitialHistory::New,
-            internal_parent: None,
             history_mode: None,
             session_source: None,
             thread_source: None,
@@ -280,7 +194,6 @@ struct ThreadSpawnRequest {
     parent_thread_id: Option<ThreadId>,
     parent_originator: Option<String>,
     forked_from_thread_id: Option<ThreadId>,
-    fork_persistence: ForkPersistence,
     inherited_environments: Option<TurnEnvironmentSnapshot>,
     inherited_instructions: Option<SessionInstructions>,
     user_shell_override: Option<crate::shell::Shell>,
@@ -300,7 +213,6 @@ impl ThreadSpawnRequest {
             parent_thread_id: None,
             parent_originator: None,
             forked_from_thread_id: None,
-            fork_persistence: ForkPersistence::Copied,
             inherited_environments: None,
             inherited_instructions: None,
             user_shell_override: None,
@@ -369,9 +281,7 @@ pub(crate) struct ThreadManagerState {
     mcp_manager: Arc<McpManager>,
     extensions: Arc<ExtensionRegistry<Config>>,
     user_instructions_provider: Arc<dyn UserInstructionsProvider>,
-    image_store: Arc<dyn AttachmentStore>,
-    thread_store: Arc<dyn ThreadStore>,
-    agent_graph_store: Option<Arc<dyn AgentGraphStore>>,
+    thread_store: Arc<ThreadStore>,
     attestation_provider: Option<Arc<dyn AttestationProvider>>,
     external_time_provider: Option<Arc<dyn TimeProvider>>,
     session_source: SessionSource,
@@ -393,78 +303,6 @@ pub fn build_models_manager(
     manager
 }
 
-pub fn thread_store_from_config(
-    config: &Config,
-    state_db: Option<StateDbHandle>,
-) -> Arc<dyn ThreadStore> {
-    match &config.experimental_thread_store {
-        ThreadStoreConfig::Local => {
-            let compression_enabled = config
-                .features
-                .enabled(Feature::LocalThreadStoreCompression);
-            let background_migration_enabled = config
-                .features
-                .enabled(Feature::BackgroundPaginatedRolloutMigration);
-            let has_state_db = state_db.is_some();
-            let sqlite = config.sqlite_config().clone();
-            let store = Arc::new(
-                LocalThreadStore::new(LocalThreadStoreConfig::from_config(config), state_db)
-                    .with_thread_data_cleanup(move |thread_ids| {
-                        let sqlite = sqlite.clone();
-                        Box::pin(async move {
-                            let boards = thread_ids.into_iter().map(Into::into).collect::<Vec<_>>();
-                            LocalAgentMessageBoard::delete_boards(&sqlite, &boards)
-                                .await
-                                .map_err(|err| ThreadStoreError::Internal {
-                                    message: format!(
-                                        "failed to delete agent message boards: {err}"
-                                    ),
-                                })
-                        })
-                    }),
-            );
-            if has_state_db && background_migration_enabled {
-                let startup_store = Arc::clone(&store);
-                let codex_home = config.codex_home.to_path_buf();
-                tokio::spawn(async move {
-                    if let Err(err) = startup_store.migrate_rollouts_on_startup().await {
-                        warn!("failed to migrate legacy rollouts on startup: {err}");
-                    }
-                    if compression_enabled {
-                        codex_rollout::spawn_rollout_compression_worker(
-                            codex_home,
-                            codex_rollout::RolloutCompressionTrigger::Startup,
-                        );
-                    }
-                });
-            } else if compression_enabled {
-                codex_rollout::spawn_rollout_compression_worker(
-                    config.codex_home.to_path_buf(),
-                    codex_rollout::RolloutCompressionTrigger::Startup,
-                );
-            }
-            store
-        }
-        ThreadStoreConfig::InMemory { id } => {
-            Arc::new(InMemoryThreadStore::for_id(id).with_state_db(state_db))
-        }
-    }
-}
-
-/// Constructs the default image store that preserves inline images.
-pub fn passthrough_image_store() -> Arc<dyn AttachmentStore> {
-    Arc::new(InlineAttachmentStore)
-}
-
-/// Construct the default SQLite-backed agent graph store when local state is available.
-pub fn local_agent_graph_store_from_state_db(
-    state_db: Option<&StateDbHandle>,
-) -> Option<Arc<dyn AgentGraphStore>> {
-    state_db.map(|state_db| {
-        Arc::new(LocalAgentGraphStore::new(Arc::clone(state_db))) as Arc<dyn AgentGraphStore>
-    })
-}
-
 impl ThreadManager {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -475,9 +313,6 @@ impl ThreadManager {
         environment_manager: Arc<EnvironmentManager>,
         extensions: Arc<ExtensionRegistry<Config>>,
         user_instructions_provider: Arc<dyn UserInstructionsProvider>,
-        image_store: Arc<dyn AttachmentStore>,
-        thread_store: Arc<dyn ThreadStore>,
-        agent_graph_store: Option<Arc<dyn AgentGraphStore>>,
         installation_id: String,
         attestation_provider: Option<Arc<dyn AttestationProvider>>,
         external_time_provider: Option<Arc<dyn TimeProvider>>,
@@ -505,9 +340,7 @@ impl ThreadManager {
                 mcp_manager,
                 extensions,
                 user_instructions_provider,
-                image_store,
-                thread_store,
-                agent_graph_store,
+                thread_store: Arc::new(ThreadStore::default()),
                 attestation_provider,
                 external_time_provider,
                 auth_manager,
@@ -571,31 +404,6 @@ impl ThreadManager {
         self.state.environment_manager.clone()
     }
 
-    pub fn image_store(&self) -> Arc<dyn AttachmentStore> {
-        Arc::clone(&self.state.image_store)
-    }
-
-    /// Starts the local rollout migration path after a runtime feature enablement.
-    ///
-    /// Startup config handles the initial launch in [`thread_store_from_config`]. This covers
-    /// clients that decide to enable background migration after constructing the app-server.
-    pub fn start_background_rollout_migration(&self) {
-        let Some(store) = self
-            .state
-            .thread_store
-            .as_any()
-            .downcast_ref::<LocalThreadStore>()
-        else {
-            return;
-        };
-        let store = store.clone();
-        tokio::spawn(async move {
-            if let Err(err) = store.migrate_rollouts_on_startup().await {
-                warn!("failed to migrate legacy rollouts on startup: {err}");
-            }
-        });
-    }
-
     /// Refreshes every loaded thread and marks threads that are still being created.
     pub async fn invalidate_mcp_runtimes(&self) {
         self.invalidate_starting_mcp_runtimes();
@@ -655,10 +463,6 @@ impl ThreadManager {
         )
     }
 
-    pub(crate) fn git_root_discovery(&self) -> Arc<GitRootDiscovery> {
-        Arc::clone(&self.state.git_root_discovery)
-    }
-
     pub fn get_models_manager(&self) -> SharedModelsManager {
         self.state.models_manager.clone()
     }
@@ -690,109 +494,6 @@ impl ThreadManager {
         self.state.get_thread(thread_id).await
     }
 
-    /// Board hosts may reach internal runtimes only through a matching explicit connection.
-    pub(crate) async fn get_thread_for_board(
-        &self,
-        thread_id: ThreadId,
-        connection: &codex_agent_message_board_extension::LocalBoardConnection,
-    ) -> CodexResult<Arc<CodexThread>> {
-        self.state
-            .threads
-            .read()
-            .await
-            .get(&thread_id)
-            .filter(|thread| {
-                thread
-                    .thread_extension_data()
-                    .get::<codex_agent_message_board_extension::LocalBoardConnection>()
-                    .is_some_and(|other| connection.same_board(&other))
-            })
-            .cloned()
-            .ok_or(CodexErr::ThreadNotFound(thread_id))
-    }
-
-    /// Updates metadata for loaded and cold threads through one entrypoint.
-    ///
-    /// Loaded threads route through `CodexThread`/`LiveThread`, so metadata changes stay ordered
-    /// with live rollout writes. Cold threads go directly to the store, which owns unloaded JSONL
-    /// compatibility and SQLite metadata updates. This API always returns a materialized thread;
-    /// if the store reports a successful no-op without one, it performs a fallback read.
-    pub async fn update_thread_metadata(
-        &self,
-        thread_id: ThreadId,
-        patch: ThreadMetadataPatch,
-        include_archived: bool,
-    ) -> CodexResult<StoredThread> {
-        if let Ok(thread) = self.get_thread(thread_id).await {
-            if thread.config_snapshot().await.ephemeral {
-                return Err(CodexErr::InvalidRequest(format!(
-                    "ephemeral thread does not support metadata updates: {thread_id}"
-                )));
-            }
-            return thread
-                .update_thread_metadata(patch, include_archived)
-                .await
-                .map_err(|err| thread_store_metadata_update_error(thread_id, err));
-        }
-        let updated = self
-            .state
-            .thread_store
-            .update_thread_metadata(UpdateThreadMetadataParams {
-                thread_id,
-                patch,
-                include_archived,
-            })
-            .await
-            .map_err(|err| match err {
-                ThreadStoreError::ThreadNotFound { thread_id } => {
-                    CodexErr::ThreadNotFound(thread_id)
-                }
-                err => thread_store_metadata_update_error(thread_id, err),
-            })?;
-        match updated {
-            Some(thread) => Ok(thread),
-            None => self
-                .state
-                .thread_store
-                .read_thread(ReadThreadParams {
-                    thread_id,
-                    include_archived,
-                    include_history: false,
-                })
-                .await
-                .map_err(|err| thread_store_metadata_update_error(thread_id, err)),
-        }
-    }
-
-    /// Moves a thread to, within, or out of a server-ordered section.
-    pub async fn move_thread_to_section(
-        &self,
-        thread_id: ThreadId,
-        section: Option<&str>,
-        before_thread_id: Option<ThreadId>,
-    ) -> CodexResult<()> {
-        if let Ok(thread) = self.get_thread(thread_id).await {
-            if thread.config_snapshot().await.ephemeral {
-                return Err(CodexErr::InvalidRequest(format!(
-                    "ephemeral thread does not support section moves: {thread_id}"
-                )));
-            }
-            // Explicit placement must work before the first turn materializes the thread.
-            thread.ensure_rollout_materialized().await;
-            thread.flush_rollout().await?;
-        }
-
-        self.state
-            .thread_store
-            .move_thread_to_section(MoveThreadToSectionParams {
-                thread_id,
-                section: section.map(ToOwned::to_owned),
-                before_thread_id,
-            })
-            .await
-            .map_err(|err| thread_store_metadata_update_error(thread_id, err))
-    }
-
     /// List `thread_id` plus all known descendants in its spawn subtree.
     pub async fn list_agent_subtree_thread_ids(
         &self,
@@ -802,20 +503,6 @@ impl ThreadManager {
         let mut seen_thread_ids = HashSet::new();
         subtree_thread_ids.push(thread_id);
         seen_thread_ids.insert(thread_id);
-
-        if let Some(agent_graph_store) = self.state.agent_graph_store() {
-            for descendant_id in agent_graph_store
-                .list_thread_spawn_descendants(thread_id, /*status_filter*/ None)
-                .await
-                .map_err(|err| {
-                    CodexErr::Fatal(format!("failed to load thread-spawn descendants: {err}"))
-                })?
-            {
-                if seen_thread_ids.insert(descendant_id) {
-                    subtree_thread_ids.push(descendant_id);
-                }
-            }
-        }
 
         for descendant_id in self
             .agent_control()
@@ -836,67 +523,6 @@ impl ThreadManager {
             options, /*forked_from_thread_id*/ None, /*startup*/ None,
         ))
         .await
-    }
-
-    /// Starts a fresh internal session associated with an existing parent thread.
-    pub async fn spawn_internal_session(
-        &self,
-        parent_thread_id: ThreadId,
-        options: StartThreadOptions,
-    ) -> CodexResult<NewThread> {
-        self.spawn_internal_session_with_history(
-            parent_thread_id,
-            options,
-            InitialHistory::New,
-            /*inherited_instructions*/ None,
-        )
-        .await
-    }
-
-    /// Starts an internal session from an explicitly selected, committed history.
-    ///
-    /// The caller selects the history; this never reads an in-flight parent turn or
-    /// appends an interruption marker. Authentication and budget still come from the parent.
-    pub async fn fork_internal_session(
-        &self,
-        parent_thread_id: ThreadId,
-        options: StartThreadOptions,
-        history: Vec<RolloutItem>,
-    ) -> CodexResult<NewThread> {
-        self.spawn_internal_session_with_history(
-            parent_thread_id,
-            options,
-            InitialHistory::Forked(history),
-            /*inherited_instructions*/ None,
-        )
-        .await
-    }
-
-    pub(crate) async fn spawn_internal_session_with_history(
-        &self,
-        parent_thread_id: ThreadId,
-        mut options: StartThreadOptions,
-        history: InitialHistory,
-        inherited_instructions: Option<SessionInstructions>,
-    ) -> CodexResult<NewThread> {
-        if !matches!(options.session_source, Some(SessionSource::Internal(_))) {
-            return Err(CodexErr::InvalidRequest(
-                "internal sessions require an internal session source".to_string(),
-            ));
-        }
-        let parent = self.get_thread(parent_thread_id).await?;
-        options.initial_history = history;
-        options.internal_parent = Some(InternalSessionParent {
-            thread_id: parent_thread_id,
-            auth_manager: Arc::clone(&parent.session.services.auth_manager),
-            agent_control: AgentControlInit::Provided {
-                control: Arc::clone(&parent.session.services.agent_control),
-                runtime: parent.session.services.local_agent_runtime.clone(),
-            },
-            originator: parent.config_snapshot().await.originator,
-            inherited_instructions,
-        });
-        self.start_thread(options).await
     }
 
     /// Allocates a thread ID before startup so a caller can associate host-owned state with it.
@@ -921,164 +547,12 @@ impl ThreadManager {
                 .unwrap_or(resumed_session_source),
         );
         options.thread_source = options.thread_source.take().or(resumed_thread_source);
-        let parent = options.internal_parent.take();
-        if parent.is_some()
-            && (!matches!(options.session_source, Some(SessionSource::Internal(_)))
-                || matches!(options.initial_history, InitialHistory::Resumed(_)))
-        {
-            return Err(CodexErr::InvalidRequest(
-                "a captured internal parent requires a new or forked internal session".to_owned(),
-            ));
-        }
-        let mut request = if let Some(parent) = parent {
-            let mut request =
-                ThreadSpawnRequest::new(options, parent.auth_manager, parent.agent_control);
-            request.parent_thread_id = Some(parent.thread_id);
-            request.parent_originator = Some(parent.originator);
-            request.inherited_instructions = parent.inherited_instructions;
-            request.forked_from_thread_id = request.options.initial_history.forked_from_id();
-            request
-        } else {
-            let agent_control = self.agent_control_for_config(&options.config);
-            let mut request = ThreadSpawnRequest::new(
-                options,
-                Arc::clone(&self.state.auth_manager),
-                agent_control,
-            );
-            request.forked_from_thread_id = forked_from_thread_id;
-            request
-        };
+        let agent_control = self.agent_control_for_config(&options.config);
+        let mut request =
+            ThreadSpawnRequest::new(options, Arc::clone(&self.state.auth_manager), agent_control);
+        request.forked_from_thread_id = forked_from_thread_id;
         request.startup = startup;
         Box::pin(self.state.spawn_thread(request)).await
-    }
-
-    // TODO(jif) merge with fork_agent
-    /// Spawn a subagent from a legacy thread's full persisted history.
-    ///
-    /// Paginated sources are rejected. For paginated thread forks, use
-    /// [`ThreadStore::prepare_fork`] and [`Self::fork_prepared_thread`].
-    pub async fn spawn_legacy_subagent(
-        &self,
-        forked_from_thread_id: ThreadId,
-        mut options: StartThreadOptions,
-    ) -> CodexResult<NewThread> {
-        let fork_source = self.get_thread(forked_from_thread_id).await?;
-        // Persist queued rollout updates before reading the fork snapshot.
-        fork_source.ensure_rollout_materialized().await;
-        fork_source.flush_rollout().await?;
-        let stored_thread = fork_source
-            .read_thread(
-                /*include_archived*/ true, /*include_history*/ true,
-            )
-            .await
-            .map_err(|err| {
-                CodexErr::Fatal(format!(
-                    "failed to read subagent fork source {forked_from_thread_id}: {err}"
-                ))
-            })?;
-        let history = stored_thread_to_initial_history(stored_thread, fork_source.rollout_path())?;
-        let inherited_multi_agent_version = fork_source
-            .multi_agent_version()
-            .unwrap_or(MultiAgentVersion::V1);
-        options.initial_history = fork_history_from_snapshot(
-            ForkSnapshot::Interrupted,
-            history,
-            InterruptedTurnHistoryMarker::from_config_and_version(
-                &options.config,
-                inherited_multi_agent_version,
-            ),
-        );
-        self.start_thread_inner(options, Some(forked_from_thread_id), /*startup*/ None)
-            .await
-    }
-
-    /// Resume a legacy thread by reading its full rollout history.
-    ///
-    /// Paginated sources are rejected. Load their context with
-    /// [`ThreadStore::load_latest_model_context`] and pass it to
-    /// [`Self::resume_thread_with_history`] instead.
-    pub async fn resume_legacy_thread_from_rollout(
-        &self,
-        config: Config,
-        rollout_path: PathBuf,
-        auth_manager: Arc<AuthManager>,
-        parent_trace: Option<W3cTraceContext>,
-        client_mcp_extensions: ClientMcpExtensions,
-    ) -> CodexResult<NewThread> {
-        let initial_history = self
-            .legacy_initial_history_from_rollout_path(rollout_path)
-            .await?;
-        Box::pin(self.resume_thread_with_history(
-            config,
-            initial_history,
-            auth_manager,
-            parent_trace,
-            client_mcp_extensions,
-        ))
-        .await
-    }
-
-    /// Reloads a recorded Multi-Agent V2 child through its currently loaded immediate parent.
-    ///
-    /// The child keeps the existing parent-controlled reload semantics. Callers cannot supply
-    /// configuration overrides, and an unavailable or unrecognized owner is an error.
-    pub async fn ensure_multi_agent_v2_child_loaded(
-        &self,
-        child_thread_id: ThreadId,
-    ) -> CodexResult<()> {
-        let stored_thread = self
-            .state
-            .read_stored_thread(ReadThreadParams {
-                thread_id: child_thread_id,
-                include_archived: true,
-                include_history: false,
-            })
-            .await?;
-        let Some(parent_thread_id) = stored_thread.parent_thread_id else {
-            return Err(CodexErr::InvalidRequest(format!(
-                "thread {child_thread_id} is not a recorded multi-agent v2 child"
-            )));
-        };
-        let parent = self.get_thread(parent_thread_id).await.map_err(|_| {
-            CodexErr::InvalidRequest(format!(
-                "cannot resume multi-agent v2 child {child_thread_id}: parent {parent_thread_id} is not loaded; resume the parent first"
-            ))
-        })?;
-        parent
-            .session
-            .services
-            .agent_control
-            .ensure_child_loaded(parent_thread_id, child_thread_id)
-            .await
-    }
-
-    #[instrument(level = "trace", skip_all)]
-    pub async fn resume_thread_with_history(
-        &self,
-        config: Config,
-        initial_history: InitialHistory,
-        auth_manager: Arc<AuthManager>,
-        parent_trace: Option<W3cTraceContext>,
-        client_mcp_extensions: ClientMcpExtensions,
-    ) -> CodexResult<NewThread> {
-        let agent_control = self.agent_control_for_config(&config);
-        let (session_source, thread_source) = initial_history
-            .get_resumed_session_sources()
-            .unwrap_or_else(|| (self.state.session_source.clone(), None));
-        let options = StartThreadOptions {
-            initial_history,
-            session_source: Some(session_source),
-            thread_source,
-            parent_trace,
-            client_mcp_extensions,
-            ..StartThreadOptions::new(config)
-        };
-        Box::pin(self.state.spawn_thread(ThreadSpawnRequest::new(
-            options,
-            auth_manager,
-            agent_control,
-        )))
-        .await
     }
 
     /// Removes the thread from the manager's internal map, though the thread is stored
@@ -1086,24 +560,6 @@ impl ThreadManager {
     /// Returns the thread if the thread was found and removed.
     pub async fn remove_thread(&self, thread_id: &ThreadId) -> Option<Arc<CodexThread>> {
         self.state.threads.write().await.remove(thread_id)
-    }
-
-    /// Removes a runtime for a client request, leaving internal workers with their owner.
-    /// The access check and removal share the same lock so a rejected worker stays registered.
-    pub async fn remove_thread_for_client(
-        &self,
-        thread_id: &ThreadId,
-    ) -> CodexResult<Option<Arc<CodexThread>>> {
-        let mut threads = self.state.threads.write().await;
-        if threads
-            .get(thread_id)
-            .is_some_and(|thread| thread.session_source.is_internal())
-        {
-            return Err(CodexErr::InvalidRequest(
-                "live internal threads can only be removed by their owner".to_owned(),
-            ));
-        }
-        Ok(threads.remove(thread_id))
     }
 
     /// Removes a thread only if `thread_id` still maps to `expected`.
@@ -1177,181 +633,6 @@ impl ThreadManager {
         report
     }
 
-    /// Captures the parent's current settings for a persisted-history fork.
-    /// Apply the returned settings to the new thread before starting its first turn.
-    pub async fn fork_options_from_parent(
-        &self,
-        source_thread_id: ThreadId,
-    ) -> CodexResult<(StartThreadOptions, CodexThreadSettingsOverrides)> {
-        let parent = self.get_thread(source_thread_id).await?;
-        let (config, settings, environments, reasoning_effort_pin) =
-            parent.session.fork_config().await;
-        let mut thread_extension_init = ExtensionDataInit::default();
-        thread_extension_init.insert(reasoning_effort_pin);
-        Ok((
-            StartThreadOptions {
-                history_mode: Some(settings.history_mode),
-                environments: Some(settings.environments.into_requests().environment_requests),
-                inherited_environments: Some(environments),
-                client_mcp_extensions: parent.client_mcp_extensions(),
-                thread_extension_init,
-                turn_extension_init: settings.turn_extension_init,
-                ..StartThreadOptions::new(config)
-            },
-            CodexThreadSettingsOverrides {
-                collaboration_mode: Some(settings.collaboration_mode),
-                ..Default::default()
-            },
-        ))
-    }
-
-    /// Fork a legacy thread by snapshotting its full rollout history according to
-    /// `snapshot` and starting a new thread with identical configuration
-    /// (unless overridden by the caller's options). The new thread has a fresh id.
-    /// Fork history replaces `options.initial_history`; hosts can supply the new
-    /// task's instruction provider through the same options as thread creation.
-    ///
-    /// Paginated sources are rejected. Use [`ThreadStore::prepare_fork`] and
-    /// [`Self::fork_prepared_thread`] for paginated thread forks.
-    pub async fn fork_legacy_thread<S>(
-        &self,
-        snapshot: S,
-        options: StartThreadOptions,
-        path: PathBuf,
-    ) -> CodexResult<NewThread>
-    where
-        S: Into<ForkSnapshot>,
-    {
-        let snapshot = snapshot.into();
-        let history = self.legacy_initial_history_from_rollout_path(path).await?;
-        self.fork_thread_from_history(snapshot, options, history)
-            .await
-    }
-
-    async fn legacy_initial_history_from_rollout_path(
-        &self,
-        rollout_path: PathBuf,
-    ) -> CodexResult<InitialHistory> {
-        let requested_rollout_path = rollout_path.clone();
-        let stored_thread = self
-            .state
-            .thread_store
-            .read_thread_by_rollout_path(ReadThreadByRolloutPathParams {
-                rollout_path,
-                include_archived: true,
-                include_history: true,
-            })
-            .await
-            .map_err(thread_store_rollout_read_error)?;
-        stored_thread_to_initial_history(stored_thread, Some(requested_rollout_path))
-    }
-
-    /// Fork an existing thread from already-loaded store history.
-    pub async fn fork_thread_from_history<S>(
-        &self,
-        snapshot: S,
-        options: StartThreadOptions,
-        history: InitialHistory,
-    ) -> CodexResult<NewThread>
-    where
-        S: Into<ForkSnapshot>,
-    {
-        self.fork_thread_with_initial_history(
-            options,
-            ForkHistory {
-                snapshot: snapshot.into(),
-                initial_history: history,
-                persistence: ForkPersistence::Copied,
-            },
-        )
-        .await
-    }
-
-    /// Fork prepared reference-backed history using the same snapshot semantics as copied forks.
-    pub async fn fork_prepared_thread(
-        &self,
-        options: StartThreadOptions,
-        prepared: PreparedFork,
-    ) -> CodexResult<NewThread> {
-        let history = InitialHistory::Resumed(ResumedHistory {
-            history_revision: None,
-            conversation_id: prepared.source_thread_id,
-            history: Arc::clone(&prepared.model_context),
-            rollout_path: None,
-        });
-        let fork_persistence = ForkPersistence::Referenced {
-            history_base: prepared.history_base,
-            inherited_item_count: prepared.model_context.len(),
-        };
-        let result = self
-            .fork_thread_with_initial_history(
-                options,
-                ForkHistory {
-                    snapshot: ForkSnapshot::Interrupted,
-                    initial_history: history,
-                    persistence: fork_persistence,
-                },
-            )
-            .await;
-        drop(prepared);
-        result
-    }
-
-    async fn fork_thread_with_initial_history(
-        &self,
-        mut options: StartThreadOptions,
-        fork_history: ForkHistory,
-    ) -> CodexResult<NewThread> {
-        let ForkHistory {
-            snapshot,
-            initial_history: history,
-            persistence: fork_persistence,
-        } = fork_history;
-        // `forked_from_id()` describes this history's existing lineage. When
-        // forking a resumed thread, the child copies the resumed thread itself.
-        let source_thread_id = match &history {
-            InitialHistory::Resumed(resumed) => Some(resumed.conversation_id),
-            InitialHistory::Forked(_) => history.forked_from_id(),
-            InitialHistory::New | InitialHistory::Cleared => None,
-        };
-        // Capture the live source before later startup work can unload it. Keep
-        // the fork's own providers, not the source's task-bound callback.
-        let instructions = self
-            .state
-            .instructions_for_spawn(
-                options
-                    .session_source
-                    .as_ref()
-                    .unwrap_or(&self.state.session_source),
-                /*parent_thread_id*/ None,
-                source_thread_id,
-                options.thread_instructions_provider.clone(),
-            )
-            .await;
-        let multi_agent_version = self
-            .state
-            .effective_multi_agent_version_for_spawn(
-                &history,
-                /*session_source*/ None,
-                /*parent_thread_id*/ None,
-                source_thread_id,
-                &options.config,
-            )
-            .await;
-        let interrupted_marker = InterruptedTurnHistoryMarker::from_config_and_version(
-            &options.config,
-            multi_agent_version,
-        );
-        options.initial_history = fork_history_from_snapshot(snapshot, history, interrupted_marker);
-        let agent_control = self.agent_control_for_config(&options.config);
-        let mut request =
-            ThreadSpawnRequest::new(options, Arc::clone(&self.state.auth_manager), agent_control);
-        request.forked_from_thread_id = source_thread_id;
-        request.fork_persistence = fork_persistence;
-        request.inherited_instructions = Some(instructions);
-        Box::pin(self.state.spawn_thread(request)).await
-    }
-
     pub(crate) fn agent_control(&self) -> LocalAgentControl {
         LocalAgentControl::new(
             Arc::downgrade(&self.state),
@@ -1379,19 +660,8 @@ impl ThreadManagerState {
             .for_root(root_thread_id, provider)
     }
 
-    pub(crate) fn agent_graph_store(&self) -> Option<Arc<dyn AgentGraphStore>> {
-        self.agent_graph_store.clone()
-    }
-
     pub(crate) async fn list_thread_ids(&self) -> Vec<ThreadId> {
-        self.threads
-            .read()
-            .await
-            .iter()
-            .filter_map(|(thread_id, thread)| {
-                (!thread.session_source.is_internal()).then_some(*thread_id)
-            })
-            .collect()
+        self.threads.read().await.keys().copied().collect()
     }
 
     /// List parent-child edges for currently loaded thread-spawn agents.
@@ -1400,17 +670,11 @@ impl ThreadManagerState {
             .read()
             .await
             .iter()
-            .filter_map(|(thread_id, thread)| {
-                if thread.session_source.is_internal() {
-                    return None;
-                }
-                match &thread.session_source {
-                    SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                        parent_thread_id,
-                        ..
-                    }) => Some((*parent_thread_id, *thread_id)),
-                    _ => None,
-                }
+            .filter_map(|(thread_id, thread)| match &thread.session_source {
+                SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id, ..
+                }) => Some((*parent_thread_id, *thread_id)),
+                _ => None,
             })
             .collect()
     }
@@ -1419,50 +683,41 @@ impl ThreadManagerState {
     pub(crate) async fn get_thread(&self, thread_id: ThreadId) -> CodexResult<Arc<CodexThread>> {
         let threads = self.threads.read().await;
         match threads.get(&thread_id) {
-            Some(thread) if !thread.session_source.is_internal() => Ok(thread.clone()),
-            Some(_) | None => Err(CodexErr::ThreadNotFound(thread_id)),
+            Some(thread) => Ok(thread.clone()),
+            None => Err(CodexErr::ThreadNotFound(thread_id)),
         }
     }
 
     pub(crate) async fn read_stored_thread(
         &self,
-        params: ReadThreadParams,
+        thread_id: ThreadId,
+        include_history: bool,
     ) -> CodexResult<StoredThread> {
-        let thread_id = params.thread_id;
         self.thread_store
-            .read_thread(params)
+            .read_thread(thread_id, include_history)
             .await
             .map_err(|err| match err {
                 ThreadStoreError::ThreadNotFound { thread_id } => {
                     CodexErr::ThreadNotFound(thread_id)
-                }
-                ThreadStoreError::InvalidRequest { message } => {
-                    if message.starts_with("no rollout found for thread id ") {
-                        CodexErr::ThreadNotFound(thread_id)
-                    } else {
-                        CodexErr::Fatal(format!(
-                            "failed to read stored thread {thread_id}: invalid thread-store request: {message}"
-                        ))
-                    }
                 }
                 err => CodexErr::Fatal(format!("failed to read stored thread {thread_id}: {err}")),
             })
     }
 
-    pub(crate) async fn load_latest_model_context(
+    pub(crate) async fn load_thread_history(
         &self,
-        params: LoadThreadHistoryParams,
-    ) -> CodexResult<StoredModelContext> {
-        let thread_id = params.thread_id;
+        thread_id: ThreadId,
+    ) -> CodexResult<Vec<RolloutItem>> {
         self.thread_store
-            .load_latest_model_context(params)
+            .load_history(thread_id)
             .await
+            .map(|history| history.items)
             .map_err(|err| match err {
                 ThreadStoreError::ThreadNotFound { thread_id } => {
                     CodexErr::ThreadNotFound(thread_id)
                 }
                 err => CodexErr::Fatal(format!(
-                    "failed to load model context for thread {thread_id}: {err}"
+                    "failed to load history for thread {thread_id}: {err}"
                 )),
             })
     }
@@ -1668,7 +923,6 @@ impl ThreadManagerState {
         request.parent_thread_id = parent_thread_id;
         if forked {
             request.forked_from_thread_id = parent_thread_id;
-            request.fork_persistence = ForkPersistence::CopiedDeferred;
         }
         Box::pin(self.spawn_thread(request)).await
     }
@@ -1748,7 +1002,6 @@ impl ThreadManagerState {
             parent_thread_id,
             parent_originator,
             forked_from_thread_id,
-            fork_persistence,
             inherited_environments,
             inherited_instructions,
             user_shell_override,
@@ -1773,7 +1026,6 @@ impl ThreadManagerState {
             thread_instructions_provider,
             allow_provider_model_fallback,
             initial_history,
-            internal_parent: _,
             history_mode,
             session_source,
             thread_source,
@@ -1826,16 +1078,6 @@ impl ThreadManagerState {
             let mut threads = self.threads.write().await;
             if let Some(thread) = threads.get(&resumed.conversation_id).cloned() {
                 if thread.is_running() {
-                    // The parent's pool still owns this runtime and its rollout writer.
-                    // Returning it would report success without allowing client access.
-                    if let Some(requested_rollout_path) = resumed.rollout_path.as_deref()
-                        && thread.rollout_path().as_deref() != Some(requested_rollout_path)
-                    {
-                        return Err(CodexErr::InvalidRequest(format!(
-                            "thread {} is already running with a different rollout path",
-                            resumed.conversation_id
-                        )));
-                    }
                     let session_configured =
                         thread.startup_metadata().to_session_configured_event();
                     startup_state.release_membership();
@@ -1880,16 +1122,6 @@ impl ThreadManagerState {
         let initial_host_config = (self.agent_control_factory.is_some()
             && parent_thread_id.is_none())
         .then(|| AgentConfigUpdate::ServiceTier(config.service_tier.clone()));
-        // Both resume entry points must restore identities before children can be loaded lazily.
-        if let InitialHistory::Resumed(resumed) = &initial_history
-            && initial_history.get_multi_agent_version() == Some(MultiAgentVersion::V2)
-            && !session_source.is_non_root_agent()
-            && let AgentControlInit::Local(control) = &agent_control
-        {
-            control
-                .restore_v2_agent_metadata(&config, resumed.conversation_id)
-                .await;
-        }
         let (instructions, extensions, mcp_manager, multi_agent_version) =
             if isolation == codex_extension_api::SessionIsolation::Isolated {
                 let extensions = thread_extension_init
@@ -1954,8 +1186,6 @@ impl ThreadManagerState {
             starting.retain(|runtime| runtime.strong_count() != 0);
             starting.push(Arc::downgrade(&source_changed_during_startup));
         }
-        let attachment_source =
-            forked_from_thread_id.filter(|_| matches!(&initial_history, InitialHistory::Forked(_)));
         let spawn_result = Session::spawn(SessionSpawnArgs {
             startup,
             config,
@@ -1972,7 +1202,6 @@ impl ThreadManagerState {
             conversation_history: initial_history,
             history_initialization,
             requested_history_mode: history_mode,
-            fork_persistence,
             session_source,
             forked_from_thread_id,
             parent_thread_id,
@@ -1989,7 +1218,6 @@ impl ThreadManagerState {
             turn_extension_init,
             client_mcp_extensions,
             reserved_thread_id,
-            image_store: Arc::clone(&self.image_store),
             thread_store: Arc::clone(&self.thread_store),
             attestation_provider: self.attestation_provider.clone(),
             external_time_provider: self.external_time_provider.clone(),
@@ -2006,21 +1234,6 @@ impl ThreadManagerState {
                 return Err(error);
             }
         };
-        if let Some(source_thread_id) = attachment_source
-            && session.live_thread().is_some()
-            && self.thread_store.supports_thread_attachments()
-        {
-            // Fork initialization already handles persistence. Copy current membership before
-            // registration, but do not fail the conversation fork for attachment metadata errors.
-            let thread_id = session.thread_id();
-            if let Err(error) = self
-                .thread_store
-                .copy_thread_attachments(source_thread_id, thread_id)
-                .await
-            {
-                warn!(%thread_id, %source_thread_id, %error, "failed to copy fork attachments");
-            }
-        }
         let finalize_result = self
             .finalize_thread_spawn(session, io, tracked_session_source, initial_host_config)
             .await;
@@ -2079,7 +1292,6 @@ impl ThreadManagerState {
                     session,
                     io,
                     ThreadStartupMetadata::from(&session_configured),
-                    session_configured.rollout_path.clone(),
                     session_source,
                 ));
                 e.insert(thread.clone());
@@ -2104,83 +1316,6 @@ impl ThreadManagerState {
     }
 }
 
-fn stored_thread_to_initial_history(
-    stored_thread: StoredThread,
-    rollout_path: Option<PathBuf>,
-) -> CodexResult<InitialHistory> {
-    let thread_id = stored_thread.thread_id;
-    let history = stored_thread.history.ok_or_else(|| {
-        CodexErr::Fatal(format!(
-            "thread {thread_id} did not include persisted history"
-        ))
-    })?;
-    Ok(InitialHistory::Resumed(ResumedHistory {
-        history_revision: history.revision,
-        conversation_id: thread_id,
-        history: Arc::new(history.items),
-        rollout_path: rollout_path.or(stored_thread.rollout_path),
-    }))
-}
-
-fn thread_store_rollout_read_error(err: ThreadStoreError) -> CodexErr {
-    match err {
-        ThreadStoreError::ThreadNotFound { thread_id } => CodexErr::ThreadNotFound(thread_id),
-        ThreadStoreError::InvalidRequest { message } => CodexErr::InvalidRequest(message),
-        err => CodexErr::Fatal(format!("failed to read thread by rollout path: {err}")),
-    }
-}
-
-fn thread_store_metadata_update_error(thread_id: ThreadId, err: ThreadStoreError) -> CodexErr {
-    match err {
-        ThreadStoreError::ThreadNotFound { thread_id } => CodexErr::ThreadNotFound(thread_id),
-        ThreadStoreError::InvalidRequest { message } => CodexErr::InvalidRequest(message),
-        ThreadStoreError::Unsupported { operation } => CodexErr::UnsupportedOperation(format!(
-            "thread metadata update is not supported by this store: {operation}"
-        )),
-        err => CodexErr::Fatal(format!(
-            "failed to update thread metadata {thread_id}: {err}"
-        )),
-    }
-}
-
-/// Return a fork snapshot cut strictly before the nth user message (0-based).
-///
-/// Out-of-range values keep the full committed history at a turn boundary, but
-/// when the source thread is currently mid-turn they fall back to cutting
-/// before the active turn's opening boundary so the fork omits the unfinished
-/// suffix entirely.
-fn truncate_before_nth_user_message(
-    history: InitialHistory,
-    n: usize,
-    snapshot_state: &SnapshotTurnState,
-) -> InitialHistory {
-    let mut items = match history {
-        InitialHistory::New | InitialHistory::Cleared => Vec::new(),
-        InitialHistory::Resumed(resumed) => Arc::unwrap_or_clone(resumed.history),
-        InitialHistory::Forked(items) => items,
-    };
-    let user_positions = truncation::user_message_positions_in_rollout(&items);
-    let rolled = if snapshot_state.ends_mid_turn && n >= user_positions.len() {
-        if let Some(cut_idx) = snapshot_state
-            .active_turn_start_index
-            .or_else(|| user_positions.last().copied())
-        {
-            items.truncate(cut_idx);
-            items
-        } else {
-            items
-        }
-    } else {
-        truncation::truncate_rollout_before_nth_user_message_from_start(items, n)
-    };
-
-    if rolled.is_empty() {
-        InitialHistory::New
-    } else {
-        InitialHistory::Forked(rolled)
-    }
-}
-
 #[derive(Debug, Eq, PartialEq)]
 struct SnapshotTurnState {
     ends_mid_turn: bool,
@@ -2192,38 +1327,30 @@ struct SnapshotTurnState {
 
 fn snapshot_turn_state(history: &InitialHistory) -> SnapshotTurnState {
     let rollout_items = history.get_rollout_items();
-    let mut builder = ThreadHistoryBuilder::new();
-    for item in rollout_items {
-        builder.handle_rollout_item(item);
-    }
-    let active_turn_id = builder.active_turn_id_if_explicit();
-    if builder.has_active_turn() && active_turn_id.is_some() {
-        let active_turn_snapshot = builder.active_turn_snapshot();
-        if active_turn_snapshot
-            .as_ref()
-            .is_some_and(|turn| turn.status != TurnStatus::InProgress)
-        {
-            return SnapshotTurnState {
-                ends_mid_turn: false,
-                active_turn_id: None,
-                active_turn_started_at: None,
-                active_turn_root_id: None,
-                active_turn_start_index: None,
-            };
+    // The last explicitly started turn that has not completed or aborted is still running.
+    let mut active_turn: Option<(usize, &codex_protocol::protocol::TurnStartedEvent)> = None;
+    for (index, item) in rollout_items.iter().enumerate() {
+        match item {
+            RolloutItem::EventMsg(EventMsg::TurnStarted(started)) => {
+                active_turn = Some((index, started));
+            }
+            RolloutItem::EventMsg(EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_)) => {
+                active_turn = None;
+            }
+            _ => {}
         }
-
+    }
+    if let Some((start_index, started)) = active_turn {
         return SnapshotTurnState {
             ends_mid_turn: true,
-            active_turn_id,
-            active_turn_started_at: active_turn_snapshot
-                .as_ref()
-                .and_then(|turn| turn.started_at),
-            active_turn_root_id: active_turn_snapshot.and_then(|turn| turn.root_turn_id),
-            active_turn_start_index: builder.active_turn_start_index(),
+            active_turn_id: Some(started.turn_id.clone()),
+            active_turn_started_at: started.started_at,
+            active_turn_root_id: started.root_turn_id.clone(),
+            active_turn_start_index: Some(start_index),
         };
     }
 
-    let Some(last_user_position) = truncation::user_message_positions_in_rollout(rollout_items)
+    let Some(last_user_position) = user_message_positions_in_rollout(rollout_items)
         .last()
         .copied()
     else {
@@ -2253,37 +1380,33 @@ fn snapshot_turn_state(history: &InitialHistory) -> SnapshotTurnState {
     }
 }
 
-pub(crate) fn fork_history_from_snapshot(
-    snapshot: ForkSnapshot,
+/// Fork the current history as if the source thread had been interrupted now.
+///
+/// If the history ends mid-turn, this appends the same `<turn_aborted>` marker produced by a
+/// real interrupt. Otherwise the history is returned unchanged.
+pub(crate) fn fork_history_as_interrupted(
     history: InitialHistory,
     interrupted_marker: InterruptedTurnHistoryMarker,
 ) -> InitialHistory {
     let snapshot_state = snapshot_turn_state(&history);
-    match snapshot {
-        ForkSnapshot::TruncateBeforeNthUserMessage(nth_user_message) => {
-            truncate_before_nth_user_message(history, nth_user_message, &snapshot_state)
+    let history = match history {
+        InitialHistory::New => InitialHistory::New,
+        InitialHistory::Cleared => InitialHistory::Cleared,
+        InitialHistory::Forked(history) => InitialHistory::Forked(history),
+        InitialHistory::Resumed(resumed) => {
+            InitialHistory::Forked(Arc::unwrap_or_clone(resumed.history))
         }
-        ForkSnapshot::Interrupted => {
-            let history = match history {
-                InitialHistory::New => InitialHistory::New,
-                InitialHistory::Cleared => InitialHistory::Cleared,
-                InitialHistory::Forked(history) => InitialHistory::Forked(history),
-                InitialHistory::Resumed(resumed) => {
-                    InitialHistory::Forked(Arc::unwrap_or_clone(resumed.history))
-                }
-            };
-            if snapshot_state.ends_mid_turn {
-                append_interrupted_boundary(
-                    history,
-                    snapshot_state.active_turn_id,
-                    snapshot_state.active_turn_root_id,
-                    snapshot_state.active_turn_started_at,
-                    interrupted_marker,
-                )
-            } else {
-                history
-            }
-        }
+    };
+    if snapshot_state.ends_mid_turn {
+        append_interrupted_boundary(
+            history,
+            snapshot_state.active_turn_id,
+            snapshot_state.active_turn_root_id,
+            snapshot_state.active_turn_started_at,
+            interrupted_marker,
+        )
+    } else {
+        history
     }
 }
 

@@ -16,8 +16,6 @@ use crate::tasks::CompactTask;
 use crate::tasks::UserShellCommandMode;
 use crate::tasks::UserShellCommandTask;
 use crate::tasks::execute_user_shell_command;
-use crate::thread_manager::AgentTreeShutdownFailure;
-use crate::thread_manager::thread_store_error_kind;
 use codex_protocol::error::CodexErr;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::ErrorEvent;
@@ -26,10 +24,8 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ReviewRequest;
-use codex_protocol::protocol::ThreadMemoryMode;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::request_user_input::RequestUserInputResponse;
-use codex_thread_store::PersistContext;
 
 use crate::context_manager::is_user_turn_boundary;
 use codex_protocol::dynamic_tools::DynamicToolResponse;
@@ -176,39 +172,6 @@ pub async fn compact(sess: &Arc<Session>, sub_id: String) {
     sess.spawn_task(turn_context, Vec::new(), CompactTask).await;
 }
 
-pub(super) async fn persist_thread_memory_mode_update(
-    sess: &Arc<Session>,
-    mode: ThreadMemoryMode,
-) -> anyhow::Result<()> {
-    let live_thread = sess.live_thread_for_persistence("update thread memory mode")?;
-    live_thread.persist(PersistContext::Standard).await?;
-    live_thread.flush().await?;
-    live_thread
-        .update_memory_mode(mode, /*include_archived*/ false)
-        .await?;
-    live_thread.flush().await?;
-    Ok(())
-}
-
-/// Persists thread-level memory mode metadata for the active session.
-///
-/// This does not involve the model and only affects whether the thread is
-/// eligible for future memory generation.
-pub async fn set_thread_memory_mode(sess: &Arc<Session>, sub_id: String, mode: ThreadMemoryMode) {
-    if let Err(err) = persist_thread_memory_mode_update(sess, mode).await {
-        warn!("Failed to persist thread memory mode update to rollout: {err}");
-        let event = Event {
-            id: sub_id,
-            msg: EventMsg::Error(ErrorEvent {
-                misalignment: None,
-                message: err.to_string(),
-                codex_error_info: Some(CodexErrorInfo::Other),
-            }),
-        };
-        sess.send_event_raw(event).await;
-    }
-}
-
 pub(super) async fn shutdown_session_runtime(sess: &Arc<Session>) {
     let startup_prewarm = {
         let mut state = sess.state.lock().await;
@@ -267,31 +230,6 @@ pub async fn shutdown(sess: &Arc<Session>, sub_id: String) -> bool {
         i64::try_from(turn_count).unwrap_or(0),
         &[],
     );
-
-    // Gracefully flush and shutdown thread persistence on session end so tests
-    // that inspect durable state do not race with the background writer.
-    if let Some(live_thread) = sess.live_thread()
-        && let Err(e) = live_thread.shutdown().await
-    {
-        sess.services.local_agent_runtime.record_shutdown_failure(
-            AgentTreeShutdownFailure::operation_failed(
-                "session_shutdown",
-                "close_persistence",
-                Some(sess.thread_id),
-                thread_store_error_kind(&e),
-            ),
-        );
-        warn!("failed to shutdown thread persistence: {e}");
-        let event = Event {
-            id: sub_id.clone(),
-            msg: EventMsg::Error(ErrorEvent {
-                misalignment: None,
-                message: "Failed to shutdown thread persistence".to_string(),
-                codex_error_info: Some(CodexErrorInfo::Other),
-            }),
-        };
-        sess.send_event_raw(event).await;
-    }
 
     let event = Event {
         id: sub_id,
@@ -435,19 +373,6 @@ pub(super) async fn submission_loop(
                     let _ = reply.send(result);
                     false
                 }
-                Op::SuspendTurnAndShutdown { reply } => {
-                    let result =
-                        super::turn_suspension::suspend_turn_and_shutdown(&sess, sub.id.clone())
-                            .await;
-                    // Exit only after history is durable and its writer has closed; an error
-                    // must leave responsibility for the thread with the current worker.
-                    let should_exit = matches!(
-                        &result,
-                        Ok(codex_protocol::turn_input::SuspendTurnOutcome::Suspended { .. })
-                    );
-                    let _ = reply.send(result);
-                    should_exit
-                }
                 Op::ThreadSettings {
                     thread_settings,
                     reply,
@@ -521,10 +446,6 @@ pub(super) async fn submission_loop(
                     compact(&sess, sub.id.clone()).await;
                     false
                 }
-                Op::SetThreadMemoryMode { mode } => {
-                    set_thread_memory_mode(&sess, sub.id.clone(), mode).await;
-                    false
-                }
                 Op::RunUserShellCommand {
                     command,
                     timeout_ms,
@@ -563,19 +484,6 @@ pub(super) async fn submission_loop(
     // explicit shutdown op, still run session teardown.
     if !shutdown_received {
         shutdown_session_runtime(&sess).await;
-        if let Some(live_thread) = sess.live_thread()
-            && let Err(err) = live_thread.shutdown().await
-        {
-            sess.services.local_agent_runtime.record_shutdown_failure(
-                AgentTreeShutdownFailure::operation_failed(
-                    "session_shutdown",
-                    "close_persistence_after_channel_closed",
-                    Some(sess.thread_id),
-                    thread_store_error_kind(&err),
-                ),
-            );
-            warn!("failed to shutdown thread persistence after submission channel closed: {err}");
-        }
     }
     debug!("Agent loop exited");
 }

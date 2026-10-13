@@ -5,8 +5,6 @@ use crate::context::ContextualUserFragment;
 use crate::elicitation::ElicitationRegistration;
 use crate::session::SessionIo;
 use crate::session::SessionSettingsUpdate;
-use crate::session::Submission;
-use crate::session::new_submission_id;
 use crate::session::session::Session;
 use crate::session::startup_prewarm::PrewarmInput;
 use crate::session::step_settings::StepSettingsUpdate;
@@ -17,9 +15,7 @@ use codex_exec_server::SelectedCapabilityRootsStatus;
 use codex_extension_api::ConversationHistorySnapshot;
 use codex_extension_api::ThreadIdleCause;
 use codex_features::Feature;
-use codex_history::RolloutItem;
 use codex_otel::SessionTelemetry;
-use codex_otel::current_span_w3c_trace_context;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::Personality;
@@ -37,7 +33,6 @@ use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::ThreadHistoryMode;
-use codex_protocol::protocol::ThreadMemoryMode;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::protocol::ThreadSettingsSnapshot;
 use codex_protocol::protocol::ThreadSource;
@@ -49,31 +44,21 @@ use codex_protocol::protocol::W3cTraceContext;
 use codex_protocol::turn_input::RecoverTurnRequest;
 use codex_protocol::turn_input::StartIfIdleSubmission;
 use codex_protocol::turn_input::SteerSubmission;
-use codex_protocol::turn_input::SuspendTurnOutcome;
 use codex_protocol::turn_input::TurnInputMode;
 use codex_protocol::turn_input::TurnInputRequest;
 use codex_protocol::turn_input::TurnInputSubmission;
 use codex_protocol::turn_input::TurnStartOptions;
-use codex_thread_store::PersistContext;
-use codex_thread_store::StoredThread;
-use codex_thread_store::StoredThreadHistory;
-use codex_thread_store::ThreadMetadataPatch;
-use codex_thread_store::ThreadStoreError;
-use codex_thread_store::ThreadStoreResult;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::LegacyAppPathString;
 use codex_utils_path_uri::PathUri;
 use rmcp::model::ReadResourceRequestParams;
 use std::any::Any;
-use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
 use tokio::sync::oneshot;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
-
-use codex_rollout::state_db::StateDbHandle;
 
 static LIVE_THREADS: Gauge = Gauge::new("core.threads.live");
 
@@ -86,7 +71,6 @@ pub struct ThreadConfigSnapshot {
     pub service_tier: Option<String>,
     pub environments: TurnEnvironmentSelections,
     pub workspace_roots: Vec<AbsolutePathBuf>,
-    pub ephemeral: bool,
     pub reasoning_effort: Option<ReasoningEffort>,
     pub reasoning_summary: Option<ReasoningSummary>,
     pub personality: Option<Personality>,
@@ -156,7 +140,6 @@ pub struct CodexThread {
     // Registration source controls live access and lifecycle hooks.
     pub(crate) session_source: SessionSource,
     startup_metadata: ThreadStartupMetadata,
-    rollout_path: Option<PathBuf>,
     out_of_band_elicitations: Mutex<OutOfBandElicitations>,
     _diagnostics_guard: GaugeGuard,
 }
@@ -182,7 +165,6 @@ impl CodexThread {
         session: Arc<Session>,
         io: SessionIo,
         startup_metadata: ThreadStartupMetadata,
-        rollout_path: Option<PathBuf>,
         session_source: SessionSource,
     ) -> Self {
         Self {
@@ -191,7 +173,6 @@ impl CodexThread {
             residency_gate: Arc::default(),
             session_source,
             startup_metadata,
-            rollout_path,
             out_of_band_elicitations: Mutex::new(OutOfBandElicitations::default()),
             _diagnostics_guard: LIVE_THREADS.track(),
         }
@@ -304,25 +285,6 @@ impl CodexThread {
 
     pub async fn emit_thread_idle_lifecycle_if_idle(&self, cause: ThreadIdleCause) {
         self.session.emit_thread_idle_lifecycle_if_idle(cause).await;
-    }
-
-    /// Checkpoint initialization without activating speculative persistence.
-    pub async fn checkpoint_preparation(&self) -> std::io::Result<()> {
-        self.session
-            .try_ensure_rollout_materialized(PersistContext::ThreadPreparation)
-            .await
-    }
-
-    #[doc(hidden)]
-    pub async fn ensure_rollout_materialized(&self) {
-        self.session
-            .ensure_rollout_materialized(PersistContext::Standard)
-            .await;
-    }
-
-    #[doc(hidden)]
-    pub async fn flush_rollout(&self) -> std::io::Result<()> {
-        self.session.flush_rollout().await
     }
 
     pub async fn submit_with_trace(
@@ -447,49 +409,6 @@ impl CodexThread {
         }
     }
 
-    /// Stops the active unfinished root turn without recording TurnAborted or
-    /// TurnComplete, so another worker can recover its original turn ID.
-    ///
-    /// Suspension is refused while a currently loaded descendant exists. Past
-    /// descendants do not prevent recovery, and concurrent descendant admission
-    /// is not sealed. Queued user input and outstanding elicitation or
-    /// server-request waiters remain best effort and may be discarded.
-    ///
-    /// The session processes an accepted request even if its caller disconnects.
-    /// Callers must not transfer ownership until suspension succeeds, which
-    /// requires stopping execution, flushing history, and closing its writer.
-    pub async fn suspend_turn_and_shutdown(&self) -> CodexResult<SuspendTurnOutcome> {
-        if self.session_source.is_non_root_agent() {
-            return Err(CodexErr::UnsupportedOperation(
-                "turn suspension requires the owning root thread".to_string(),
-            ));
-        }
-
-        // The session owns accepted suspension, so dropping this caller cannot interrupt
-        // cancellation, persistence, or writer shutdown halfway through a handoff.
-        let (reply, result) = oneshot::channel();
-        self.io
-            .tx_sub
-            .send(Submission {
-                id: new_submission_id(),
-                op: Op::SuspendTurnAndShutdown { reply },
-                turn_extension_init: None,
-                trace: current_span_w3c_trace_context(),
-                parent_turn_id: None,
-                root_turn_id: None,
-                residency_guard: None,
-            })
-            .await
-            .map_err(|_| CodexErr::Fatal("thread session has stopped".to_string()))?;
-        let outcome = result
-            .await
-            .map_err(|_| CodexErr::Fatal("thread suspension reply was lost".to_string()))??;
-        if matches!(&outcome, SuspendTurnOutcome::Suspended { .. }) {
-            self.io.session_loop_termination.clone().await;
-        }
-        Ok(outcome)
-    }
-
     /// Steers only if `expected_turn_id` is still the active regular turn.
     pub async fn steer_turn(
         &self,
@@ -524,11 +443,6 @@ impl CodexThread {
             .await?;
         }
         self.io.submit_turn_input(request, mode).await
-    }
-
-    /// Persist whether this thread is eligible for future memory generation.
-    pub async fn set_thread_memory_mode(&self, mode: ThreadMemoryMode) -> anyhow::Result<()> {
-        self.session.set_thread_memory_mode(mode).await
     }
 
     /// Injects model-visible items into the currently active turn.
@@ -644,13 +558,6 @@ impl CodexThread {
         self.session.update_settings(updates).await.map(|_| ())
     }
 
-    /// Persists current settings without emitting a live settings event.
-    ///
-    /// Serializes snapshot capture and persistence with accepted settings updates.
-    pub async fn checkpoint_thread_settings(&self) -> ThreadStoreResult<()> {
-        self.session.checkpoint_thread_settings().await
-    }
-
     fn thread_settings_update(
         &self,
         overrides: CodexThreadSettingsOverrides,
@@ -741,9 +648,7 @@ impl CodexThread {
 
     /// Record raw Responses API items without starting a new turn.
     pub async fn inject_response_items(&self, items: Vec<ResponseItem>) -> CodexResult<()> {
-        self.inject_response_items_for_turn(items).await?;
-        self.checkpoint_preparation().await?;
-        Ok(())
+        self.inject_response_items_for_turn(items).await
     }
 
     /// Record raw Responses API items immediately before admitting a user turn.
@@ -788,10 +693,6 @@ impl CodexThread {
         Ok(())
     }
 
-    pub fn rollout_path(&self) -> Option<PathBuf> {
-        self.rollout_path.clone()
-    }
-
     /// Returns startup metadata without the one-time initial message replay.
     pub fn startup_metadata(&self) -> &ThreadStartupMetadata {
         &self.startup_metadata
@@ -799,64 +700,6 @@ impl CodexThread {
 
     pub(crate) fn is_running(&self) -> bool {
         !self.io.tx_sub.is_closed()
-    }
-
-    pub async fn load_history(
-        &self,
-        include_archived: bool,
-    ) -> ThreadStoreResult<StoredThreadHistory> {
-        let live_thread = self
-            .session
-            .live_thread_for_persistence("load history")
-            .map_err(|err| ThreadStoreError::Internal {
-                message: err.to_string(),
-            })?;
-        live_thread.load_history(include_archived).await
-    }
-
-    pub async fn read_thread(
-        &self,
-        include_archived: bool,
-        include_history: bool,
-    ) -> ThreadStoreResult<StoredThread> {
-        let live_thread = self
-            .session
-            .live_thread_for_persistence("read thread")
-            .map_err(|err| ThreadStoreError::Internal {
-                message: err.to_string(),
-            })?;
-        live_thread
-            .read_thread(include_archived, include_history)
-            .await
-    }
-
-    pub async fn update_thread_metadata(
-        &self,
-        patch: ThreadMetadataPatch,
-        include_archived: bool,
-    ) -> ThreadStoreResult<StoredThread> {
-        let live_thread = self
-            .session
-            .live_thread_for_persistence("update thread metadata")
-            .map_err(|err| ThreadStoreError::Internal {
-                message: err.to_string(),
-            })?;
-        live_thread.update_metadata(patch, include_archived).await
-    }
-
-    /// Appends rollout items through the live thread so derived metadata stays in sync.
-    pub async fn append_rollout_items(&self, items: &[RolloutItem]) -> ThreadStoreResult<()> {
-        let live_thread = self
-            .session
-            .live_thread_for_persistence("append rollout items")
-            .map_err(|err| ThreadStoreError::Internal {
-                message: err.to_string(),
-            })?;
-        live_thread.append_items(items).await
-    }
-
-    pub fn state_db(&self) -> Option<StateDbHandle> {
-        self.session.state_db()
     }
 
     pub async fn config_snapshot(&self) -> ThreadConfigSnapshot {

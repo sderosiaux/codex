@@ -5,7 +5,6 @@ use super::session::Session;
 use super::session::SessionSettingsUpdate;
 use super::step_settings::StepSettingsUpdate;
 use crate::WithTurnExtensionData;
-use codex_history::RolloutItem;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::protocol::Event;
@@ -13,22 +12,7 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ThreadSettingsAppliedEvent;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::protocol::ThreadSettingsSnapshot;
-use codex_thread_store::ThreadStoreResult;
 use tokio::sync::SemaphorePermit;
-
-impl Session {
-    /// Captures and flushes current settings under the shared persistence permit.
-    pub(crate) async fn checkpoint_thread_settings(&self) -> ThreadStoreResult<()> {
-        let _settings_guard = acquire_persistence_lock(self).await;
-        if let Some(live_thread) = self.live_thread() {
-            live_thread
-                .append_items(&[RolloutItem::EventMsg(applied_event(self).await)])
-                .await?;
-            live_thread.flush().await?;
-        }
-        Ok(())
-    }
-}
 
 /// Applies standalone thread settings. The caller holds the persistence permit through notification.
 pub(super) async fn update(
@@ -109,7 +93,7 @@ pub(super) async fn emit_applied(
         thread_settings: snapshot,
     });
     session
-        .send_event_raw_without_materializing_rollout(Event {
+        .send_event_raw(Event {
             id: submission_id,
             msg,
         })

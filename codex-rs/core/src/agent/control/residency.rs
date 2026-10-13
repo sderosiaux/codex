@@ -58,7 +58,6 @@ impl ThreadManagerState {
         // Once shutdown is submitted, cancellation cannot release delivery or capacity early.
         tokio::spawn(async move {
             let _residency_guard = residency_guard;
-            thread.ensure_rollout_materialized().await;
             if let Err(err) = thread.shutdown_and_wait().await {
                 teardown.record_shutdown_failure("stop_resident", CodexErrKind::from(&err).into());
                 teardown.complete();

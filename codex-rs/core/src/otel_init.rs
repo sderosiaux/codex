@@ -103,11 +103,3 @@ pub fn record_process_start(otel: Option<&OtelProvider>, originator: &str) {
     };
     let _ = codex_otel::record_process_start_once(metrics, originator);
 }
-
-pub fn install_sqlite_telemetry(otel: Option<&OtelProvider>, originator: &str) {
-    let Some(metrics) = otel.and_then(OtelProvider::metrics) else {
-        return;
-    };
-    let telemetry = codex_rollout::sqlite_telemetry_recorder(metrics.clone(), originator);
-    let _ = codex_state::install_process_db_telemetry(telemetry);
-}

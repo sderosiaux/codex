@@ -41,11 +41,7 @@ use codex_api::AgentIdentityTelemetry;
 use codex_api::ApiError;
 use codex_api::AuthProvider;
 use codex_api::Compression;
-use codex_api::MemoriesClient as ApiMemoriesClient;
-use codex_api::MemorySummarizeInput as ApiMemorySummarizeInput;
-use codex_api::MemorySummarizeOutput as ApiMemorySummarizeOutput;
 use codex_api::Provider as ApiProvider;
-use codex_api::RawMemory as ApiRawMemory;
 use codex_api::Reasoning;
 use codex_api::ReasoningContext;
 use codex_api::RequestTelemetry;
@@ -89,9 +85,7 @@ use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::protocol::AuthRecoveryEvent;
 use codex_protocol::protocol::Event as ProtocolEvent;
 use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::InternalSessionSource;
 use codex_protocol::protocol::SessionSource;
-use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::W3cTraceContext;
 use codex_tools::create_tools_json_for_responses_lite;
 use codex_tools::create_tools_raw_json_for_responses_api;
@@ -124,7 +118,6 @@ use crate::context::BaseInstructionsFragment;
 use crate::context::ContextualUserFragment;
 use crate::cyber_access_program;
 use crate::responses_metadata::CodexResponsesMetadata;
-use crate::responses_metadata::subagent_header_value;
 use codex_login::auth::AgentIdentityAuthPolicy;
 use codex_model_provider::AgentIdentitySessionFallback;
 use codex_model_provider::ProviderAuthScope;
@@ -149,7 +142,6 @@ pub const X_CODEX_TURN_STATE_HEADER: &str = "x-codex-turn-state";
 pub const X_CODEX_TURN_METADATA_HEADER: &str = "x-codex-turn-metadata";
 pub const X_CODEX_PARENT_THREAD_ID_HEADER: &str = "x-codex-parent-thread-id";
 pub const X_CODEX_WINDOW_ID_HEADER: &str = "x-codex-window-id";
-pub const X_OPENAI_MEMGEN_REQUEST_HEADER: &str = "x-openai-memgen-request";
 pub const X_OPENAI_SUBAGENT_HEADER: &str = "x-openai-subagent";
 pub const X_RESPONSESAPI_INCLUDE_TIMING_METRICS_HEADER: &str =
     "x-responsesapi-include-timing-metrics";
@@ -160,7 +152,6 @@ const WS_REQUEST_HEADER_RESPONSES_LITE_CLIENT_METADATA_KEY: &str =
 const RESPONSES_WEBSOCKETS_V2_BETA_HEADER_VALUE: &str = "responses_websockets=2026-02-06";
 const X_OPENAI_INTERNAL_CODEX_RESPONSES_LITE_HEADER: &str =
     "x-openai-internal-codex-responses-lite";
-const MEMORIES_SUMMARIZE_ENDPOINT: &str = "/memories/trace_summarize";
 
 fn session_telemetry_for_request(
     session_telemetry: &SessionTelemetry,
@@ -199,11 +190,6 @@ struct ModelClientState {
     disable_websockets: AtomicBool,
     agent_identity_session_fallback: AgentIdentitySessionFallback,
     cached_websocket_session: StdMutex<WebsocketSession>,
-}
-
-enum ClientRouting {
-    Workspace,
-    ConfiguredProvider,
 }
 
 /// Resolved API client setup for a single request attempt.
@@ -510,15 +496,6 @@ impl ModelClient {
     ) -> Self {
         let model_provider = create_model_provider(provider_info, auth_manager);
         let include_attestation = model_provider.supports_attestation();
-        // Fixed-effort workers use request-level effort even when managed requirements
-        // pin the feature on. Share this decision with update injection and pinning.
-        let memory_consolidation = matches!(
-            &session_source,
-            SessionSource::Internal(InternalSessionSource::MemoryConsolidation)
-                | SessionSource::SubAgent(SubAgentSource::MemoryConsolidation)
-        );
-        let reasoning_effort_override_enabled =
-            reasoning_effort_override_enabled && !memory_consolidation;
         Self {
             state: Arc::new(ModelClientState {
                 thread_id,
@@ -580,12 +557,6 @@ impl ModelClient {
     fn prompt_cache_key(&self, responses_metadata: &CodexResponsesMetadata) -> String {
         if let Some(prompt_cache_key) = &self.prompt_cache_key_override {
             return prompt_cache_key.clone();
-        }
-
-        if let SessionSource::Internal(source) = &self.state.session_source
-            && let Some(parent_thread_id) = responses_metadata.parent_thread_id
-        {
-            return format!("{source}:{parent_thread_id}");
         }
 
         responses_metadata.session_id.clone()
@@ -671,97 +642,11 @@ impl ModelClient {
         activated
     }
 
-    /// Builds memory summaries for each provided normalized raw memory.
-    ///
-    /// This is a unary call (no streaming) to `/v1/memories/trace_summarize`.
-    ///
-    /// The model selection, reasoning effort, and telemetry context are passed explicitly to keep
-    /// `ModelClient` session-scoped.
-    pub async fn summarize_memories(
-        &self,
-        raw_memories: Vec<ApiRawMemory>,
-        model_info: &ModelInfo,
-        effort: Option<ReasoningEffortConfig>,
-        session_telemetry: &SessionTelemetry,
-    ) -> Result<Vec<ApiMemorySummarizeOutput>> {
-        if raw_memories.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let client_setup = self
-            .current_client_setup(ClientRouting::ConfiguredProvider)
-            .await?;
-        let transport = self.build_api_transport(
-            &client_setup.api_provider,
-            MEMORIES_SUMMARIZE_ENDPOINT,
-            client_setup.redirect_policy,
-        )?;
-        let request_telemetry = Self::build_request_telemetry(
-            session_telemetry,
-            AuthRequestTelemetryContext::new(
-                client_setup.api_auth.as_ref(),
-                client_setup.agent_identity_telemetry.clone(),
-                PendingUnauthorizedRetry::default(),
-            ),
-            RequestRouteTelemetry::for_endpoint(MEMORIES_SUMMARIZE_ENDPOINT),
-        );
-        let client =
-            ApiMemoriesClient::new(transport, client_setup.api_provider, client_setup.api_auth)
-                .with_telemetry(Some(request_telemetry));
-
-        let payload = ApiMemorySummarizeInput {
-            model: model_info.slug.clone(),
-            raw_memories,
-            reasoning: effort
-                .map(|effort| model_info.resolve_reasoning_effort(effort))
-                .map(|effort| Reasoning {
-                    effort: Some(effort),
-                    summary: None,
-                    context: None,
-                }),
-        };
-
-        client
-            .summarize_input(&payload, self.build_subagent_headers())
-            .await
-            .map_err(|error| self.state.provider.map_api_error(error))
-    }
-
-    fn build_subagent_headers(&self) -> ApiHeaderMap {
-        let mut extra_headers = ApiHeaderMap::new();
-        add_originator_header(&mut extra_headers, self.state.originator.as_str());
-        if let Some(subagent) = subagent_header_value(&self.state.session_source)
-            && let Ok(val) = HeaderValue::from_str(&subagent)
-        {
-            extra_headers.insert(X_OPENAI_SUBAGENT_HEADER, val);
-        }
-        if matches!(
-            self.state.session_source,
-            SessionSource::Internal(InternalSessionSource::MemoryConsolidation)
-        ) {
-            extra_headers.insert(
-                X_OPENAI_MEMGEN_REQUEST_HEADER,
-                HeaderValue::from_static("true"),
-            );
-        }
-        extra_headers
-    }
-
     fn build_responses_compatibility_headers(
         &self,
         responses_metadata: &CodexResponsesMetadata,
     ) -> ApiHeaderMap {
-        let mut extra_headers = responses_metadata.compatibility_headers();
-        if matches!(
-            self.state.session_source,
-            SessionSource::Internal(InternalSessionSource::MemoryConsolidation)
-        ) {
-            extra_headers.insert(
-                X_OPENAI_MEMGEN_REQUEST_HEADER,
-                HeaderValue::from_static("true"),
-            );
-        }
-        extra_headers
+        responses_metadata.compatibility_headers()
     }
 
     fn build_ws_client_metadata(
@@ -792,21 +677,6 @@ impl ModelClient {
                 thread_id: self.state.thread_id,
             })
             .await
-    }
-
-    /// Builds request telemetry for unary API calls (e.g., Compact endpoint).
-    fn build_request_telemetry(
-        session_telemetry: &SessionTelemetry,
-        auth_context: AuthRequestTelemetryContext,
-        request_route_telemetry: RequestRouteTelemetry,
-    ) -> Arc<dyn RequestTelemetry> {
-        let telemetry = Arc::new(ApiTelemetry::new(
-            session_telemetry.clone(),
-            auth_context,
-            request_route_telemetry,
-        ));
-        let request_telemetry: Arc<dyn RequestTelemetry> = telemetry;
-        request_telemetry
     }
 
     fn build_reasoning(
@@ -995,7 +865,7 @@ impl ModelClient {
     ///
     /// This centralizes setup used by both prewarm and normal request paths so they stay in
     /// lockstep when auth/provider resolution changes.
-    async fn current_client_setup(&self, routing: ClientRouting) -> Result<CurrentClientSetup> {
+    async fn current_client_setup(&self) -> Result<CurrentClientSetup> {
         // Capture before resolving credentials so an account switch during setup cannot label
         // an old connection with the new owner's revision.
         let auth_owner_generation = self.auth_owner_generation();
@@ -1007,20 +877,12 @@ impl ModelClient {
         loop {
             let revision = auth_changes.as_ref().map(|changes| *changes.borrow());
             let auth = self.state.provider.auth().await;
-            let (api_provider, redirect_policy) = match routing {
-                ClientRouting::Workspace => {
-                    let resolved = self
-                        .state
-                        .provider
-                        .responses_api_provider(&self.state.workspace_routing)
-                        .await?;
-                    (resolved.provider, resolved.redirect_policy)
-                }
-                ClientRouting::ConfiguredProvider => (
-                    self.state.provider.api_provider().await?,
-                    ClientRedirectPolicy::Default,
-                ),
-            };
+            let resolved = self
+                .state
+                .provider
+                .responses_api_provider(&self.state.workspace_routing)
+                .await?;
+            let (api_provider, redirect_policy) = (resolved.provider, resolved.redirect_policy);
             let resolved_auth = self
                 .state
                 .provider
@@ -1124,9 +986,7 @@ impl ModelClient {
     }
 
     pub(crate) async fn prewarm_auth(&self) -> Result<()> {
-        self.current_client_setup(ClientRouting::Workspace)
-            .await
-            .map(|_| ())
+        self.current_client_setup().await.map(|_| ())
     }
 
     /// Opens a websocket connection using the same header and telemetry wiring as normal turns.
@@ -1365,10 +1225,7 @@ impl ModelClientSession {
         let mut provider_auth_recovery_attempted = false;
         let mut pending_retry = PendingUnauthorizedRetry::default();
         loop {
-            let client_setup = self
-                .client
-                .current_client_setup(ClientRouting::Workspace)
-                .await?;
+            let client_setup = self.client.current_client_setup().await?;
             let auth_context = AuthRequestTelemetryContext::new(
                 client_setup.api_auth.as_ref(),
                 client_setup.agent_identity_telemetry.clone(),
@@ -1556,10 +1413,7 @@ impl ModelClientSession {
         let mut provider_auth_recovery_attempted = false;
         let mut pending_retry = PendingUnauthorizedRetry::default();
         loop {
-            let client_setup = self
-                .client
-                .current_client_setup(ClientRouting::Workspace)
-                .await?;
+            let client_setup = self.client.current_client_setup().await?;
             let include_internal = self
                 .client
                 .state
@@ -1712,10 +1566,7 @@ impl ModelClientSession {
         let mut provider_auth_recovery_attempted = false;
         let mut pending_retry = PendingUnauthorizedRetry::default();
         loop {
-            let client_setup = self
-                .client
-                .current_client_setup(ClientRouting::Workspace)
-                .await?;
+            let client_setup = self.client.current_client_setup().await?;
             let include_internal = self
                 .client
                 .state

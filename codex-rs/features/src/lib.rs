@@ -129,13 +129,6 @@ pub enum Feature {
     CwdRelativeTurnDiffs,
     /// Enable runtime metrics snapshots via a manual reader.
     RuntimeMetrics,
-    /// Enable startup memory extraction and file-backed memory consolidation.
-    MemoryTool,
-    /// Compress cold local thread-store rollout files, including shared histories.
-    /// Requires every reader of the Codex home to support compressed shared histories.
-    LocalThreadStoreCompression,
-    /// Migrate legacy local rollout files to paginated history in the background.
-    BackgroundPaginatedRolloutMigration,
     /// Compress request bodies (zstd) when sending streaming requests to codex-backend.
     EnableRequestCompression,
     /// Keep active sampling turns alive until a failed network connection recovers.
@@ -752,24 +745,6 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::RuntimeMetrics,
         key: "runtime_metrics",
-        stage: Stage::UnderDevelopment,
-        default_enabled: false,
-    },
-    FeatureSpec {
-        id: Feature::MemoryTool,
-        key: "memories",
-        stage: Stage::Stable,
-        default_enabled: false,
-    },
-    FeatureSpec {
-        id: Feature::LocalThreadStoreCompression,
-        key: "local_thread_store_compression",
-        stage: Stage::UnderDevelopment,
-        default_enabled: false,
-    },
-    FeatureSpec {
-        id: Feature::BackgroundPaginatedRolloutMigration,
-        key: "background_paginated_rollout_migration",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
     },

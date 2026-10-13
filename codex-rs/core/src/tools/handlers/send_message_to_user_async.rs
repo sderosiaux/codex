@@ -87,7 +87,6 @@ impl ToolExecutor<ToolInvocation> for SendMessageToUserAsyncHandler {
                     text: message.to_string(),
                 }],
                 phase: Some(MessagePhase::FinalAnswer),
-                memory_citation: None,
                 delivery: Some(AgentMessageDelivery::Async),
                 questions: None,
             });

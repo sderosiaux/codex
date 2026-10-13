@@ -64,12 +64,8 @@ impl AgentResponseLogger {
             | SessionSource::Mcp
             | SessionSource::Custom(_)
             | SessionSource::Unknown => ("main", None),
-            SessionSource::Internal(_)
-            | SessionSource::SubAgent(
-                SubAgentSource::Review
-                | SubAgentSource::Compact
-                | SubAgentSource::MemoryConsolidation
-                | SubAgentSource::Other(_),
+            SessionSource::SubAgent(
+                SubAgentSource::Review | SubAgentSource::Compact | SubAgentSource::Other(_),
             ) => return,
         };
         let text = content

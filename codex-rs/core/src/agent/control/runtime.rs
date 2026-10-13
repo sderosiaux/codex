@@ -301,12 +301,6 @@ impl LocalAgentRuntime {
         Arc::clone(&self.shutdown_state)
     }
 
-    /// The caller must hold tree membership until this record has been written. This keeps
-    /// the completed shutdown report stable for every waiter.
-    pub(crate) fn record_shutdown_failure(&self, failure: AgentTreeShutdownFailure) {
-        self.shutdown_state.record_failure(failure);
-    }
-
     pub(crate) fn generate_thread_id(&self) -> ThreadId {
         (self.thread_id_generator)()
     }

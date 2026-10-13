@@ -32,7 +32,6 @@ use crate::items::AsyncUserInputQuestion;
 use crate::items::TurnItem;
 use crate::mcp::CallToolResult;
 use crate::mcp::RequestId;
-use crate::memory_citation::MemoryCitation;
 use crate::models::AgentMessageInputContent;
 use crate::models::BaseInstructions;
 use crate::models::ContentItem;
@@ -48,7 +47,6 @@ use crate::parse_command::ParsedCommand;
 use crate::plan_tool::UpdatePlanArgs;
 use crate::request_user_input::RequestUserInputResponse;
 use crate::turn_input::CyberAccessProgram;
-use crate::turn_input::SuspendTurnOutcome;
 use crate::turn_input::TurnInputMode;
 use crate::turn_input::TurnInputRequest;
 use crate::turn_input::TurnInputSubmission;
@@ -251,12 +249,6 @@ pub enum Op {
         reply: oneshot::Sender<CodexResult<TurnInputSubmission>>,
     },
 
-    /// Stop the active root turn without recording a terminal turn event.
-    #[debug("SuspendTurnAndShutdown")]
-    SuspendTurnAndShutdown {
-        reply: oneshot::Sender<CodexResult<SuspendTurnOutcome>>,
-    },
-
     /// Apply thread-settings overrides without starting a turn.
     ///
     /// This uses the same submission queue as turn starts so app-server can
@@ -334,13 +326,6 @@ pub enum Op {
     /// to generate a summary which will be returned as an AgentMessage event.
     Compact,
 
-    /// Set whether the thread remains eligible for memory generation.
-    ///
-    /// This persists thread-level memory mode metadata without involving the
-    /// model.
-    #[debug("SetThreadMemoryMode {{ mode: {mode:?} }}")]
-    SetThreadMemoryMode { mode: ThreadMemoryMode },
-
     /// Request a code review from the agent.
     #[debug(
         "Review {{ target: {} }}",
@@ -368,13 +353,6 @@ pub enum Op {
         /// Maximum execution time in milliseconds. Defaults to one hour.
         timeout_ms: Option<u64>,
     },
-}
-
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, JsonSchema)]
-#[serde(rename_all = "lowercase")]
-pub enum ThreadMemoryMode {
-    Enabled,
-    Disabled,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, JsonSchema, TS)]
@@ -544,7 +522,6 @@ impl Op {
             Self::CleanBackgroundTerminals => "clean_background_terminals",
             Self::TurnInput { .. } => "turn_input",
             Self::RecoverTurn { .. } => "recover_turn",
-            Self::SuspendTurnAndShutdown { .. } => "suspend_turn_and_shutdown",
             Self::ThreadSettings { .. } => "thread_settings",
             Self::TurnSettings { .. } => "turn_settings",
             Self::InterAgentCommunication { .. } => "inter_agent_communication",
@@ -554,7 +531,6 @@ impl Op {
             Self::RefreshMcpServers => "refresh_mcp_servers",
             Self::ReloadUserConfig => "reload_user_config",
             Self::Compact => "compact",
-            Self::SetThreadMemoryMode { .. } => "set_thread_memory_mode",
             Self::Review { .. } => "review",
             Self::Shutdown => "shutdown",
             Self::RunUserShellCommand { .. } => "run_user_shell_command",
@@ -1661,8 +1637,6 @@ pub struct AgentMessageEvent {
     pub message: String,
     #[serde(default)]
     pub phase: Option<MessagePhase>,
-    #[serde(default)]
-    pub memory_citation: Option<MemoryCitation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub delivery: Option<AgentMessageDelivery>,
@@ -1941,7 +1915,6 @@ pub enum SessionSource {
     Exec,
     Mcp,
     Custom(String),
-    Internal(InternalSessionSource),
     SubAgent(SubAgentSource),
     #[serde(other)]
     Unknown,
@@ -1955,7 +1928,6 @@ pub enum ThreadSource {
     User,
     Subagent,
     Feature(String),
-    MemoryConsolidation,
 }
 
 impl ThreadSource {
@@ -1964,7 +1936,6 @@ impl ThreadSource {
             ThreadSource::User => "user",
             ThreadSource::Subagent => "subagent",
             ThreadSource::Feature(feature) => feature,
-            ThreadSource::MemoryConsolidation => "memory_consolidation",
         }
     }
 }
@@ -1996,17 +1967,9 @@ impl FromStr for ThreadSource {
         match value {
             "user" => Ok(ThreadSource::User),
             "subagent" => Ok(ThreadSource::Subagent),
-            "memory_consolidation" => Ok(ThreadSource::MemoryConsolidation),
             other => Ok(ThreadSource::Feature(other.to_string())),
         }
     }
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema, TS)]
-#[serde(rename_all = "snake_case")]
-#[ts(rename_all = "snake_case")]
-pub enum InternalSessionSource {
-    MemoryConsolidation,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema, TS)]
@@ -2025,7 +1988,6 @@ pub enum SubAgentSource {
         #[serde(default, alias = "agent_type")]
         agent_role: Option<String>,
     },
-    MemoryConsolidation,
     Other(String),
 }
 
@@ -2037,7 +1999,6 @@ impl fmt::Display for SessionSource {
             SessionSource::Exec => f.write_str("exec"),
             SessionSource::Mcp => f.write_str("mcp"),
             SessionSource::Custom(source) => f.write_str(source),
-            SessionSource::Internal(source) => write!(f, "internal_{source}"),
             SessionSource::SubAgent(sub_source) => write!(f, "subagent_{sub_source}"),
             SessionSource::Unknown => f.write_str("unknown"),
         }
@@ -2062,15 +2023,8 @@ impl SessionSource {
         })
     }
 
-    pub fn is_internal(&self) -> bool {
-        matches!(self, SessionSource::Internal(_))
-    }
-
     pub fn is_non_root_agent(&self) -> bool {
-        matches!(
-            self,
-            SessionSource::Internal(_) | SessionSource::SubAgent(_)
-        )
+        matches!(self, SessionSource::SubAgent(_))
     }
 
     pub fn get_nickname(&self) -> Option<String> {
@@ -2108,7 +2062,7 @@ impl SessionSource {
             | SessionSource::Exec
             | SessionSource::Mcp
             | SessionSource::Unknown => Some(Product::Codex),
-            SessionSource::Internal(_) | SessionSource::SubAgent(_) => None,
+            SessionSource::SubAgent(_) => None,
         }
     }
 
@@ -2127,7 +2081,6 @@ impl SessionSource {
             | SessionSource::Exec
             | SessionSource::Mcp
             | SessionSource::Custom(_)
-            | SessionSource::Internal(_)
             | SessionSource::Unknown => None,
         }
     }
@@ -2138,7 +2091,6 @@ impl fmt::Display for SubAgentSource {
         match self {
             SubAgentSource::Review => f.write_str("review"),
             SubAgentSource::Compact => f.write_str("compact"),
-            SubAgentSource::MemoryConsolidation => f.write_str("memory_consolidation"),
             SubAgentSource::ThreadSpawn {
                 parent_thread_id,
                 depth,
@@ -2157,7 +2109,6 @@ impl SubAgentSource {
             SubAgentSource::Review => "review",
             SubAgentSource::Compact => "compact",
             SubAgentSource::ThreadSpawn { .. } => "thread_spawn",
-            SubAgentSource::MemoryConsolidation => "memory_consolidation",
             SubAgentSource::Other(other) => other,
         }
     }
@@ -2167,18 +2118,7 @@ impl SubAgentSource {
             SubAgentSource::ThreadSpawn {
                 parent_thread_id, ..
             } => Some(*parent_thread_id),
-            SubAgentSource::Review
-            | SubAgentSource::Compact
-            | SubAgentSource::MemoryConsolidation
-            | SubAgentSource::Other(_) => None,
-        }
-    }
-}
-
-impl fmt::Display for InternalSessionSource {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            InternalSessionSource::MemoryConsolidation => f.write_str("memory_consolidation"),
+            SubAgentSource::Review | SubAgentSource::Compact | SubAgentSource::Other(_) => None,
         }
     }
 }
@@ -2283,8 +2223,6 @@ pub struct SessionMeta {
     /// Capability roots selected for this thread by the hosting platform.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub selected_capability_roots: Vec<SelectedCapabilityRoot>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub memory_mode: Option<String>,
     #[serde(default)]
     pub history_mode: ThreadHistoryMode,
     /// Exclusive prefix of another paginated rollout inherited by this thread.
@@ -2328,7 +2266,6 @@ impl Default for SessionMeta {
             base_instructions: None,
             dynamic_tools: None,
             selected_capability_roots: Vec::new(),
-            memory_mode: None,
             history_mode: ThreadHistoryMode::default(),
             history_base: None,
             subagent_history_start_ordinal: None,
@@ -2974,11 +2911,6 @@ pub struct SessionConfiguredEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread_source: Option<ThreadSource>,
 
-    /// Optional user-facing thread name (may be unset).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub thread_name: Option<String>,
-
     /// Tell the client what model is being queried.
     pub model: String,
 
@@ -2994,10 +2926,6 @@ pub struct SessionConfiguredEvent {
     /// The effort the model is putting into reasoning about the user's request.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<ReasoningEffortConfig>,
-
-    /// Path in which the rollout is stored. Can be `None` for ephemeral threads
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub rollout_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]

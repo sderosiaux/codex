@@ -29,7 +29,5 @@ codex-model-provider-info = { workspace = true }
 codex-models-manager = { workspace = true }
 codex-protocol = { workspace = true }
 codex-skills-extension = { workspace = true }
-codex-state = { workspace = true }
-codex-thread-store = { workspace = true }
 codex-utils-absolute-path = { workspace = true }
 codex-web-search-extension = { workspace = true }

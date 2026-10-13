@@ -3,9 +3,6 @@ use crate::context::ImageResizeNotice;
 use crate::context::ImageResizeNoticeSource;
 use crate::context::ResizedImage;
 use crate::original_image_detail::can_request_original_image_detail;
-use codex_attachment_store::AttachmentStore;
-use codex_attachment_store::UploadRequest;
-use codex_attachment_store::UploadResult;
 use codex_context_fragments::AnnotatedContent;
 use codex_context_fragments::set_annotated_content;
 use codex_context_fragments::to_annotated_content;
@@ -22,7 +19,6 @@ use codex_protocol::openai_models::ModelInfo;
 use codex_utils_image::EncodedImage;
 use codex_utils_image::ImageProcessingError;
 use codex_utils_image::PromptImageMode;
-use codex_utils_image::data_url_from_bytes;
 use codex_utils_image::load_data_url_for_prompt;
 use tracing::warn;
 
@@ -43,12 +39,6 @@ pub(crate) enum ImagePreparationMode {
 pub(crate) fn unified_image_budget_enabled(features: &Features, model_info: &ModelInfo) -> bool {
     features.enabled(Feature::UnifiedImageBudget)
         && (model_info.use_responses_lite || can_request_original_image_detail(model_info))
-}
-
-#[derive(Clone, Copy, Debug)]
-struct ImageOrigin<'a> {
-    thread_id: &'a str,
-    ephemeral: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -99,13 +89,10 @@ impl ImagePreparationError {
     }
 }
 
-pub(crate) async fn prepare_response_items(
-    thread_id: &str,
-    ephemeral: bool,
+pub(crate) fn prepare_response_items(
     items: &mut Vec<ResponseItem>,
     mode: ImagePreparationMode,
     resize_notice_mode: ImageResizeNoticeMode,
-    image_store: &dyn AttachmentStore,
 ) {
     let mut prepared_items = Vec::with_capacity(items.len());
     for mut item in std::mem::take(items) {
@@ -117,45 +104,23 @@ pub(crate) async fn prepare_response_items(
                 };
                 let resized_images = prepare_message_content(
                     &mut content,
-                    ImageOrigin {
-                        thread_id,
-                        ephemeral,
-                    },
                     if role.as_str() == "user" {
                         resize_notice_mode
                     } else {
                         ImageResizeNoticeMode::Disabled
                     },
                     mode,
-                    image_store,
-                )
-                .await;
+                );
                 let _ = set_annotated_content(&mut item, content);
                 (!resized_images.is_empty()).then(|| {
                     ImageResizeNotice::new(ImageResizeNoticeSource::UserMessage, resized_images)
                 })
             }
             ResponseItem::FunctionCallOutput { output, .. } => {
-                prepare_tool_output(
-                    thread_id,
-                    ephemeral,
-                    output,
-                    resize_notice_mode,
-                    mode,
-                    image_store,
-                )
-                .await
+                prepare_tool_output(output, resize_notice_mode, mode)
             }
             ResponseItem::CustomToolCallOutput { output, .. } => {
-                prepare_tool_output(
-                    thread_id,
-                    ephemeral,
-                    output,
-                    resize_notice_mode,
-                    mode,
-                    image_store,
-                )
-                .await
+                prepare_tool_output(output, resize_notice_mode, mode)
             }
             ResponseItem::AdditionalTools { .. }
             | ResponseItem::Reasoning { .. }
@@ -181,27 +146,13 @@ pub(crate) async fn prepare_response_items(
     *items = prepared_items;
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn prepare_tool_output(
-    thread_id: &str,
-    ephemeral: bool,
+fn prepare_tool_output(
     output: &mut FunctionCallOutputPayload,
     resize_notice_mode: ImageResizeNoticeMode,
     mode: ImagePreparationMode,
-    image_store: &dyn AttachmentStore,
 ) -> Option<ImageResizeNotice> {
     let content = output.content_items_mut()?;
-    let resized_images = prepare_tool_output_content(
-        content,
-        ImageOrigin {
-            thread_id,
-            ephemeral,
-        },
-        resize_notice_mode,
-        mode,
-        image_store,
-    )
-    .await;
+    let resized_images = prepare_tool_output_content(content, resize_notice_mode, mode);
     if resized_images.is_empty() {
         None
     } else {
@@ -212,15 +163,12 @@ async fn prepare_tool_output(
     }
 }
 
-async fn prepare_message_content(
+fn prepare_message_content(
     items: &mut [AnnotatedContent],
-    origin: ImageOrigin<'_>,
     resize_notice_mode: ImageResizeNoticeMode,
     mode: ImagePreparationMode,
-    image_store: &dyn AttachmentStore,
 ) -> Vec<ResizedImage> {
-    // File-backed images are already prepared and pass through while retaining their positions in
-    // resize notices.
+    // File-backed images pass through while retaining their positions in resize notices.
     let image_count = items
         .iter()
         .filter(|item| matches!(item.content(), ContentItem::InputImage { .. }))
@@ -230,7 +178,7 @@ async fn prepare_message_content(
     for item in items {
         if let ContentItem::InputImage { image, detail } = item.content_mut() {
             image_number += 1;
-            match prepare_image(image, detail, origin, mode, image_store).await {
+            match prepare_image(image, detail, mode) {
                 Ok(Some(resize)) if resize_notice_mode == ImageResizeNoticeMode::Enabled => {
                     resized_images.push(ResizedImage {
                         image_number,
@@ -255,12 +203,10 @@ async fn prepare_message_content(
     resized_images
 }
 
-async fn prepare_tool_output_content(
+fn prepare_tool_output_content(
     items: &mut [FunctionCallOutputContentItem],
-    origin: ImageOrigin<'_>,
     resize_notice_mode: ImageResizeNoticeMode,
     mode: ImagePreparationMode,
-    image_store: &dyn AttachmentStore,
 ) -> Vec<ResizedImage> {
     let image_count = items
         .iter()
@@ -271,7 +217,7 @@ async fn prepare_tool_output_content(
     for item in items {
         if let FunctionCallOutputContentItem::InputImage { image, detail } = item {
             image_number += 1;
-            match prepare_image(image, detail, origin, mode, image_store).await {
+            match prepare_image(image, detail, mode) {
                 Ok(Some(resize)) if resize_notice_mode == ImageResizeNoticeMode::Enabled => {
                     resized_images.push(ResizedImage {
                         image_number,
@@ -307,12 +253,10 @@ fn is_data_url(image_url: &str) -> bool {
         .is_some_and(|prefix| prefix.eq_ignore_ascii_case("data:"))
 }
 
-async fn prepare_image(
+fn prepare_image(
     image: &mut ImageReference,
     detail: &mut Option<ImageDetail>,
-    origin: ImageOrigin<'_>,
     mode: ImagePreparationMode,
-    image_store: &dyn AttachmentStore,
 ) -> Result<Option<PreparedImageResize>, ImagePreparationError> {
     let ImageReference::Inline { image_url } = image else {
         return Ok(None);
@@ -321,23 +265,8 @@ async fn prepare_image(
         return Ok(None);
     };
     let resize = prepared.resize;
-    let request = UploadRequest {
-        thread_id: origin.thread_id.to_owned(),
-        ephemeral: origin.ephemeral,
-        file_name: None,
-        data: prepared.encoded.bytes.to_vec(),
-    };
-    *image = match image_store.upload(request).await {
-        Ok(UploadResult::Inline { bytes }) => ImageReference::Inline {
-            image_url: data_url_from_bytes(&prepared.encoded.mime, &bytes),
-        },
-        Ok(UploadResult::File { file_id }) => ImageReference::File { file_id },
-        Err(error) => {
-            warn!(kind = ?error.kind(), "failed to upload prepared image");
-            ImageReference::Inline {
-                image_url: prepared.into_data_url(),
-            }
-        }
+    *image = ImageReference::Inline {
+        image_url: prepared.into_data_url(),
     };
     Ok(resize)
 }

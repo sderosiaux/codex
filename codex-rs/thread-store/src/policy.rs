@@ -1,12 +1,12 @@
 use std::borrow::Cow;
 
-use crate::RolloutItem;
-use crate::protocol::EventMsg;
 use codex_extension_items::ExtensionItem;
+use codex_history::RolloutItem;
 use codex_protocol::items::CommandExecutionItem;
 use codex_protocol::items::McpToolCallItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::SubAgentActivityKind;
 use codex_protocol::protocol::ThreadHistoryMode;
@@ -92,31 +92,6 @@ pub fn should_persist_response_item(item: &ResponseItem) -> bool {
         | ResponseItem::Compaction { .. }
         | ResponseItem::ContextCompaction { .. } => true,
         ResponseItem::CompactionTrigger { .. } | ResponseItem::Other => false,
-    }
-}
-
-/// Whether a `ResponseItem` should be persisted for the memories.
-#[inline]
-pub fn should_persist_response_item_for_memories(item: &ResponseItem) -> bool {
-    match item {
-        ResponseItem::Message { role, .. } => role != "developer",
-        ResponseItem::AgentMessage { .. }
-        | ResponseItem::LocalShellCall { .. }
-        | ResponseItem::FunctionCall { .. }
-        | ResponseItem::ToolSearchCall { .. }
-        | ResponseItem::FunctionCallOutput { .. }
-        | ResponseItem::ToolSearchOutput { .. }
-        | ResponseItem::CustomToolCall { .. }
-        | ResponseItem::CustomToolCallOutput { .. }
-        | ResponseItem::WebSearchCall { .. } => true,
-        ResponseItem::AdditionalTools { .. }
-        | ResponseItem::Reasoning { .. }
-        | ResponseItem::ConfigurationUpdate { .. }
-        | ResponseItem::ImageGenerationCall { .. }
-        | ResponseItem::Compaction { .. }
-        | ResponseItem::CompactionTrigger { .. }
-        | ResponseItem::ContextCompaction { .. }
-        | ResponseItem::Other => false,
     }
 }
 

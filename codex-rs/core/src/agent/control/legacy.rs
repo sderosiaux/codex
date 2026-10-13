@@ -1,7 +1,6 @@
 use super::*;
 use crate::agent::api::AgentInfo;
 use codex_protocol::error::CodexErrorDetails;
-use codex_thread_store::PersistContext;
 
 impl LocalAgentControl {
     /// Submit a shutdown request for a live agent without marking it explicitly closed in
@@ -9,11 +8,6 @@ impl LocalAgentControl {
     pub(crate) async fn shutdown_live_agent(&self, agent_id: ThreadId) -> CodexResult<String> {
         let state = self.runtime.upgrade()?;
         let result = if let Ok(thread) = state.get_thread(agent_id).await {
-            thread
-                .session
-                .ensure_rollout_materialized(PersistContext::Standard)
-                .await;
-            thread.session.flush_rollout().await?;
             let result = if matches!(thread.agent_status().await, AgentStatus::Shutdown) {
                 Ok(String::new())
             } else {
@@ -59,34 +53,11 @@ impl LocalAgentControl {
                     status: thread.agent_status().await,
                 };
                 let config = Box::new(thread.config_snapshot().await);
-                if !config.ephemeral
-                    && let Some(agent_graph_store) = state.agent_graph_store()
-                    && let Err(err) = agent_graph_store
-                        .set_thread_spawn_edge_status(
-                            agent_id,
-                            codex_agent_graph_store::ThreadSpawnEdgeStatus::Closed,
-                        )
-                        .await
-                {
-                    warn!("failed to persist thread-spawn edge status for {agent_id}: {err}");
-                }
                 AgentInfo::Loaded { agent, config }
             }
             Err(err)
                 if known_agent && matches!(err.details(), CodexErrorDetails::ThreadNotFound(_)) =>
             {
-                if let Some(agent_graph_store) = state.agent_graph_store()
-                    && let Err(err) = agent_graph_store
-                        .set_thread_spawn_edge_status(
-                            agent_id,
-                            codex_agent_graph_store::ThreadSpawnEdgeStatus::Closed,
-                        )
-                        .await
-                {
-                    return Err(CodexErr::Fatal(format!(
-                        "failed to persist stale thread-spawn edge status for {agent_id}: {err}"
-                    )));
-                }
                 AgentInfo::Unloaded(metadata.unwrap_or_default())
             }
             Err(err) => return Err(err),

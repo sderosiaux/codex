@@ -19,8 +19,6 @@ pub struct ThreadStartInput<'a, C> {
     pub config: &'a C,
     /// Source that created the session for this thread.
     pub session_source: &'a SessionSource,
-    /// Whether persistent thread-scoped state is available for this thread.
-    pub persistent_thread_state_available: bool,
     /// Execution environments selected for this thread.
     pub environments: &'a [TurnEnvironmentSelection],
     /// Session-attributed metrics supplied by the host.

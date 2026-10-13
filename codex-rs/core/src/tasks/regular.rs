@@ -12,7 +12,6 @@ use crate::session::turn::run_hooks_and_record_inputs;
 use crate::session::turn::run_turn;
 use crate::session::turn_context::TurnContext;
 use crate::state::TaskKind;
-use codex_thread_store::PersistContext;
 use tracing::Instrument;
 use tracing::trace_span;
 
@@ -83,14 +82,8 @@ impl SessionTask for RegularTask {
         .await;
         let prewarmed_client_session = match prewarmed_client_session {
             SessionStartupPrewarmResolution::Cancelled => {
-                run_hooks_and_record_inputs(
-                    &sess,
-                    &ctx,
-                    &ctx.capture_current_model_info(),
-                    &input,
-                    PersistContext::Standard,
-                )
-                .await;
+                run_hooks_and_record_inputs(&sess, &ctx, &ctx.capture_current_model_info(), &input)
+                    .await;
                 return Ok(None);
             }
             SessionStartupPrewarmResolution::Unavailable { .. } => None,

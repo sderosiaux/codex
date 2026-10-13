@@ -17,7 +17,6 @@ use clap::Parser;
 use clap::Subcommand;
 use codex_core_api::Arg0DispatchPaths;
 use codex_core_api::AuthManager;
-use codex_core_api::ClientMcpExtensions;
 use codex_core_api::CodexHomeUserInstructionsProvider;
 use codex_core_api::CodexThread;
 use codex_core_api::Config;
@@ -32,36 +31,26 @@ use codex_core_api::ExecutorSkillProvider;
 use codex_core_api::ExtensionRegistryBuilder;
 use codex_core_api::HostSkillProvider;
 use codex_core_api::HttpClientFactory;
-use codex_core_api::ListThreadsParams;
 use codex_core_api::NewThread;
 use codex_core_api::Op;
 use codex_core_api::OutboundProxyPolicy;
-use codex_core_api::ReadThreadParams;
 use codex_core_api::SessionSource;
 use codex_core_api::SkillProviders;
 use codex_core_api::SkillsExtensionConfig;
-use codex_core_api::SortDirection;
 use codex_core_api::StartIfIdleSubmission;
 use codex_core_api::StartThreadOptions;
-use codex_core_api::ThreadId;
 use codex_core_api::ThreadManager;
-use codex_core_api::ThreadSortKey;
-use codex_core_api::ThreadStore;
 use codex_core_api::TurnInputRequest;
 use codex_core_api::UserInput;
 use codex_core_api::arg0_dispatch_or_else;
 use codex_core_api::build_models_manager;
-use codex_core_api::init_state_db;
 use codex_core_api::install_agent_message_board;
 use codex_core_api::install_image_generation_extension;
 use codex_core_api::install_skills_extension;
 use codex_core_api::install_web_search_extension;
-use codex_core_api::local_agent_graph_store_from_state_db;
-use codex_core_api::passthrough_image_store;
 use codex_core_api::resolve_installation_id;
 use codex_core_api::run_exec_server;
 use codex_core_api::set_default_originator;
-use codex_core_api::thread_store_from_config;
 use tokio::sync::mpsc;
 use tracing_subscriber::EnvFilter;
 
@@ -91,14 +80,6 @@ struct Cli {
     /// The value is parsed as TOML, falling back to a plain string.
     #[arg(long = "config", short = 'c', value_name = "key=value")]
     config_overrides: Vec<String>,
-
-    /// Resume a stored thread by id, or `last` for the most recently updated one.
-    #[arg(long, value_name = "THREAD_ID|last")]
-    resume: Option<String>,
-
-    /// Do not persist this thread to disk.
-    #[arg(long)]
-    ephemeral: bool,
 
     /// Print every event as a JSON line on stdout instead of human-readable output.
     #[arg(long)]
@@ -176,14 +157,11 @@ async fn run_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
     let host = Host::start(&config).await?;
     let NewThread {
         thread_id, thread, ..
-    } = match cli.resume.as_deref() {
-        Some(target) => host.resume_thread(config, target).await?,
-        None => host
-            .thread_manager
-            .start_thread(StartThreadOptions::new(config))
-            .await
-            .context("start thread")?,
-    };
+    } = host
+        .thread_manager
+        .start_thread(StartThreadOptions::new(config))
+        .await
+        .context("start thread")?;
     eprintln!("thread {thread_id}");
 
     let mut output = if cli.json {
@@ -215,7 +193,6 @@ async fn load_config(cli: &Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         model: cli.model.clone(),
         cwd: cli.cwd.clone(),
         codex_self_exe: arg0_paths.codex_self_exe,
-        ephemeral: cli.ephemeral.then_some(true),
         ..Default::default()
     };
     ConfigBuilder::default()
@@ -229,13 +206,10 @@ async fn load_config(cli: &Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
 /// Process-wide services shared by every thread of this run, sub-agents included.
 struct Host {
     thread_manager: Arc<ThreadManager>,
-    thread_store: Arc<dyn ThreadStore>,
-    auth_manager: Arc<AuthManager>,
 }
 
 impl Host {
     async fn start(config: &Config) -> anyhow::Result<Self> {
-        let state_db = init_state_db(config).await;
         let auth_manager =
             AuthManager::shared_from_config(config, /*enable_codex_api_key_env*/ true).await?;
         let environment_manager = Arc::new(
@@ -245,7 +219,6 @@ impl Host {
             )
             .await?,
         );
-        let thread_store = thread_store_from_config(config, state_db.clone());
         let installation_id = resolve_installation_id(&config.codex_home).await?;
         let user_instructions_provider = Arc::new(CodexHomeUserInstructionsProvider::new(
             config.codex_home.clone(),
@@ -286,72 +259,12 @@ impl Host {
                 environment_manager,
                 Arc::new(extensions.build()),
                 user_instructions_provider,
-                passthrough_image_store(),
-                Arc::clone(&thread_store),
-                local_agent_graph_store_from_state_db(state_db.as_ref()),
                 installation_id,
                 /*attestation_provider*/ None,
                 /*external_time_provider*/ None,
             )
         });
-        Ok(Self {
-            thread_manager,
-            thread_store,
-            auth_manager,
-        })
-    }
-
-    async fn resume_thread(&self, config: Config, target: &str) -> anyhow::Result<NewThread> {
-        let thread_id = if target == "last" {
-            let page = self
-                .thread_store
-                .list_threads(ListThreadsParams {
-                    page_size: 1,
-                    cursor: None,
-                    sort_key: ThreadSortKey::UpdatedAt,
-                    sort_direction: SortDirection::Desc,
-                    allowed_sources: vec![SessionSource::Cli],
-                    model_providers: None,
-                    cwd_filters: None,
-                    section: None,
-                    project_id: None,
-                    archived: false,
-                    search_term: None,
-                    relation_filter: None,
-                    use_state_db_only: false,
-                })
-                .await
-                .context("list threads")?;
-            page.items
-                .first()
-                .map(|thread| thread.thread_id)
-                .context("no stored thread to resume")?
-        } else {
-            ThreadId::from_string(target)
-                .with_context(|| format!("invalid thread id `{target}`"))?
-        };
-        let stored = self
-            .thread_store
-            .read_thread(ReadThreadParams {
-                thread_id,
-                include_archived: true,
-                include_history: false,
-            })
-            .await
-            .with_context(|| format!("read thread {thread_id}"))?;
-        let rollout_path = stored
-            .rollout_path
-            .with_context(|| format!("thread {thread_id} has no local rollout"))?;
-        self.thread_manager
-            .resume_legacy_thread_from_rollout(
-                config,
-                rollout_path,
-                Arc::clone(&self.auth_manager),
-                /*parent_trace*/ None,
-                ClientMcpExtensions::default(),
-            )
-            .await
-            .with_context(|| format!("resume thread {thread_id}"))
+        Ok(Self { thread_manager })
     }
 }
 

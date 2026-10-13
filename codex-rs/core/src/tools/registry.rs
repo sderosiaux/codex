@@ -9,8 +9,6 @@ use crate::hook_runtime::PreToolUseHookResult;
 use crate::hook_runtime::record_additional_contexts;
 use crate::hook_runtime::run_post_tool_use_hooks;
 use crate::hook_runtime::run_pre_tool_use_hooks;
-use crate::memory_usage::emit_metric_for_tool_read;
-use crate::memory_usage::shell_script_for_invocation;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::context::FunctionToolOutput;
@@ -31,10 +29,7 @@ use codex_history::CodexHarnessMetadata;
 use codex_history::ResponseItemEnvelope;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseInputItem;
-use codex_protocol::parse_command::ParsedCommand;
 use codex_protocol::protocol::EventMsg;
-use codex_rollout::state_db;
-use codex_shell_command::parse_command::parse_shell_script;
 use codex_tools::FunctionsNamespaceFunctionPrefixes;
 use codex_tools::ToolName;
 use codex_tools::ToolSearchInfo;
@@ -640,22 +635,6 @@ impl ToolRegistry {
                 .await?;
         }
 
-        if let Some(command) = shell_script_for_invocation(&invocation) {
-            let parsed = parse_shell_script(&command);
-            let mut categories = parsed.iter().map(|command| match command {
-                ParsedCommand::Read { .. } => "read",
-                ParsedCommand::ListFiles { .. } => "list_files",
-                ParsedCommand::Search { .. } => "search",
-                ParsedCommand::Unknown { .. } => "unknown",
-            });
-            let category = match categories.next() {
-                Some(first) if categories.all(|category| category == first) => first,
-                Some(_) => "mixed",
-                None => "unknown",
-            };
-            tool_result_tags.push(("command_category", category));
-        }
-
         let log_payload = tool_log_payload(&invocation.payload, &invocation.source);
 
         let result = otel
@@ -678,7 +657,6 @@ impl ToolRegistry {
             Ok(result) => result.result.success_for_logging(),
             Err(_) => false,
         };
-        emit_metric_for_tool_read(&invocation, success);
         let post_tool_use_payload = if success {
             result
                 .as_ref()
@@ -784,17 +762,6 @@ async fn handle_any_tool(
         result: output,
         post_tool_use_payload,
     };
-    if result.result.contains_external_context()
-        && invocation.turn.config.memories.disable_on_external_context
-    {
-        state_db::mark_thread_memory_mode_polluted(
-            invocation.session.services.state_db.as_deref(),
-            invocation.session.thread_id,
-            "tool_output",
-        )
-        .or_cancel_tool(&invocation.cancellation_token)
-        .await?;
-    }
     Ok(result)
 }
 

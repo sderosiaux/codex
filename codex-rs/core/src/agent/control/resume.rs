@@ -1,5 +1,5 @@
 //! Reopens an agent only when its runtime is absent, then returns its effective state.
-//! Rollout and descendant restoration remain in the existing local startup path.
+//! Its history comes from the in-process thread store; descendants are not reopened.
 
 use super::LocalAgentControl;
 use crate::agent::types::LiveAgent;
@@ -21,7 +21,7 @@ impl LocalAgentControl {
         let thread = match manager.get_thread(thread_id).await {
             Ok(thread) => thread,
             Err(err) if matches!(err.details(), CodexErrorDetails::ThreadNotFound(_)) => {
-                Box::pin(self.resume_agent_from_rollout(config, thread_id, source)).await?;
+                Box::pin(self.reopen_agent(config, thread_id, source)).await?;
                 manager.get_thread(thread_id).await?
             }
             Err(err) => return Err(err),

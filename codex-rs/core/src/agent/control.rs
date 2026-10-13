@@ -46,13 +46,9 @@ use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadSource;
 use codex_protocol::user_input::UserInput;
-use codex_thread_store::LoadThreadHistoryParams;
-use codex_thread_store::ReadThreadParams;
 use futures::StreamExt;
-use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Weak;
-use tracing::warn;
 use uuid::Uuid;
 
 pub(crate) use self::runtime::AgentControlInit;
@@ -637,37 +633,6 @@ impl LocalAgentControl {
                 .await,
         )
     }
-
-    async fn persist_thread_spawn_edge_for_source(
-        &self,
-        child_thread: &crate::CodexThread,
-        child_thread_id: ThreadId,
-        session_source: Option<&SessionSource>,
-    ) {
-        let Some(parent_thread_id) = session_source.and_then(SessionSource::parent_thread_id)
-        else {
-            return;
-        };
-        if child_thread.config_snapshot().await.ephemeral {
-            return;
-        }
-        let Ok(state) = self.runtime.upgrade() else {
-            return;
-        };
-        let Some(agent_graph_store) = state.agent_graph_store() else {
-            return;
-        };
-        if let Err(err) = agent_graph_store
-            .upsert_thread_spawn_edge(
-                parent_thread_id,
-                child_thread_id,
-                codex_agent_graph_store::ThreadSpawnEdgeStatus::Open,
-            )
-            .await
-        {
-            warn!("failed to persist thread-spawn edge: {err}");
-        }
-    }
 }
 
 fn agent_matches_prefix(agent_path: Option<&AgentPath>, prefix: &AgentPath) -> bool {
@@ -705,11 +670,4 @@ pub(crate) fn render_input_preview(input: &[UserInput]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-fn thread_spawn_depth(session_source: &SessionSource) -> Option<i32> {
-    match session_source {
-        SessionSource::SubAgent(SubAgentSource::ThreadSpawn { depth, .. }) => Some(*depth),
-        _ => None,
-    }
 }

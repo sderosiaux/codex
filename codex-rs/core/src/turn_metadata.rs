@@ -36,7 +36,6 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_git_discovery::GitRootDiscovery;
 
 // Memory requests await this optional metadata before sending their model request.
-const MEMORY_GIT_METADATA_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
 const MODEL_KEY: &str = "model";
 const CODEX_VERSION_KEY: &str = "codex_version";
@@ -101,33 +100,6 @@ impl From<WorkspaceGitMetadata> for TurnMetadataWorkspace {
             latest_git_commit_hash: value.latest_git_commit_hash,
             has_changes: value.has_changes,
         }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-pub async fn detached_memory_responses_metadata(
-    thread_manager: &crate::ThreadManager,
-    installation_id: String,
-    session_id: String,
-    thread_id: String,
-    window_id: String,
-    session_source: &SessionSource,
-    cwd: &AbsolutePathBuf,
-) -> CodexResponsesMetadata {
-    let turn_id = uuid::Uuid::now_v7().to_string();
-    CodexResponsesMetadata {
-        turn_id: Some(turn_id.clone()),
-        root_turn_id: Some(turn_id),
-        request_kind: Some(CodexResponsesRequestKind::Memory),
-        thread_source: Some(ThreadSource::MemoryConsolidation),
-        turn_trigger: Some("memory_consolidation".to_owned()),
-        subagent_header: subagent_header_value(session_source),
-        workspaces: memory_workspaces(
-            cwd,
-            thread_manager.git_root_discovery().discover(cwd.clone()),
-        )
-        .await,
-        ..CodexResponsesMetadata::new(installation_id, session_id, thread_id, window_id)
     }
 }
 
@@ -462,15 +434,6 @@ impl TurnMetadataState {
             self.git_enrichment_complete.send_replace(/*value*/ true);
         }
     }
-}
-
-async fn memory_workspaces(
-    cwd: &AbsolutePathBuf,
-    repo_root: impl Future<Output = Option<PathBuf>>,
-) -> BTreeMap<String, TurnMetadataWorkspace> {
-    tokio::time::timeout(MEMORY_GIT_METADATA_TIMEOUT, git_workspaces(cwd, repo_root))
-        .await
-        .unwrap_or_default()
 }
 
 async fn git_workspaces(

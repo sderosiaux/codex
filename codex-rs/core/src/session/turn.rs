@@ -40,7 +40,6 @@ use crate::stream_events_utils::finalize_non_tool_response_item;
 use crate::stream_events_utils::handle_non_tool_response_item;
 use crate::stream_events_utils::handle_output_item_done;
 use crate::stream_events_utils::last_assistant_message_from_item;
-use crate::stream_events_utils::mark_thread_memory_mode_polluted_if_external_context;
 use crate::stream_events_utils::raw_assistant_output_text_from_item;
 use crate::stream_events_utils::record_completed_response_item_with_finalized_facts;
 use crate::tasks::emit_compact_metric;
@@ -80,12 +79,10 @@ use codex_protocol::protocol::AgentReasoningSectionBreakEvent;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::InternalSessionSource;
 use codex_protocol::protocol::PlanDeltaEvent;
 use codex_protocol::protocol::ReasoningContentDeltaEvent;
 use codex_protocol::protocol::ReasoningRawContentDeltaEvent;
 use codex_protocol::protocol::SafetyBufferingEvent;
-use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::TurnDiffEvent;
 use codex_protocol::protocol::WarningEvent;
 use codex_protocol::user_input::UserInput;
@@ -93,7 +90,6 @@ use codex_skills::collect_explicit_skill_mentions;
 use codex_skills_extension::HostSkillPrompts;
 use codex_skills_extension::InjectedHostSkillPrompts;
 use codex_skills_extension::validate_required_skills;
-use codex_thread_store::PersistContext;
 use codex_tools::ToolName;
 use codex_utils_path_uri::PathUri;
 use codex_utils_stream_parser::AssistantTextChunk;
@@ -166,7 +162,6 @@ pub(crate) async fn run_turn(
             &turn_context,
             &turn_context.capture_current_model_info(),
             &input,
-            PersistContext::Standard,
         )
         .await;
         if matches!(err.details(), CodexErrorDetails::TurnAborted) {
@@ -207,7 +202,6 @@ pub(crate) async fn run_turn(
                     &turn_context,
                     &turn_context.capture_current_model_info(),
                     &input,
-                    PersistContext::Standard,
                 )
                 .await;
                 return Err(err.into());
@@ -234,7 +228,6 @@ pub(crate) async fn run_turn(
                 &turn_context,
                 &turn_context.capture_current_model_info(),
                 &input,
-                PersistContext::Standard,
             )
             .await;
             return Err(err);
@@ -288,7 +281,6 @@ pub(crate) async fn run_turn(
         &turn_context,
         &first_step_context.settings.model_info,
         &input,
-        PersistContext::TurnStart,
     )
     .await
     {
@@ -353,7 +345,6 @@ pub(crate) async fn run_turn(
             &turn_context,
             &turn_context.capture_current_model_info(),
             &pending_input,
-            PersistContext::SteeredUserInput,
         )
         .await
         {
@@ -565,16 +556,6 @@ pub(crate) async fn run_turn(
                         last_agent_message.clone(),
                     )
                     .await;
-                    if matches!(
-                        turn_context.session_source,
-                        SessionSource::Internal(InternalSessionSource::MemoryConsolidation)
-                    ) && (stop_outcome.should_block || stop_outcome.should_stop)
-                    {
-                        // Do not feed managed rejections back into an unattended memory loop.
-                        return Err(CodexErr::InvalidRequest(
-                            "Memory consolidation was rejected by a Stop hook.".to_string(),
-                        ));
-                    }
                     if stop_outcome.should_block {
                         if let Some(hook_prompt_message) =
                             build_hook_prompt_message(&stop_outcome.continuation_fragments)
@@ -730,7 +711,6 @@ pub(crate) async fn run_hooks_and_record_inputs(
     turn_context: &Arc<TurnContext>,
     model_info: &ModelInfo,
     input: &[TurnInput],
-    persist_context: PersistContext,
 ) -> bool {
     let mut blocked_input = false;
     let mut accepted_user_input = false;
@@ -743,21 +723,12 @@ pub(crate) async fn run_hooks_and_record_inputs(
             if matches!(input_item, TurnInput::UserInput { content, .. } if !content.is_empty()) {
                 accepted_user_input = true;
             }
-            // Tool outputs retain their durability barrier, including in mixed input batches.
-            let input_persist_context = if persist_context == PersistContext::SteeredUserInput
-                && matches!(input_item, TurnInput::FunctionCallOutput(_))
-            {
-                PersistContext::Standard
-            } else {
-                persist_context
-            };
             record_pending_input(
                 sess,
                 turn_context,
                 model_info,
                 input_item.clone(),
                 hook_outcome.additional_contexts,
-                input_persist_context,
             )
             .await;
         }
@@ -1679,7 +1650,6 @@ async fn emit_agent_message_in_plan_mode(
                     id: agent_message_id.clone(),
                     content: Vec::new(),
                     phase: None,
-                    memory_citation: None,
                     delivery: None,
                     questions: None,
                 })
@@ -1780,12 +1750,6 @@ async fn drain_in_flight(
     while let Some(res) = in_flight.next().await {
         match res {
             Ok(envelope) => {
-                mark_thread_memory_mode_polluted_if_external_context(
-                    sess.as_ref(),
-                    turn_context.as_ref(),
-                    &envelope.item,
-                )
-                .await;
                 sess.record_annotated_conversation_items(
                     turn_context,
                     &step_context.settings.model_info,

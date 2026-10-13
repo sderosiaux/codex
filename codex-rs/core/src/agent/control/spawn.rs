@@ -23,9 +23,8 @@ use crate::context::world_state::IncrementalToolsHint;
 use crate::context::world_state::PersistentModeState;
 use crate::session::multi_agents::resolve_usage_hints;
 use crate::tasks::InterruptedTurnHistoryMarker;
-use crate::thread_manager::ForkSnapshot;
 use crate::thread_manager::StartThreadOptions;
-use crate::thread_manager::fork_history_from_snapshot;
+use crate::thread_manager::fork_history_as_interrupted;
 use codex_context_fragments::set_annotated_content;
 use codex_context_fragments::to_annotated_content;
 use codex_features::Feature;
@@ -33,9 +32,6 @@ use codex_history::ResponseItemEnvelope;
 use codex_prompts::ResolvedModelMessages;
 use codex_protocol::error::AgentErrorContext;
 use codex_protocol::protocol::EnvironmentConfigState;
-use codex_thread_store::PersistContext;
-use futures::StreamExt;
-use futures::stream;
 use std::time::Instant;
 
 const AGENT_NAMES: &str = include_str!("../../../assets/agent/agent_names.txt");
@@ -149,122 +145,7 @@ fn retain_forked_developer_message(item: &mut ResponseItem, usage_hint_texts: &[
     !content.is_empty() && set_annotated_content(item, content).is_some()
 }
 
-async fn load_agent_model_context(
-    state: &ThreadManagerState,
-    thread_id: ThreadId,
-    history_mode: ThreadHistoryMode,
-) -> CodexResult<Option<codex_thread_store::StoredModelContext>> {
-    match history_mode {
-        ThreadHistoryMode::Legacy => Ok(state
-            .read_stored_thread(ReadThreadParams {
-                thread_id,
-                include_archived: true,
-                include_history: true,
-            })
-            .await?
-            .history
-            .map(|history| codex_thread_store::StoredModelContext {
-                thread_id,
-                revision: history.revision,
-                items: history.items,
-            })),
-        ThreadHistoryMode::Paginated => Ok(Some(
-            state
-                .load_latest_model_context(LoadThreadHistoryParams {
-                    thread_id,
-                    include_archived: true,
-                })
-                .await?,
-        )),
-    }
-}
-
 impl LocalAgentControl {
-    /// Restore persisted V2 agent identities without reopening their runtimes.
-    pub(crate) async fn restore_v2_agent_metadata(
-        &self,
-        config: &Config,
-        root_thread_id: ThreadId,
-    ) {
-        let registry = &self.runtime.registry;
-        registry.register_root_thread(root_thread_id);
-
-        let Ok(state) = self.runtime.upgrade() else {
-            return;
-        };
-        let Some(agent_graph_store) = state.agent_graph_store() else {
-            return;
-        };
-        let descendant_ids = match agent_graph_store
-            .list_thread_spawn_descendants(
-                root_thread_id,
-                Some(codex_agent_graph_store::ThreadSpawnEdgeStatus::Open),
-            )
-            .await
-        {
-            Ok(descendant_ids) => descendant_ids,
-            Err(err) => {
-                warn!("failed to restore persisted V2 agent metadata for {root_thread_id}: {err}");
-                return;
-            }
-        };
-
-        // Overlap storage reads, but reserve paths and nicknames in graph order.
-        let mut stored_threads = stream::iter(
-            descendant_ids
-                .into_iter()
-                .filter(|thread_id| registry.agent_metadata_for_thread(*thread_id).is_none())
-                .map(|thread_id| {
-                    let state = &state;
-                    async move {
-                        let stored_thread = state
-                            .read_stored_thread(ReadThreadParams {
-                                thread_id,
-                                include_archived: true,
-                                include_history: false,
-                            })
-                            .await;
-                        (thread_id, stored_thread)
-                    }
-                }),
-        )
-        .buffered(/*n*/ 8);
-
-        while let Some((thread_id, stored_thread)) = stored_threads.next().await {
-            if registry.agent_metadata_for_thread(thread_id).is_some() {
-                continue;
-            }
-            let restore_result = stored_thread.and_then(|stored_thread| {
-                let stored_agent_path = stored_thread
-                    .agent_path
-                    .as_deref()
-                    .map(AgentPath::try_from)
-                    .transpose()
-                    .map_err(|err| {
-                        CodexErr::InvalidRequest(format!("invalid stored agent path: {err}"))
-                    })?;
-                let mut reservation = registry.reserve_spawn_slot(/*max_threads*/ None)?;
-                let mut metadata = self.prepare_agent_metadata(
-                    &mut reservation,
-                    config,
-                    stored_agent_path.or_else(|| stored_thread.source.get_agent_path()),
-                    stored_thread
-                        .agent_role
-                        .or_else(|| stored_thread.source.get_agent_role()),
-                    stored_thread
-                        .agent_nickname
-                        .or_else(|| stored_thread.source.get_nickname()),
-                )?;
-                metadata.agent_id = Some(thread_id);
-                reservation.commit(metadata);
-                Ok(())
-            });
-            if let Err(err) = restore_result {
-                warn!("failed to restore V2 agent metadata for {thread_id}: {err}");
-            }
-        }
-    }
-
     fn validate_loaded_v2_child(
         &self,
         thread: &CodexThread,
@@ -331,25 +212,17 @@ impl LocalAgentControl {
         let mut environment_selections = self.runtime.registry.evicted_environments(thread_id);
 
         let stored_thread = state
-            .read_stored_thread(ReadThreadParams {
-                thread_id,
-                include_archived: true,
-                include_history: false,
-            })
+            .read_stored_thread(thread_id, /*include_history*/ false)
             .await?;
         let stored_model = stored_thread.model.clone();
         let stored_model_provider = stored_thread.model_provider.clone();
         let stored_reasoning_effort = stored_thread.reasoning_effort.clone();
         let stored_source = stored_thread.source.clone();
         let stored_parent_thread_id = stored_thread.parent_thread_id;
-        let history = load_agent_model_context(&state, thread_id, stored_thread.history_mode)
-            .await?
-            .ok_or(CodexErr::ThreadNotFound(thread_id))?;
+        let history = state.load_thread_history(thread_id).await?;
         let initial_history = InitialHistory::Resumed(ResumedHistory {
-            history_revision: history.revision,
             conversation_id: thread_id,
-            history: Arc::new(history.items),
-            rollout_path: stored_thread.rollout_path,
+            history: Arc::new(history),
         });
         if initial_history.get_multi_agent_version() != Some(MultiAgentVersion::V2) {
             return Err(CodexErr::ThreadNotFound(thread_id));
@@ -685,35 +558,7 @@ impl LocalAgentControl {
             .map_err(|err| err.with_agent_context(AgentErrorContext::ChildStartup))?;
         let child_create = child_create_started_at.elapsed();
         agent_metadata.agent_id = Some(new_thread.thread_id);
-        let mut pending_spawn =
-            PendingSpawn::new(Arc::clone(&state), new_thread.thread_id, membership);
-
-        let control = self.clone();
-        let child = Arc::clone(&new_thread.thread);
-        let child_thread_id = new_thread.thread_id;
-        let source = notification_source.clone();
-        pending_spawn.set_edge_write(tokio::spawn(async move {
-            control
-                .persist_thread_spawn_edge_for_source(
-                    child.as_ref(),
-                    child_thread_id,
-                    source.as_ref(),
-                )
-                .await;
-        }));
-        let durability_wait_started_at = Instant::now();
-        if options.fork_mode.is_some() {
-            tokio::join!(
-                new_thread
-                    .thread
-                    .session
-                    .ensure_rollout_materialized(PersistContext::Standard),
-                pending_spawn.wait_for_edge(),
-            );
-        } else {
-            pending_spawn.wait_for_edge().await;
-        }
-        let durability_wait = durability_wait_started_at.elapsed();
+        let pending_spawn = PendingSpawn::new(Arc::clone(&state), new_thread.thread_id, membership);
 
         // Capture startup settings before the child can publish metadata for a later turn.
         let spawn_config = if multi_agent_version == MultiAgentVersion::V2 {
@@ -804,7 +649,6 @@ impl LocalAgentControl {
                 residency_reservation,
                 fork_context,
                 child_create,
-                durability_wait,
                 input_admission,
                 total: spawn_started_at.elapsed(),
             },
@@ -871,22 +715,9 @@ impl LocalAgentControl {
             | (MultiAgentVersion::V2, _) => (None, None),
         };
         let parent_history_mode = parent_thread.config_snapshot().await.history_mode;
-        // `record_conversation_items` only queues persistence writes asynchronously.
-        // Flush before snapshotting store history for a fork.
-        parent_thread.ensure_rollout_materialized().await;
-        parent_thread.flush_rollout().await?;
-
         let destination_history_mode = matches!(parent_history_mode, ThreadHistoryMode::Paginated)
             .then_some(ThreadHistoryMode::Paginated);
-        let mut forked_rollout_items =
-            load_agent_model_context(state, parent_thread_id, parent_history_mode)
-                .await?
-                .ok_or_else(|| {
-                    CodexErr::Fatal(format!(
-                        "parent thread history unavailable for fork: {parent_thread_id}"
-                    ))
-                })?
-                .items;
+        let mut forked_rollout_items = state.load_thread_history(parent_thread_id).await?;
 
         let multi_agent_v2_usage_hint_texts_to_filter: Vec<String> =
             if multi_agent_version == MultiAgentVersion::V2 {
@@ -921,8 +752,7 @@ impl LocalAgentControl {
             && config.multi_agent_v2.preserve_fork_prefix
             && preserve_context_baselines;
         if preserve_fork_prefix {
-            let InitialHistory::Forked(items) = fork_history_from_snapshot(
-                ForkSnapshot::Interrupted,
+            let InitialHistory::Forked(items) = fork_history_as_interrupted(
                 InitialHistory::Forked(forked_rollout_items),
                 InterruptedTurnHistoryMarker::Disabled,
             ) else {
@@ -1130,96 +960,26 @@ impl LocalAgentControl {
         ))
     }
 
-    /// Resume an existing agent thread from a recorded rollout file.
-    pub(crate) async fn resume_agent_from_rollout(
+    /// Reopen a closed agent thread from the history it recorded in this process.
+    pub(crate) async fn reopen_agent(
         &self,
         config: Config,
         thread_id: ThreadId,
         session_source: SessionSource,
     ) -> CodexResult<ThreadId> {
         let _membership = self.runtime.admit_start()?;
-        let root_depth = thread_spawn_depth(&session_source).unwrap_or(0);
-        let (resumed_thread_id, resumed_multi_agent_version) = Box::pin(
-            self.resume_single_agent_from_rollout(config.clone(), thread_id, session_source),
-        )
-        .await?;
-        let state = self.runtime.upgrade()?;
-        if config.multi_agent_version_from_features() == MultiAgentVersion::V2
-            || resumed_multi_agent_version == MultiAgentVersion::V2
-        {
-            return Ok(resumed_thread_id);
-        }
-        let Some(agent_graph_store) = state.agent_graph_store() else {
-            return Ok(resumed_thread_id);
-        };
-
-        let mut resume_queue = VecDeque::from([(thread_id, root_depth)]);
-        while let Some((parent_thread_id, parent_depth)) = resume_queue.pop_front() {
-            let child_ids = match agent_graph_store
-                .list_thread_spawn_children(
-                    parent_thread_id,
-                    Some(codex_agent_graph_store::ThreadSpawnEdgeStatus::Open),
-                )
-                .await
-            {
-                Ok(child_ids) => child_ids,
-                Err(err) => {
-                    warn!(
-                        "failed to load persisted thread-spawn children for {parent_thread_id}: {err}"
-                    );
-                    continue;
-                }
-            };
-
-            for child_thread_id in child_ids {
-                let child_depth = parent_depth + 1;
-                let child_resumed = if state.get_thread(child_thread_id).await.is_ok() {
-                    true
-                } else {
-                    let child_session_source =
-                        SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                            parent_thread_id,
-                            depth: child_depth,
-                            agent_path: None,
-                            agent_nickname: None,
-                            agent_role: None,
-                        });
-                    match Box::pin(self.resume_single_agent_from_rollout(
-                        config.clone(),
-                        child_thread_id,
-                        child_session_source,
-                    ))
-                    .await
-                    {
-                        Ok((_, _)) => true,
-                        Err(err) => {
-                            warn!("failed to resume descendant thread {child_thread_id}: {err}");
-                            false
-                        }
-                    }
-                };
-                if child_resumed {
-                    resume_queue.push_back((child_thread_id, child_depth));
-                }
-            }
-        }
-
-        Ok(resumed_thread_id)
+        Box::pin(self.resume_single_agent(config, thread_id, session_source)).await
     }
 
-    async fn resume_single_agent_from_rollout(
+    async fn resume_single_agent(
         &self,
         config: Config,
         thread_id: ThreadId,
         session_source: SessionSource,
-    ) -> CodexResult<(ThreadId, MultiAgentVersion)> {
+    ) -> CodexResult<ThreadId> {
         let state = self.runtime.upgrade()?;
         let stored_thread = state
-            .read_stored_thread(ReadThreadParams {
-                thread_id,
-                include_archived: true,
-                include_history: false,
-            })
+            .read_stored_thread(thread_id, /*include_history*/ false)
             .await?;
         let resumed_agent_path = stored_thread
             .agent_path
@@ -1229,14 +989,10 @@ impl LocalAgentControl {
             .map_err(|err| CodexErr::InvalidRequest(format!("invalid stored agent path: {err}")))?;
         let resumed_agent_nickname = stored_thread.agent_nickname.clone();
         let resumed_agent_role = stored_thread.agent_role.clone();
-        let history = load_agent_model_context(&state, thread_id, stored_thread.history_mode)
-            .await?
-            .ok_or(CodexErr::ThreadNotFound(thread_id))?;
+        let history = state.load_thread_history(thread_id).await?;
         let initial_history = InitialHistory::Resumed(ResumedHistory {
-            history_revision: history.revision,
             conversation_id: thread_id,
-            history: Arc::new(history.items),
-            rollout_path: stored_thread.rollout_path,
+            history: Arc::new(history),
         });
         let parent_thread_id = stored_thread.parent_thread_id;
         let multi_agent_version = state
@@ -1303,18 +1059,11 @@ impl LocalAgentControl {
                 .unwrap_or_else(|| resumed_thread.thread_id.to_string());
             self.maybe_start_completion_watcher(
                 resumed_thread.thread_id,
-                Some(notification_source.clone()),
+                Some(notification_source),
                 child_reference,
-                agent_metadata.agent_path.clone(),
+                agent_metadata.agent_path,
             );
         }
-        self.persist_thread_spawn_edge_for_source(
-            resumed_thread.thread.as_ref(),
-            resumed_thread.thread_id,
-            Some(&notification_source),
-        )
-        .await;
-
-        Ok((resumed_thread.thread_id, multi_agent_version))
+        Ok(resumed_thread.thread_id)
     }
 }

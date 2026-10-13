@@ -19,7 +19,6 @@ use codex_protocol::items::TurnItem;
 use codex_protocol::mcp::CallToolResult;
 use codex_protocol::openai_models::InputModality;
 use codex_protocol::protocol::McpInvocation;
-use codex_rollout::state_db;
 use codex_utils_output_truncation::TruncationPolicy;
 use codex_utils_output_truncation::truncate_mcp_tool_result;
 use codex_utils_output_truncation::truncate_text;
@@ -174,8 +173,6 @@ async fn execute_mcp_tool_call(
         let result = async {
             let mut result = prepared_call
                 .call_with_preparation(/*requested_timeout*/ None, || async {
-                    maybe_mark_thread_memory_mode_polluted(sess, turn_context, &prepared_call)
-                        .await;
                     let request_meta = build_mcp_tool_call_request_meta(step_context, call_id);
                     let request_meta = with_mcp_tool_call_ids_meta(
                         request_meta,
@@ -359,25 +356,6 @@ fn truncate_str_to_char_boundary(value: &str, max_chars: usize) -> &str {
         Some((index, _)) => &value[..index],
         None => value,
     }
-}
-
-async fn maybe_mark_thread_memory_mode_polluted(
-    sess: &Session,
-    turn_context: &TurnContext,
-    prepared_call: &PreparedMcpCall,
-) {
-    if !turn_context.config.memories.disable_on_external_context {
-        return;
-    }
-    if !prepared_call.server_pollutes_memory() {
-        return;
-    }
-    state_db::mark_thread_memory_mode_polluted(
-        sess.services.state_db.as_deref(),
-        sess.thread_id,
-        "mcp_tool_call",
-    )
-    .await;
 }
 
 fn sanitize_mcp_tool_result_for_model(

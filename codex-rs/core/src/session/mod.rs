@@ -43,7 +43,6 @@ use crate::session::step_settings::ResolvedStepSettings;
 use crate::session::step_settings::StepSettings;
 use crate::session::turn_context::TurnEnvironment;
 use crate::skills_load_input_from_config;
-use crate::stream_events_utils::mark_thread_memory_mode_polluted_if_external_context;
 use crate::turn_metadata::TurnMetadataState;
 use crate::turn_timing::now_unix_timestamp_ms;
 use async_channel::Receiver;
@@ -51,8 +50,6 @@ use async_channel::Sender;
 use chrono::Local;
 use chrono::Utc;
 use codex_async_utils::OrCancelExt;
-use codex_attachment_store::AttachmentStore;
-use codex_attachment_store::InlineAttachmentStore;
 use codex_context_fragments::RenderedFragment;
 use codex_exec_server::Environment;
 use codex_exec_server::EnvironmentManager;
@@ -102,7 +99,6 @@ use codex_protocol::models::InternalChatMessageMetadataPassthrough;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::protocol::HasLegacyEvent;
-use codex_protocol::protocol::HistoryPosition;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::ItemStartedEvent;
@@ -125,18 +121,13 @@ use codex_protocol::protocol::WorldStateItem;
 use codex_protocol::request_user_input::RequestUserInputArgs;
 use codex_protocol::request_user_input::RequestUserInputResponse;
 use codex_rmcp_client::ElicitationResponse;
-use codex_rollout::should_persist_response_item;
-use codex_rollout::state_db;
 use codex_terminal_detection::user_agent;
 use codex_thread_store::CreateThreadParams;
 use codex_thread_store::LiveThread;
 use codex_thread_store::LiveThreadInitGuard;
-use codex_thread_store::LocalThreadStore;
-use codex_thread_store::PersistContext;
-use codex_thread_store::ReadThreadParams;
 use codex_thread_store::ResumeThreadParams;
-use codex_thread_store::ThreadPersistenceMetadata;
 use codex_thread_store::ThreadStore;
+use codex_thread_store::should_persist_response_item;
 use codex_utils_audio::prepare_response_items as prepare_audio_response_items;
 use codex_utils_git_discovery::GitRootDiscovery;
 use codex_utils_output_truncation::with_serialization_allowance;
@@ -211,7 +202,6 @@ mod token_budget;
 pub(crate) mod turn;
 pub(crate) mod turn_context;
 mod turn_input;
-mod turn_suspension;
 mod world_state;
 pub(crate) use self::environment::ThreadEnvironmentDefaults;
 use self::handlers::submission_loop;
@@ -227,7 +217,6 @@ pub(crate) use self::session::SessionSettingsUpdate;
 use self::turn_context::TurnContext;
 
 use crate::mcp::McpManager;
-use crate::rollout::map_session_init_error;
 use crate::session::startup_prewarm::SessionStartupPrewarmHandle;
 use crate::shell;
 use crate::state::AutoCompactWindowIds;
@@ -276,7 +265,6 @@ use codex_protocol::protocol::RawResponseCompletedEvent;
 use codex_protocol::protocol::RequestUserInputEvent;
 use codex_protocol::protocol::SessionConfiguredEvent;
 use codex_protocol::protocol::StreamErrorEvent;
-use codex_protocol::protocol::ThreadMemoryMode;
 use codex_protocol::protocol::TokenCountEvent;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TokenUsageInfo;
@@ -315,17 +303,6 @@ pub(crate) enum GitEnrichmentPolicy {
     Skip,
 }
 
-/// Controls which fork history belongs in the newly created thread's own rollout.
-pub(crate) enum ForkPersistence {
-    Copied,
-    /// The spawn caller owns the durability barrier before acknowledging the child.
-    CopiedDeferred,
-    Referenced {
-        history_base: Option<HistoryPosition>,
-        inherited_item_count: usize,
-    },
-}
-
 pub(crate) struct SessionSpawnArgs {
     pub(crate) startup: Option<Arc<startup::SessionStartup>>,
     pub(crate) config: Config,
@@ -342,7 +319,6 @@ pub(crate) struct SessionSpawnArgs {
     pub(crate) conversation_history: InitialHistory,
     pub(crate) history_initialization: HistoryInitialization,
     pub(crate) requested_history_mode: Option<ThreadHistoryMode>,
-    pub(crate) fork_persistence: ForkPersistence,
     pub(crate) session_source: SessionSource,
     pub(crate) forked_from_thread_id: Option<ThreadId>,
     pub(crate) parent_thread_id: Option<ThreadId>,
@@ -359,8 +335,7 @@ pub(crate) struct SessionSpawnArgs {
     pub(crate) turn_extension_init: ExtensionDataInit,
     pub(crate) client_mcp_extensions: ClientMcpExtensions,
     pub(crate) reserved_thread_id: Option<ThreadId>,
-    pub(crate) image_store: Arc<dyn AttachmentStore>,
-    pub(crate) thread_store: Arc<dyn ThreadStore>,
+    pub(crate) thread_store: Arc<ThreadStore>,
     pub(crate) attestation_provider: Option<Arc<dyn AttestationProvider>>,
     pub(crate) external_time_provider: Option<Arc<dyn TimeProvider>>,
     pub(crate) inherited_multi_agent_version: Option<MultiAgentVersion>,
@@ -444,7 +419,6 @@ impl Session {
             conversation_history,
             history_initialization,
             requested_history_mode,
-            fork_persistence,
             session_source,
             forked_from_thread_id,
             parent_thread_id,
@@ -461,7 +435,6 @@ impl Session {
             turn_extension_init,
             client_mcp_extensions,
             reserved_thread_id,
-            image_store,
             thread_store,
             attestation_provider,
             external_time_provider,
@@ -578,9 +551,8 @@ impl Session {
         let multi_agent_version = config.multi_agent_version_override().or_else(|| {
             resolve_multi_agent_version(&conversation_history, inherited_multi_agent_version)
         });
-        let history_mode = conversation_history.get_history_mode(
-            requested_history_mode.unwrap_or_else(|| thread_store.default_history_mode()),
-        );
+        let history_mode =
+            conversation_history.get_history_mode(requested_history_mode.unwrap_or_default());
         let base_instructions = config
             .base_instructions
             .clone()
@@ -667,7 +639,6 @@ impl Session {
             legacy_fallback_cwd: config.cwd.clone(),
             runtime_workspace_roots: config.workspace_roots.clone(),
             codex_home: config.codex_home.clone(),
-            thread_name: None,
             original_config_do_not_use: Arc::clone(&config),
             metrics_service_name,
             app_server_client_name: None,
@@ -704,7 +675,6 @@ impl Session {
             agent_status_tx.clone(),
             conversation_history,
             history_initialization,
-            fork_persistence,
             session_source_clone,
             skills_service,
             mcp_manager.clone(),
@@ -715,7 +685,6 @@ impl Session {
             reserved_thread_id,
             environment_manager,
             inherited_environments,
-            image_store,
             thread_store,
             attestation_provider,
             external_time_provider,
@@ -727,7 +696,7 @@ impl Session {
             error!("Failed to create session: {e:#}");
             match e.downcast::<CodexErr>() {
                 Ok(error) => error,
-                Err(error) => map_session_init_error(&error, &config.codex_home),
+                Err(error) => CodexErr::Fatal(format!("Failed to initialize session: {error:#}")),
             }
         })?;
         if let Some(message) = initial_service_tier_warning {
@@ -956,35 +925,6 @@ pub(crate) fn session_loop_termination_from_handle(
     .shared()
 }
 
-async fn thread_title_from_thread_store(
-    live_thread: Option<&LiveThread>,
-    thread_store: &Arc<dyn ThreadStore>,
-    conversation_id: ThreadId,
-) -> Option<String> {
-    let thread = match live_thread {
-        Some(live_thread) => {
-            live_thread
-                .read_thread(
-                    /*include_archived*/ true, /*include_history*/ false,
-                )
-                .await
-        }
-        None => {
-            thread_store
-                .read_thread(ReadThreadParams {
-                    thread_id: conversation_id,
-                    include_archived: true,
-                    include_history: false,
-                })
-                .await
-        }
-    }
-    .ok()?;
-
-    let title = thread.name.as_deref()?.trim();
-    (!title.is_empty() && thread.preview.trim() != title).then(|| title.to_string())
-}
-
 impl Session {
     /// Builds the `x-codex-beta-features` header value for this session.
     ///
@@ -1022,56 +962,8 @@ impl Session {
         self.tx_event.clone()
     }
 
-    pub(crate) fn state_db(&self) -> Option<state_db::StateDbHandle> {
-        self.services.state_db.clone()
-    }
-
-    pub(crate) fn live_thread_for_persistence(
-        &self,
-        operation: &str,
-    ) -> anyhow::Result<&LiveThread> {
-        self.live_thread()
-            .ok_or_else(|| anyhow::anyhow!("Session persistence is disabled; cannot {operation}."))
-    }
-
     pub(crate) fn live_thread(&self) -> Option<&LiveThread> {
         self.services.live_thread.as_ref()
-    }
-
-    pub(crate) async fn set_thread_memory_mode(
-        self: &Arc<Self>,
-        mode: ThreadMemoryMode,
-    ) -> anyhow::Result<()> {
-        handlers::persist_thread_memory_mode_update(self, mode).await
-    }
-
-    /// Flush rollout writes and return the final durability-barrier result.
-    #[instrument(name = "session.flush_rollout", level = "trace", skip_all)]
-    pub(crate) async fn flush_rollout(&self) -> std::io::Result<()> {
-        if let Some(live_thread) = self.live_thread() {
-            live_thread.flush().await.map_err(std::io::Error::other)
-        } else {
-            Ok(())
-        }
-    }
-
-    pub(crate) async fn try_ensure_rollout_materialized(
-        &self,
-        context: PersistContext,
-    ) -> std::io::Result<()> {
-        if let Some(live_thread) = self.live_thread() {
-            live_thread
-                .persist(context)
-                .await
-                .map_err(std::io::Error::other)?;
-        }
-        Ok(())
-    }
-
-    pub(crate) async fn ensure_rollout_materialized(&self, context: PersistContext) {
-        if let Err(e) = self.try_ensure_rollout_materialized(context).await {
-            warn!("failed to materialize thread persistence: {e}");
-        }
     }
 
     fn next_internal_sub_id(&self) -> String {
@@ -1144,27 +1036,23 @@ impl Session {
     }
 
     async fn record_initial_history(&self, conversation_history: InitialHistory) {
-        let (is_subagent, is_paginated_subagent) = {
+        let is_paginated_subagent = {
             let state = self.state.lock().await;
             let session_configuration = &state.session_configuration;
-            (
-                session_configuration.session_source.is_non_root_agent(),
-                matches!(
-                    session_configuration.history_mode,
-                    ThreadHistoryMode::Paginated
-                ) && matches!(
-                    session_configuration.thread_source.as_ref(),
-                    Some(ThreadSource::Subagent)
-                ),
+            matches!(
+                session_configuration.history_mode,
+                ThreadHistoryMode::Paginated
+            ) && matches!(
+                session_configuration.thread_source.as_ref(),
+                Some(ThreadSource::Subagent)
             )
         };
-        let turn_context = match conversation_history {
+        match conversation_history {
             InitialHistory::New | InitialHistory::Cleared => {
                 // Defer initial context insertion until the first real turn starts so
                 // turn/start overrides can be merged before we write model-visible context.
                 self.set_previous_turn_settings(/*previous_turn_settings*/ None)
                     .await;
-                None
             }
             InitialHistory::Resumed(resumed_history) => {
                 let turn_context = self.new_default_turn().await;
@@ -1216,13 +1104,7 @@ impl Session {
                     thread_settings::applied_event(self).await,
                 )])
                 .await;
-
-                // Defer seeding the session's initial context until the first turn starts so
-                // turn/start overrides can be merged before we write model-visible context.
-                if !is_subagent {
-                    let _ = self.flush_rollout().await;
-                }
-                None
+                // Initial context is seeded on the first turn so turn/start overrides apply.
             }
             InitialHistory::Forked(mut rollout_items) => {
                 let turn_context = self.new_default_turn().await;
@@ -1241,58 +1123,13 @@ impl Session {
 
                 let thread_settings_applied =
                     RolloutItem::EventMsg(thread_settings::applied_event(self).await);
-                match &self.fork_persistence {
-                    ForkPersistence::Referenced {
-                        inherited_item_count,
-                        ..
-                    } => {
-                        // Ancestor records remain behind history_base; only effective child
-                        // settings and boundaries synthesized by snapshot processing are local.
-                        rollout_items.drain(..*inherited_item_count);
-                        rollout_items.insert(0, thread_settings_applied);
-                    }
-                    ForkPersistence::Copied | ForkPersistence::CopiedDeferred
-                        if is_paginated_subagent =>
-                    {
-                        // Paginated subagents already persist inherited context when their live
-                        // thread is created.
-                        rollout_items.clear();
-                        rollout_items.push(thread_settings_applied);
-                    }
-                    ForkPersistence::Copied | ForkPersistence::CopiedDeferred => {
-                        // Keep the copied prefix and effective child settings in one append so a
-                        // cold resume cannot observe inherited settings as the latest value.
-                        rollout_items.push(thread_settings_applied);
-                    }
+                if is_paginated_subagent {
+                    // Paginated subagents already record inherited context when their live
+                    // thread is created.
+                    rollout_items.clear();
                 }
+                rollout_items.push(thread_settings_applied);
                 self.persist_rollout_items(&rollout_items).await;
-
-                // Agent spawn owns its final durability barrier so it can overlap the edge write.
-                let persist_context = match self.fork_persistence {
-                    ForkPersistence::CopiedDeferred => PersistContext::SubagentSpawn,
-                    ForkPersistence::Copied | ForkPersistence::Referenced { .. } => {
-                        PersistContext::Standard
-                    }
-                };
-                self.ensure_rollout_materialized(persist_context).await;
-
-                // Flush after seeding history and any persisted rollout copy.
-                if !is_subagent {
-                    let _ = self.flush_rollout().await;
-                }
-                Some(turn_context)
-            }
-        };
-        if let Some(turn_context) = turn_context
-            && turn_context.config.memories.disable_on_external_context
-        {
-            let history = self.clone_history().await;
-            if let Some(item) = history
-                .raw_items()
-                .find(|item| matches!(item, ResponseItem::FunctionCallOutput { call_id: None, .. }))
-            {
-                mark_thread_memory_mode_polluted_if_external_context(self, &turn_context, item)
-                    .await;
             }
         }
     }
@@ -1334,18 +1171,11 @@ impl Session {
             .into_iter()
             .map(|envelope| (envelope.item, envelope.metadata))
             .unzip();
-        // Replay must not upload or migrate recorded history. The inline store returns prepared
-        // inline bytes, while existing file references bypass preparation and remain unchanged.
-        // Bound replay future size now that image preparation can await storage.
-        Box::pin(prepare_image_response_items(
-            &self.thread_id.to_string(),
-            turn_context.config.ephemeral,
+        prepare_image_response_items(
             &mut prepared_history,
             ImagePreparationMode::DetailBased,
             ImageResizeNoticeMode::Disabled,
-            &InlineAttachmentStore,
-        ))
-        .await;
+        );
         prepare_audio_response_items(&mut prepared_history);
         assert_eq!(
             prepared_history.len(),
@@ -1590,51 +1420,6 @@ impl Session {
     pub(crate) async fn take_session_startup_prewarm(&self) -> Option<SessionStartupPrewarmHandle> {
         let mut state = self.state.lock().await;
         state.take_session_startup_prewarm()
-    }
-
-    pub(crate) async fn fork_config(
-        &self,
-    ) -> (
-        Config,
-        ThreadConfigSnapshot,
-        TurnEnvironmentSnapshot,
-        ReasoningEffortPin,
-    ) {
-        let (configuration, environments, mut reasoning_effort_pin) = {
-            let state = self.state.lock().await;
-            (
-                state.session_configuration.clone(),
-                self.services.turn_environments.snapshot_now(),
-                state.reasoning_effort_pin.clone(),
-            )
-        };
-        let config = self.build_effective_session_config(&configuration);
-        if !config.features.enabled(Feature::ReasoningEffortOverride) {
-            let model = configuration
-                .step_settings
-                .resolve_model_info(
-                    self.services.models_manager.as_ref(),
-                    &configuration.model_info_overrides,
-                )
-                .await;
-            if let Some(effort) = config
-                .model_reasoning_effort
-                .clone()
-                .or_else(|| model.default_reasoning_level.clone())
-            {
-                // Without overrides, the parent's selected effort is its request baseline.
-                reasoning_effort_pin = ReasoningEffortPin::Active {
-                    model: model.slug.clone(),
-                    effort: model.resolve_reasoning_effort(effort),
-                };
-            }
-        }
-        (
-            config,
-            configuration.thread_config_snapshot(environments.all_selections()),
-            environments,
-            reasoning_effort_pin,
-        )
     }
 
     pub(crate) async fn get_config(&self) -> std::sync::Arc<Config> {
@@ -1909,29 +1694,9 @@ impl Session {
     }
 
     pub(crate) async fn send_event_raw(&self, event: Event) {
-        self.send_event_raw_with_persistence(event, /*persist*/ true)
-            .await;
-    }
-
-    /// Delivers an event without creating a local rollout for a thread that has not materialized.
-    pub(crate) async fn send_event_raw_without_materializing_rollout(&self, event: Event) {
-        let persist = match self.current_rollout_path().await {
-            Ok(Some(path)) => codex_rollout::existing_rollout_path(&path).await.is_some(),
-            Ok(None) => true,
-            Err(err) => {
-                warn!("failed to check whether thread persistence is materialized: {err}");
-                true
-            }
-        };
-        self.send_event_raw_with_persistence(event, persist).await;
-    }
-
-    async fn send_event_raw_with_persistence(&self, event: Event, persist: bool) {
-        // Persist the event into rollout storage; the store applies its persistence policy.
-        if persist {
-            let rollout_items = vec![RolloutItem::EventMsg(event.msg.clone())];
-            self.persist_rollout_items(&rollout_items).await;
-        }
+        // Record the event in thread history; the store applies its persistence policy.
+        let rollout_items = vec![RolloutItem::EventMsg(event.msg.clone())];
+        self.persist_rollout_items(&rollout_items).await;
         self.deliver_event_raw(event).await;
     }
 
@@ -2146,16 +1911,7 @@ impl Session {
         } else {
             ImageResizeNoticeMode::Disabled
         };
-        // Keep nested image-upload futures out of every caller's future frame.
-        Box::pin(prepare_image_response_items(
-            &self.thread_id.to_string(),
-            turn_context.config.ephemeral,
-            &mut items,
-            image_preparation_mode,
-            image_resize_notice_mode,
-            self.services.image_store.as_ref(),
-        ))
-        .await;
+        prepare_image_response_items(&mut items, image_preparation_mode, image_resize_notice_mode);
         prepare_audio_response_items(&mut items);
         // Most response items get their passthrough turn ID at the durable history boundary.
         for item in &mut items {
@@ -2194,10 +1950,6 @@ impl Session {
                 Self::assign_missing_response_item_id(&mut response_item.item);
             }
         }
-    }
-
-    pub(crate) fn response_item_from_user_input(&self, input: Vec<UserInput>) -> ResponseItem {
-        self.response_item_from_user_input_with_image_positions(input, &mut HashMap::new())
     }
 
     fn response_item_from_user_input_with_image_positions(
@@ -2363,13 +2115,6 @@ impl Session {
             self.services
                 .executed_tool_calls
                 .mark_mcp_attribution_persisted(revision);
-        }
-        if turn_context.config.memories.disable_on_external_context
-            && let Some(item) = response_items
-                .iter()
-                .find(|item| matches!(item, ResponseItem::FunctionCallOutput { call_id: None, .. }))
-        {
-            mark_thread_memory_mode_polluted_if_external_context(self, turn_context, item).await;
         }
         self.send_raw_response_items(turn_context, &response_items)
             .await;
@@ -3530,7 +3275,6 @@ impl Session {
         input: &[UserInput],
         client_id: Option<String>,
         metadata: UserInputMetadata,
-        persist_context: PersistContext,
     ) {
         // Persist the user message to history, but emit the turn item from `UserInput` so
         // UI-only `text_elements` are preserved. `ResponseItem::Message` does not carry
@@ -3577,7 +3321,6 @@ impl Session {
         let turn_item = TurnItem::UserMessage(user_message_item);
         self.emit_turn_item_started(turn_context, &turn_item).await;
         self.emit_turn_item_completed(turn_context, turn_item).await;
-        self.ensure_rollout_materialized(persist_context).await;
     }
 
     pub(crate) async fn notify_stream_error(
@@ -3598,17 +3341,6 @@ impl Session {
         self.send_event(turn_context, event).await;
     }
 
-    pub(crate) async fn record_memory_citation_for_turn(&self, sub_id: &str) {
-        let turn_state = self
-            .input_queue
-            .turn_state_for_sub_id(&self.active_turn, sub_id)
-            .await;
-        let Some(turn_state) = turn_state else {
-            return;
-        };
-        turn_state.lock().await.has_memory_citation = true;
-    }
-
     pub async fn interrupt_task(self: &Arc<Self>) {
         info!("interrupt received: abort current task, if any");
         let had_active_turn = self.active_turn.lock().await.is_some();
@@ -3624,27 +3356,6 @@ impl Session {
 
     pub(crate) fn user_shell(&self) -> Arc<shell::Shell> {
         Arc::clone(&self.services.user_shell)
-    }
-
-    pub(crate) async fn current_rollout_path(&self) -> anyhow::Result<Option<PathBuf>> {
-        let Some(live_thread) = self.live_thread() else {
-            return Ok(None);
-        };
-        live_thread.local_rollout_path().await.map_err(Into::into)
-    }
-
-    pub(crate) async fn hook_transcript_path(&self) -> Option<PathBuf> {
-        let rollout_path = match self.current_rollout_path().await {
-            Ok(Some(path)) => path,
-            Ok(None) => return None,
-            Err(err) => {
-                warn!("{err}");
-                return None;
-            }
-        };
-        self.ensure_rollout_materialized(PersistContext::Standard)
-            .await;
-        Some(rollout_path)
     }
 
     pub(crate) async fn take_pending_session_start_source(

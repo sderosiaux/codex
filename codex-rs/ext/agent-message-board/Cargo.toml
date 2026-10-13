@@ -19,12 +19,10 @@ caseless = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 codex-extension-api = { workspace = true }
 codex-protocol = { workspace = true }
-codex-state = { workspace = true }
 codex-tools = { workspace = true }
 futures = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-sqlx = { workspace = true }
 tokio = { workspace = true, features = ["fs", "rt", "sync"] }
 tracing = { workspace = true }
 uuid = { workspace = true, features = ["serde", "v7"] }

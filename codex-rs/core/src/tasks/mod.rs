@@ -38,7 +38,6 @@ use crate::state::TaskKind;
 use codex_context_fragments::RenderedFragment;
 use codex_otel::SessionTelemetry;
 use codex_otel::TURN_E2E_DURATION_METRIC;
-use codex_otel::TURN_MEMORY_METRIC;
 use codex_otel::TURN_TOOL_CALL_METRIC;
 use codex_otel::TURN_UNIFIED_EXEC_RUNNING_PROCESSES_METRIC;
 use codex_otel::auth_storage::AuthStorageOriginator;
@@ -50,10 +49,7 @@ use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
-use codex_protocol::protocol::WarningEvent;
-use codex_thread_store::PersistContext;
 
-use codex_features::Feature;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::Result as CodexResult;
 pub(crate) use compact::CompactTask;
@@ -110,25 +106,6 @@ pub(crate) fn interrupted_turn_history_marker(
             Some(RenderedFragment::new("developer", content).into())
         }
     }
-}
-
-fn emit_turn_memory_metric(
-    session_telemetry: &SessionTelemetry,
-    feature_enabled: bool,
-    config_enabled: bool,
-    has_citations: bool,
-) {
-    let read_allowed = feature_enabled && config_enabled;
-    session_telemetry.counter(
-        TURN_MEMORY_METRIC,
-        /*inc*/ 1,
-        &[
-            ("read_allowed", bool_tag(read_allowed)),
-            ("feature_enabled", bool_tag(feature_enabled)),
-            ("config_use_memories", bool_tag(config_enabled)),
-            ("has_citations", bool_tag(has_citations)),
-        ],
-    );
 }
 
 pub(crate) fn emit_compact_metric(
@@ -356,19 +333,6 @@ impl Session {
                 .instrument(trace_span!("session_task.run"))
                 .await;
             let sess = Arc::clone(&session);
-            if let Err(err) = sess.flush_rollout().await
-            {
-                warn!("failed to flush rollout before completing turn: {err}");
-                sess.send_event(
-                    ctx_for_finish.as_ref(),
-                    EventMsg::Warning(WarningEvent {
-                        message: format!(
-                            "Failed to save the conversation transcript; Codex will continue retrying. Error: {err}"
-                        ),
-                    }),
-                )
-                .await;
-            }
             if !task_cancellation_token.is_cancelled() {
                 // Finish uniformly from the spawn site so all tasks share the same lifecycle.
                 sess.on_task_finished(Arc::clone(&ctx_for_finish), task_result)
@@ -610,15 +574,9 @@ impl Session {
             .input_queue
             .take_pending_input_for_turn_state(turn_state.as_ref())
             .await;
-        let (
-            turn_had_memory_citation,
-            turn_tool_calls,
-            token_usage_at_turn_start,
-            token_usage_by_model,
-        ) = {
+        let (turn_tool_calls, token_usage_at_turn_start, token_usage_by_model) = {
             let mut ts = turn_state.lock().await;
             (
-                ts.has_memory_citation,
                 ts.tool_calls,
                 ts.token_usage_at_turn_start.clone(),
                 std::mem::take(&mut ts.token_usage_by_model),
@@ -629,26 +587,16 @@ impl Session {
             &turn_context,
             &turn_context.capture_current_model_info(),
             &pending_input,
-            PersistContext::Standard,
         )
         .await;
         drop(finish_recording);
         let turn_telemetry = &turn_context.session_telemetry;
         // Emit token usage metrics.
         {
-            // TODO(jif): drop this
-            let tmp_mem = (
-                "tmp_mem_enabled",
-                if self.enabled(Feature::MemoryTool) {
-                    "true"
-                } else {
-                    "false"
-                },
-            );
             turn_telemetry.histogram(
                 TURN_TOOL_CALL_METRIC,
                 i64::try_from(turn_tool_calls).unwrap_or(i64::MAX),
-                &[tmp_mem],
+                &[],
             );
             let total_token_usage = self.total_token_usage().await.unwrap_or_default();
             let turn_token_usage = TokenUsage {
@@ -701,14 +649,8 @@ impl Session {
                 "codex.turn.token_usage.total_tokens",
                 turn_token_usage.total_tokens,
             );
-            token_usage_by_model.emit(turn_telemetry, tmp_mem);
+            token_usage_by_model.emit(turn_telemetry);
         }
-        emit_turn_memory_metric(
-            turn_telemetry,
-            turn_context.config.features.enabled(Feature::MemoryTool),
-            turn_context.config.memories.use_memories,
-            turn_had_memory_citation,
-        );
         turn_telemetry.counter(
             TURN_UNIFIED_EXEC_RUNNING_PROCESSES_METRIC,
             i64::try_from(self.list_background_terminals().await.len()).unwrap_or(i64::MAX),
@@ -777,10 +719,6 @@ impl Session {
         };
         if cleared_active_turn {
             self.emit_thread_idle_lifecycle_if_idle(idle_cause).await;
-        }
-        // Buffering writers need a barrier for the terminal event.
-        if let Err(err) = self.flush_rollout().await {
-            warn!("failed to flush rollout after emitting terminal turn event: {err}");
         }
         if cleared_active_turn {
             self.maybe_start_turn_for_pending_work().await;
@@ -867,11 +805,6 @@ impl Session {
                 std::slice::from_ref(&marker),
             )
             .await;
-            // Ensure the marker is durably visible before emitting TurnAborted: some clients
-            // synchronously re-read the rollout on receipt of the abort event.
-            if let Err(err) = self.flush_rollout().await {
-                warn!("failed to flush interrupted-turn marker before emitting TurnAborted: {err}");
-            }
         }
 
         if reason == TurnAbortReason::Interrupted {
@@ -900,10 +833,5 @@ impl Session {
             duration_ms,
         });
         self.send_event(task.turn_context.as_ref(), event).await;
-        // Regular items were flushed before this terminal event was appended; buffering
-        // thread writers may not flush it without another explicit barrier.
-        if let Err(err) = self.flush_rollout().await {
-            warn!("failed to flush rollout after emitting terminal turn event: {err}");
-        }
     }
 }

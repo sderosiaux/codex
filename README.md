@@ -11,7 +11,7 @@ I run Codex in full-access mode all the time. In that mode the sandbox, the appr
 ## What's left
 
 - A `codex` binary (`codex-rs/cli`), headless, for one-shot prompts or an interactive session.
-- The loop: threads, turns, streaming, compaction, AGENTS.md, rollouts with SQLite state, resume.
+- The loop: threads, turns, streaming, compaction, AGENTS.md. Threads live in memory and disappear when the process exits.
 - Tools: shell (unified exec), `apply_patch`, MCP servers declared in `config.toml`, sub-agents, `update_plan`, `request_user_input`, `view_image`, tool search, web search, image generation, skills and hooks.
 - Remote execution environments through `codex exec-server`.
 
@@ -19,9 +19,9 @@ I run Codex in full-access mode all the time. In that mode the sandbox, the appr
 
 Security: sandboxing (Seatbelt, Landlock/bubblewrap, Windows), approval policies and prompts, guardian auto-review, exec-policy rules, the network proxy and its destination allowlists, project trust, permission profiles, managed requirements and cloud config, process hardening, the shell-snapshot credential broker, dangerous-command detection.
 
-Everything around the loop: the TUI, app-server and its SDKs, cloud tasks, realtime voice, code mode, plugins and marketplaces, ChatGPT apps, analytics, feedback upload, rollout tracing, TUI and desktop settings.
+Everything around the loop: the TUI, app-server and its SDKs, cloud tasks, realtime voice, code mode, plugins and marketplaces, ChatGPT apps, session storage (rollouts, SQLite state, resume, memories), analytics, feedback upload, rollout tracing, TUI and desktop settings.
 
-All tests are gone too. Rust went from 2.05M lines (1.06M production, 0.99M tests) to about 270k, and the workspace from about 160 crates to about 80.
+All tests are gone too. Rust went from 2.05M lines (1.06M production, 0.99M tests) to about 222k, and the workspace from about 160 crates to about 70.
 
 ## Running it
 
@@ -39,9 +39,7 @@ With no prompt and a terminal on stdin, `codex` opens an interactive session. Pi
 | `-m, --model` | model to use |
 | `-C, --cd` | working directory |
 | `-c key=value` | override a `config.toml` value (parsed as TOML) |
-| `--resume <id\|last>` | continue a stored thread |
 | `--json` | print raw events as JSON lines |
-| `--ephemeral` | don't persist the thread |
 | `--reasoning` | show reasoning summaries on stderr |
 
 Ctrl-C interrupts the current turn. The assistant's text goes to stdout and tool activity to stderr, so `codex "..." > answer.md` keeps only the answer.
@@ -49,7 +47,7 @@ Ctrl-C interrupts the current turn. The assistant's text goes to stdout and tool
 ## Caveats
 
 - The model can run anything you can run. Point it at a machine or a directory where that's fine.
-- Keep a separate `CODEX_HOME`. Rollouts written by official Codex load here, but this build migrates the state database on its own and warns about config keys it no longer knows, like project trust levels, TUI settings and plugins. It never touches the official daemon's `/tmp/codex-daemon-$UID` directory.
+- Keep a separate `CODEX_HOME`. This build stores nothing about your sessions, but it reads `config.toml` from there (and warns about keys it no longer knows, like project trust levels, TUI settings and plugins) and rewrites the model cache and bundled system skills. It never touches the official daemon's `/tmp/codex-daemon-$UID` directory.
 - MCP elicitations that only ask for confirmation are accepted automatically. Forms are asked in the terminal, and declined when there is no terminal.
 - I've only run it end to end on macOS. Linux and Windows builds are untested.
 - The Bazel files, GitHub workflows, `docs/` and the npm wrapper come from upstream and aren't maintained here. Build with cargo.
