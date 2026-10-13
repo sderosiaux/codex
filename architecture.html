@@ -1,0 +1,745 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>codex · la boucle qui reste</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #f6f7f9;
+    --surface: #ffffff;
+    --ink: #1a2230;
+    --ink-soft: #4a5566;
+    --ink-faint: #7b8696;
+    --rule: #d6dce4;
+    --rule-soft: #e7ebf0;
+
+    /* one colour per architectural layer; the loop itself is --core */
+    --core: #2753d9;
+    --core-tint: #e8eefc;
+    --model: #0e8a7e;
+    --model-tint: #e3f4f1;
+    --exec: #b8690f;
+    --exec-tint: #fbefdf;
+    --ext: #7b4fd0;
+    --ext-tint: #f0eafb;
+    --base: #6b7686;
+    --base-tint: #eef0f3;
+    --cli: #1a2230;
+    --cli-tint: #e9ebef;
+
+    --sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+    --step--1: 0.8125rem;
+    --step-0: 0.9375rem;
+    --step-1: 1.125rem;
+    --step-2: 1.5rem;
+    --step-3: 2.25rem;
+    --step-4: 3.25rem;
+
+    --radius-s: 4px;
+    --radius-m: 8px;
+    --gutter: clamp(20px, 4vw, 48px);
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: var(--step-0);
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  code, .mono { font-family: var(--mono); font-size: 0.86em; }
+  a { color: var(--core); }
+  :focus-visible { outline: 2px solid var(--core); outline-offset: 2px; border-radius: 3px; }
+
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 0 var(--gutter); }
+
+  /* ---------- header ---------- */
+  header.top { padding: 56px 0 8px; }
+  header.top h1 {
+    font-size: var(--step-4);
+    line-height: 1.02;
+    letter-spacing: -0.035em;
+    font-weight: 700;
+    margin: 0 0 18px;
+    max-width: 16ch;
+  }
+  header.top p.lede {
+    font-size: var(--step-1);
+    color: var(--ink-soft);
+    max-width: 62ch;
+    margin: 0;
+  }
+  .ledger {
+    margin-top: 28px;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    border-top: 1px solid var(--rule);
+    border-bottom: 1px solid var(--rule);
+  }
+  .ledger div { padding: 14px 18px 14px 0; }
+  .ledger div + div { padding-left: 18px; border-left: 1px solid var(--rule); }
+  .ledger b { display: block; font-size: var(--step-2); letter-spacing: -0.02em; font-weight: 600; }
+  .ledger s { color: var(--ink-faint); text-decoration-thickness: 1px; font-weight: 400; font-size: var(--step-0); margin-right: 6px; }
+  .ledger b .now { font-style: normal; }
+  .ledger div > span { color: var(--ink-soft); font-size: var(--step--1); }
+
+  /* ---------- sections ---------- */
+  section { padding: 64px 0 8px; }
+  section > .wrap > h2 {
+    font-size: var(--step-3);
+    letter-spacing: -0.03em;
+    line-height: 1.1;
+    margin: 0 0 10px;
+    font-weight: 650;
+  }
+  section > .wrap > p.intro { color: var(--ink-soft); max-width: 70ch; margin: 0 0 28px; }
+
+  /* ---------- the loop ---------- */
+  .loop {
+    display: grid;
+    grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
+    gap: 28px;
+    align-items: start;
+    margin-top: 36px;
+  }
+  .loop-figure {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: var(--radius-m);
+    padding: 8px;
+  }
+  .loop-figure svg { display: block; width: 100%; height: auto; }
+  .loop-figure .caption { font-size: var(--step--1); color: var(--ink-faint); padding: 4px 12px 10px; }
+
+  .edge { fill: none; stroke: var(--rule); stroke-width: 2; }
+  .edge.cycle { stroke: var(--core); stroke-opacity: 0.35; }
+  .edge.dashed { stroke-dasharray: 4 5; stroke: var(--ink-faint); stroke-opacity: 0.6; }
+  .edge.exit { stroke: var(--ink); stroke-opacity: 0.55; }
+  .edge-label { font-family: var(--sans); font-size: 13px; fill: var(--ink-faint); }
+
+  .node { cursor: pointer; }
+  .node circle.body { fill: var(--surface); stroke: var(--core); stroke-width: 2; transition: fill 160ms ease, stroke-width 160ms ease; }
+  .node.entry circle.body { stroke: var(--ink); }
+  .node.side circle.body { stroke: var(--ink-faint); stroke-dasharray: 3 3; }
+  .node.final circle.body { stroke: var(--ink); fill: var(--ink); }
+  .node text.num { font-family: var(--mono); font-size: 15px; font-weight: 500; fill: var(--core); text-anchor: middle; dominant-baseline: central; pointer-events: none; }
+  .node.entry text.num, .node.side text.num { fill: var(--ink); }
+  .node.final text.num { fill: var(--surface); }
+  .node text.label { font-family: var(--sans); font-size: 16px; font-weight: 600; fill: var(--ink); pointer-events: none; }
+  .node text.sub { font-family: var(--sans); font-size: 13px; fill: var(--ink-faint); pointer-events: none; }
+  .node:hover circle.body, .node:focus-visible circle.body { stroke-width: 3; }
+  .node.active circle.body { fill: var(--core); stroke: var(--core); }
+  .node.entry.active circle.body, .node.side.active circle.body { fill: var(--ink); stroke: var(--ink); }
+  .node.active text.num { fill: var(--surface); }
+  .node:focus { outline: none; }
+  .pulse { fill: var(--core); }
+
+  .detail {
+    position: sticky;
+    top: 20px;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: var(--radius-m);
+    padding: 22px 22px 18px;
+    min-height: 420px;
+  }
+  .detail .where { font-family: var(--mono); font-size: var(--step--1); color: var(--core); margin-bottom: 8px; }
+  .detail h3 { margin: 0 0 10px; font-size: var(--step-2); letter-spacing: -0.02em; line-height: 1.15; }
+  .detail p { margin: 0 0 12px; color: var(--ink-soft); }
+  .detail ul { margin: 0 0 14px; padding-left: 18px; color: var(--ink-soft); }
+  .detail li { margin: 4px 0; }
+  .detail .refs { border-top: 1px solid var(--rule-soft); padding-top: 12px; margin-top: 4px; display: grid; gap: 6px; }
+  .detail .refs code { color: var(--ink-soft); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 12px; }
+  .chip {
+    font-size: 12px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--rule);
+    color: var(--ink-soft);
+    background: var(--paper);
+    white-space: nowrap;
+  }
+  .chip.hook { border-color: color-mix(in srgb, var(--ext) 45%, white); color: var(--ext); background: var(--ext-tint); }
+  .chip.event { border-color: color-mix(in srgb, var(--model) 45%, white); color: var(--model); background: var(--model-tint); }
+
+  /* ---------- full trace ---------- */
+  ol.trace { list-style: none; margin: 0; padding: 0; counter-reset: step; border-top: 1px solid var(--rule); }
+  ol.trace > li {
+    display: grid;
+    grid-template-columns: 56px minmax(0, 1fr) minmax(0, 0.9fr);
+    gap: 20px;
+    padding: 22px 0;
+    border-bottom: 1px solid var(--rule);
+  }
+  ol.trace .n { font-family: var(--mono); font-size: var(--step-1); color: var(--core); padding-top: 2px; }
+  ol.trace h3 { margin: 0 0 6px; font-size: var(--step-1); letter-spacing: -0.01em; }
+  ol.trace p { margin: 0; color: var(--ink-soft); }
+  ol.trace .side { font-size: var(--step--1); color: var(--ink-soft); }
+  ol.trace .side code { display: block; margin: 2px 0; color: var(--ink-soft); word-break: break-all; }
+
+  /* ---------- tools table ---------- */
+  .table { width: 100%; border-collapse: collapse; background: var(--surface); border: 1px solid var(--rule); border-radius: var(--radius-m); overflow: hidden; }
+  .table th, .table td { text-align: left; padding: 12px 14px; vertical-align: top; border-bottom: 1px solid var(--rule-soft); }
+  .table th { font-size: var(--step--1); font-weight: 600; color: var(--ink-soft); background: var(--paper); border-bottom: 1px solid var(--rule); }
+  .table tr:last-child td { border-bottom: 0; }
+  .table td:first-child { white-space: nowrap; }
+  .table td.when { color: var(--ink-soft); font-size: var(--step--1); max-width: 34ch; }
+  .runner { display: inline-flex; align-items: center; gap: 8px; }
+  .swatch { width: 10px; height: 10px; border-radius: 2px; flex: none; }
+  .off { color: var(--ink-faint); }
+
+  /* ---------- architecture bands ---------- */
+  .share { display: flex; height: 40px; border-radius: var(--radius-s); overflow: hidden; margin: 0 0 8px; }
+  .share div { display: flex; align-items: center; padding: 0 10px; color: var(--surface); font-size: 12.5px; white-space: nowrap; overflow: hidden; min-width: 0; }
+  .share-legend { font-size: var(--step--1); color: var(--ink-faint); margin: 0 0 22px; }
+  .bands { display: grid; gap: 10px; }
+  .band {
+    display: grid;
+    grid-template-columns: 210px minmax(0, 1fr);
+    gap: 16px;
+    align-items: stretch;
+  }
+  .band .meta { padding-top: 6px; }
+  .band .meta b { display: block; font-size: var(--step-0); }
+  .band .meta span { font-size: var(--step--1); color: var(--ink-faint); }
+  .band .row { display: flex; gap: 3px; min-height: 58px; }
+  .crate {
+    position: relative;
+    border-radius: var(--radius-s);
+    padding: 8px 8px 6px;
+    min-width: 0;
+    overflow: hidden;
+    border: 1px solid transparent;
+    cursor: default;
+  }
+  .crate .name { font-family: var(--mono); font-size: 12px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .crate .loc { font-size: 11px; opacity: 0.8; white-space: nowrap; }
+  .crate:hover, .crate:focus-visible { border-color: currentColor; }
+  .arch-note { margin-top: 18px; font-size: var(--step--1); color: var(--ink-soft); max-width: 80ch; }
+  .tip {
+    position: fixed;
+    pointer-events: none;
+    background: var(--ink);
+    color: var(--surface);
+    font-size: 12.5px;
+    line-height: 1.4;
+    padding: 8px 10px;
+    border-radius: var(--radius-s);
+    max-width: 300px;
+    opacity: 0;
+    transition: opacity 120ms ease;
+    z-index: 10;
+  }
+  .tip b { font-family: var(--mono); font-weight: 500; }
+
+  /* ---------- context gauge ---------- */
+  .gauge { background: var(--surface); border: 1px solid var(--rule); border-radius: var(--radius-m); padding: 26px 22px 18px; }
+  .gauge .bar { position: relative; height: 34px; border-radius: var(--radius-s); background: linear-gradient(90deg, var(--core-tint) 0 90%, #fde8e4 90% 95%, var(--rule-soft) 95% 100%); }
+  .gauge .mark { position: absolute; top: -8px; bottom: -8px; width: 2px; background: var(--ink); }
+  .gauge .mark span { position: absolute; top: calc(100% + 6px); white-space: nowrap; font-size: 12px; color: var(--ink-soft); }
+  .gauge .mark span.left { right: 6px; }
+  .gauge .mark span.right { right: 6px; top: -26px; }
+  .gauge .fill-label { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); font-size: 12.5px; color: var(--core); }
+  .gauge .legend { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; margin-top: 44px; }
+  .gauge .legend h4 { margin: 0 0 4px; font-size: var(--step-0); }
+  .gauge .legend p { margin: 0; color: var(--ink-soft); font-size: var(--step--1); }
+
+  /* ---------- sub-agents ---------- */
+  .agents { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+  .agents .card { background: var(--surface); border: 1px solid var(--rule); border-radius: var(--radius-m); padding: 20px 20px 14px; }
+  .agents h3 { margin: 0 0 4px; font-size: var(--step-1); }
+  .agents .card > p { margin: 0 0 14px; color: var(--ink-soft); font-size: var(--step--1); }
+  .flow { display: grid; grid-template-columns: 1fr 34px 1fr; align-items: center; gap: 0; margin: 8px 0; }
+  .flow .who { border: 1px solid var(--rule); border-radius: var(--radius-s); padding: 8px 10px; font-size: var(--step--1); background: var(--paper); }
+  .flow .who b { display: block; font-size: 12px; color: var(--ink-faint); font-weight: 500; }
+  .flow svg { width: 34px; height: 18px; }
+  .flow svg path { stroke: var(--core); stroke-width: 1.6; fill: none; }
+
+  footer { padding: 64px 0 56px; color: var(--ink-faint); font-size: var(--step--1); }
+  footer .wrap { border-top: 1px solid var(--rule); padding-top: 18px; }
+
+  @media (max-width: 980px) {
+    .loop { grid-template-columns: 1fr; }
+    .detail { position: static; min-height: 0; }
+    ol.trace > li { grid-template-columns: 40px minmax(0, 1fr); }
+    ol.trace .side { grid-column: 2; }
+    .band { grid-template-columns: 1fr; gap: 6px; }
+    .agents { grid-template-columns: 1fr; }
+    .gauge .legend { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 640px) {
+    header.top h1 { font-size: var(--step-3); }
+    .ledger { grid-template-columns: 1fr; }
+    .ledger div + div { border-left: 0; border-top: 1px solid var(--rule); padding-left: 0; }
+    .table td.when { max-width: none; }
+    .table, .table tbody, .table tr, .table td { display: block; width: 100%; }
+    .table thead { display: none; }
+    .table tr { border-bottom: 1px solid var(--rule-soft); padding: 8px 0; }
+    .table td { border: 0; padding: 4px 14px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; }
+  }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <h1>La boucle qui reste dans codex</h1>
+    <p class="lede">Un fork d'openai/codex sans sécurité, sans TUI, sans stockage ni télémétrie. Ce qui tourne encore quand tu tapes un prompt tient en une boucle : construire le contexte, interroger le modèle, exécuter les outils qu'il demande, recommencer tant qu'il en demande.</p>
+    <div class="ledger" aria-label="Taille du code">
+      <div><b><s>2,05 M</s><em class="now" id="loc-now">145 k</em></b><span>lignes de Rust, tests compris au départ</span></div>
+      <div><b><s>160</s><em class="now" id="crates-now">60</em></b><span>crates dans le workspace</span></div>
+      <div><b>0</b><span>test, sandbox, approbation ou fichier de session</span></div>
+    </div>
+  </div>
+</header>
+
+<section id="loop" aria-labelledby="loop-title">
+  <div class="wrap">
+    <h2 id="loop-title">Un tour, vu d'en haut</h2>
+    <p class="intro">Clique une étape pour voir ce qui se passe, dans quel fichier, et quels hooks ou événements elle déclenche. La boucle 3 → 7 se répète tant que le modèle appelle des outils.</p>
+    <div class="loop">
+      <figure class="loop-figure" style="margin:0">
+        <svg id="loop-svg" viewBox="10 16 750 448" role="img" aria-labelledby="svg-title">
+          <title id="svg-title">Diagramme de la boucle d'un tour : entrée, contexte, échantillonnage, flux, outils, enregistrement, décision, compaction, fin.</title>
+        </svg>
+        <div class="caption">Les traits pleins bleus forment la boucle d'échantillonnage. Les pointillés partent vers la compaction, qui réécrit l'historique avant de reprendre.</div>
+      </figure>
+      <aside class="detail" id="detail" aria-live="polite"></aside>
+    </div>
+  </div>
+</section>
+
+<section id="trace" aria-labelledby="trace-title">
+  <div class="wrap">
+    <h2 id="trace-title">Le même tour, ligne à ligne</h2>
+    <p class="intro">L'ordre réel d'exécution, de la frappe au <code>TurnComplete</code>. Les chemins sont relatifs à <code>codex-rs/</code>.</p>
+    <ol class="trace" id="trace-list"></ol>
+  </div>
+</section>
+
+<section id="tools" aria-labelledby="tools-title">
+  <div class="wrap">
+    <h2 id="tools-title">Ce que le modèle peut appeler</h2>
+    <p class="intro">La liste est reconstruite à chaque étape par <code>core/src/tools/spec_plan.rs</code>. Elle dépend du modèle choisi : les modèles « lite » (la famille gpt-6 du catalogue) reçoivent tous leurs outils directement, sans <code>tool_search</code>.</p>
+    <table class="table" id="tools-table">
+      <thead><tr><th scope="col">Outil</th><th scope="col">Quand il est exposé</th><th scope="col">Qui l'exécute</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</section>
+
+<section id="context" aria-labelledby="context-title">
+  <div class="wrap">
+    <h2 id="context-title">Quand l'historique déborde</h2>
+    <p class="intro">L'historique vit en mémoire dans <code>core/src/context_manager/</code>. Chaque sortie d'outil y est tronquée à environ 10 000 tokens. Quand la fenêtre se remplit, la compaction remplace l'historique par un résumé et réinjecte le contexte initial.</p>
+    <div class="gauge">
+      <div class="bar" role="img" aria-label="Fenêtre de contexte : compaction automatique à 90 %, plafond de la fenêtre à 95 %">
+        <span class="fill-label">historique + instructions + outils</span>
+        <div class="mark" style="left:90%"><span class="left">compaction auto à 90 %</span></div>
+        <div class="mark" style="left:95%"><span class="right">plafond à 95 %</span></div>
+      </div>
+      <div class="legend">
+        <div><h4>Avant l'échantillonnage</h4><p>Limite atteinte, ou modèle changé entre deux tours. <code>session/turn.rs</code></p></div>
+        <div><h4>En plein tour</h4><p>Limite atteinte alors que le modèle attend la sortie d'un outil : on compacte, puis on reprend la boucle.</p></div>
+        <div><h4>Deux chemins</h4><p>Distant chez OpenAI (<code>compact_remote_v2.rs</code>, par défaut) ou résumé local (<code>compact.rs</code>). Hooks <code>PreCompact</code> / <code>PostCompact</code> dans les deux.</p></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="agents" aria-labelledby="agents-title">
+  <div class="wrap">
+    <h2 id="agents-title">Sous-agents</h2>
+    <p class="intro">Un sous-agent est un autre thread du même process, lancé par <code>ThreadManager</code> avec les mêmes extensions, le même MCP et le même environnement. Deux protocoles coexistent ; la version vient du catalogue de modèles.</p>
+    <div class="agents">
+      <div class="card">
+        <h3>V2, modèles gpt-6 du catalogue</h3>
+        <p>Outils <code>collaboration.*</code> : spawn_agent, send_message, followup_task, wait_agent, interrupt_agent, list_agents.</p>
+        <div class="flow"><div class="who"><b>parent</b>spawn_agent</div><svg viewBox="0 0 34 18" aria-hidden="true"><path d="M2 9h28m-6-5 6 5-6 5"/></svg><div class="who"><b>enfant</b>nouveau thread, premier message</div></div>
+        <div class="flow"><div class="who"><b>enfant</b>fin de tour</div><svg viewBox="0 0 34 18" aria-hidden="true"><path d="M2 9h28m-6-5 6 5-6 5"/></svg><div class="who"><b>parent</b>message déposé dans sa boîte aux lettres</div></div>
+        <div class="flow"><div class="who"><b>parent</b>wait_agent</div><svg viewBox="0 0 34 18" aria-hidden="true"><path d="M2 9h28m-6-5 6 5-6 5"/></svg><div class="who"><b>file d'entrée</b>réveil à l'arrivée du message</div></div>
+      </div>
+      <div class="card">
+        <h3>V1, gpt-5.5</h3>
+        <p>Outils <code>multi_agent_v1.*</code> : spawn_agent, send_input, resume_agent, wait_agent, close_agent.</p>
+        <div class="flow"><div class="who"><b>parent</b>spawn_agent</div><svg viewBox="0 0 34 18" aria-hidden="true"><path d="M2 9h28m-6-5 6 5-6 5"/></svg><div class="who"><b>enfant</b>nouveau thread</div></div>
+        <div class="flow"><div class="who"><b>parent</b>send_input</div><svg viewBox="0 0 34 18" aria-hidden="true"><path d="M2 9h28m-6-5 6 5-6 5"/></svg><div class="who"><b>enfant</b>nouveau tour</div></div>
+        <div class="flow"><div class="who"><b>parent</b>wait_agent</div><svg viewBox="0 0 34 18" aria-hidden="true"><path d="M2 9h28m-6-5 6 5-6 5"/></svg><div class="who"><b>statut enfant</b>observé jusqu'à la fin, puis notification injectée</div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="arch" aria-labelledby="arch-title">
+  <div class="wrap">
+    <h2 id="arch-title">Ce qui reste, couche par couche</h2>
+    <p class="intro">Chaque bloc est un crate, sa largeur suit son nombre de lignes de code dans sa couche. Survole un bloc pour son rôle. Les dépendances descendent, à deux exceptions près signalées plus bas.</p>
+    <div class="share" id="share" aria-label="Répartition des lignes de code par couche"></div>
+    <div class="bands" id="bands"></div>
+    <p class="arch-note">Deux arêtes remontent : <code>ext/web-search</code> et <code>ext/image-generation</code> dépendent de <code>codex-core</code>, et core dépend directement de <code>ext/skills</code> et du message board. MCP n'est pas une extension : <code>ThreadManager</code> crée lui-même son <code>McpManager</code>.</p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap" id="foot"></div>
+</footer>
+
+<div class="tip" id="tip" role="tooltip"></div>
+
+<script>
+// ---------------------------------------------------------------------------
+// Data: every claim below was read from the code (paths relative to codex-rs/).
+// ---------------------------------------------------------------------------
+const STEPS = [
+  {
+    id: "input", n: "1", kind: "entry", label: "Entrée", sub: "ton prompt",
+    title: "Le prompt devient un tour",
+    body: "Le CLI soumet le texte avec start_turn_if_idle. La session refuse si un tour tourne déjà, sinon elle réserve le tour, construit son TurnContext (modèle, version multi-agent, skills) et lance une tâche régulière dans sa propre tâche tokio.",
+    bullets: ["Op::TurnInput passe par submission_loop", "admission dans turn_input::handle", "RegularTask émet TurnStarted puis tourne tant qu'il reste de l'input"],
+    hooks: [], events: ["TurnStarted"],
+    refs: ["cli/src/main.rs run_turn", "core/src/session/turn_input.rs start_if_idle", "core/src/tasks/mod.rs start_task", "core/src/tasks/regular.rs"]
+  },
+  {
+    id: "context", n: "2", kind: "entry", label: "Contexte", sub: "prompt + outils",
+    title: "Contexte et outils de l'étape",
+    body: "Deux choses en parallèle : relire AGENTS.md et construire la liste d'outils (connexions MCP comprises). Au premier tour, tout le contexte initial est injecté ; ensuite seulement les différences.",
+    bullets: ["instructions de base du modèle, envoyées comme premier item d'input", "AGENTS.md de la racine du projet jusqu'au cwd, 32 Ko max", "état du monde : cwd, shell, date, mode, catalogue de skills", "skills mentionnés explicitement injectés en entier"],
+    hooks: ["SessionStart", "UserPromptSubmit"], events: ["UserMessage"],
+    refs: ["core/src/session/turn.rs run_turn", "core/src/agents_md.rs", "core/src/session/world_state.rs", "core/src/tools/spec_plan.rs build_tool_router"]
+  },
+  {
+    id: "sample", n: "3", kind: "loop", label: "Échantillonner", sub: "Responses API",
+    title: "Requête au modèle",
+    body: "Le prompt (historique + outils visibles) part vers l'API Responses d'OpenAI, en streaming, sans stockage côté serveur. La connexion WebSocket est préchauffée au démarrage ; HTTP SSE sert de repli.",
+    bullets: ["store:false, stream:true, raisonnement chiffré inclus", "5 tentatives par flux, puis bascule HTTPS", "erreurs de connexion : backoff de 5 à 60 s, sans limite"],
+    hooks: [], events: ["StreamError (reconnexion)"],
+    refs: ["core/src/session/turn.rs run_sampling_request", "core/src/client.rs ModelClientSession::stream", "core/src/responses_retry.rs", "core/src/session/startup_prewarm.rs"]
+  },
+  {
+    id: "stream", n: "4", kind: "loop", label: "Flux", sub: "texte et appels",
+    title: "Lecture du flux",
+    body: "Le texte et le raisonnement arrivent en deltas, affichés au fil de l'eau. Chaque appel d'outil terminé est enregistré tout de suite et son exécution démarre sans attendre la fin du flux.",
+    bullets: ["un appel d'outil met needs_follow_up à vrai", "un message ou un raisonnement termine un item", "le courrier d'un sous-agent peut préempter après un raisonnement"],
+    hooks: [], events: ["AgentMessageContentDelta", "ItemStarted / ItemCompleted"],
+    refs: ["core/src/session/turn.rs try_run_sampling_request", "core/src/stream_events_utils.rs handle_output_item_done", "core/src/tools/router.rs build_tool_call"]
+  },
+  {
+    id: "tools", n: "5", kind: "loop", label: "Outils", sub: "hooks autour",
+    title: "Exécution des outils",
+    body: "Chaque appel passe par le registre. Les outils qui le permettent tournent en parallèle (verrou en lecture), les autres un par un. Les hooks peuvent bloquer l'appel, réécrire son entrée ou remplacer sa sortie.",
+    bullets: ["PreToolUse avant, PostToolUse après", "shell : pty local, sortie plafonnée", "MCP : codex-mcp puis rmcp-client, stdio ou HTTP", "Ctrl-C : l'outil reçoit « aborted by user »"],
+    hooks: ["PreToolUse", "PostToolUse"], events: ["ExecCommandBegin / End", "PatchApplyBegin / End", "McpToolCallBegin / End"],
+    refs: ["core/src/tools/parallel.rs handle_tool_call", "core/src/tools/registry.rs dispatch_any_with_state", "core/src/unified_exec/process_manager.rs", "core/src/mcp_tool_call.rs"]
+  },
+  {
+    id: "record", n: "6", kind: "loop", label: "Enregistrer", sub: "historique",
+    title: "Sorties dans l'historique",
+    body: "Une fois le flux fini, les sorties d'outils sont ajoutées à l'historique dans l'ordre des appels, tronquées à la politique du modèle (environ 10 000 tokens). Puis le compteur de tokens et le diff du tour sont publiés.",
+    bullets: ["historique en mémoire seulement", "rien n'est écrit sur disque"],
+    hooks: [], events: ["TokenCount", "TurnDiff"],
+    refs: ["core/src/session/turn.rs drain_in_flight", "core/src/context_manager/history.rs"]
+  },
+  {
+    id: "decide", n: "7", kind: "loop", label: "Décider", sub: "on reboucle ?",
+    title: "Reboucler ou s'arrêter",
+    body: "Si le modèle a appelé un outil ou si de l'input attend, on repart à l'étape 3, après une compaction si la limite est atteinte. Sinon les hooks Stop peuvent encore relancer avec une consigne ; à défaut, le tour se termine.",
+    bullets: ["needs_follow_up = appels d'outils ou input en attente", "steer : le token preempt coupe l'échantillonnage et reboucle"],
+    hooks: ["Stop / SubagentStop"], events: [],
+    refs: ["core/src/session/turn.rs run_turn (boucle d'échantillonnage)"]
+  },
+  {
+    id: "compact", n: "C", kind: "side", label: "Compaction", sub: "si la fenêtre déborde",
+    title: "Compaction",
+    body: "Avant l'échantillonnage, en plein tour ou après, si l'historique approche 90 % de la fenêtre. OpenAI résume côté serveur (chemin par défaut) ; sinon un résumé local. L'historique est remplacé puis le contexte initial réinjecté.",
+    bullets: ["compact_remote_v2 : déclencheur CompactionTrigger, 2 tentatives", "compact local : prompt de résumé, messages utilisateur plafonnés à 20 k tokens"],
+    hooks: ["PreCompact", "PostCompact"], events: ["ContextCompacted"],
+    refs: ["core/src/compact_remote_v2.rs", "core/src/compact.rs", "core/src/session/context_window.rs"]
+  },
+  {
+    id: "done", n: "✓", kind: "final", label: "Fin du tour", sub: "retour au CLI",
+    title: "Fin du tour",
+    body: "La tâche se termine : l'input restant est enregistré, l'événement de fin part vers le CLI, et le thread redevient inactif. Le CLI imprime le total de tokens, puis attend le prompt suivant ou sort.",
+    bullets: ["Ctrl-C pendant le tour : 100 ms de grâce, marqueur d'interruption dans l'historique, TurnAborted"],
+    hooks: ["Interrupt (si annulé)"], events: ["TurnComplete", "TurnAborted"],
+    refs: ["core/src/tasks/mod.rs on_task_finished", "core/src/tasks/mod.rs handle_task_abort", "cli/src/render.rs finish"]
+  }
+];
+
+const TOOLS = [
+  { name: "exec_command, write_stdin", when: "Toujours, dès qu'un environnement local existe", runner: "exec", by: "unified exec → utils/pty, process local" },
+  { name: "apply_patch", when: "Si le modèle déclare un type d'outil apply_patch", runner: "exec", by: "crate apply-patch sur le système de fichiers local" },
+  { name: "view_image", when: "Par défaut", runner: "exec", by: "lecture locale de l'image" },
+  { name: "outils MCP + list/read des ressources", when: "Dès qu'un serveur est déclaré dans config.toml", runner: "ext", by: "codex-mcp → rmcp-client (stdio ou HTTP)" },
+  { name: "tool_search", when: "Modèles non lite, quand des outils sont différés", runner: "core", by: "recherche BM25 sur les outils différés" },
+  { name: "collaboration.* (v2)", when: "Modèles gpt-6 du catalogue", runner: "core", by: "nouveau thread dans le même process" },
+  { name: "multi_agent_v1.* (v1)", when: "gpt-5.5", runner: "core", by: "nouveau thread dans le même process" },
+  { name: "web.run", when: "Modèles lite, si la recherche web n'est pas désactivée", runner: "model", by: "extension web-search → endpoint de recherche OpenAI" },
+  { name: "web_search (hébergé)", when: "Modèles non lite", runner: "model", by: "exécuté côté OpenAI" },
+  { name: "image_gen.imagegen", when: "Auth OpenAI, offre payante, modèle qui accepte des images", runner: "model", by: "extension image-generation → API images" },
+  { name: "clock.curr_time, clock.sleep", when: "Modèles qui déclarent l'outil clock (gpt-6)", runner: "core", by: "handlers locaux" },
+  { name: "request_user_input", when: "Exposé, mais refusé hors mode Plan", runner: "core", by: "question posée dans ton terminal" },
+  { name: "update_plan", when: "Désactivé par défaut (tools.update_plan.enabled)", runner: "core", by: "événement PlanUpdate", off: true }
+];
+
+const LAYERS = [
+  { id: "cli", name: "CLI", short: "CLI", note: "binaire codex", color: "--cli", tint: "--cli-tint" },
+  { id: "engine", name: "Moteur", short: "Moteur", note: "la boucle", color: "--core", tint: "--core-tint" },
+  { id: "ext", name: "Extensions et MCP", short: "Extensions + MCP", note: "ce que tu as gardé", color: "--ext", tint: "--ext-tint" },
+  { id: "model", name: "Accès au modèle", short: "Modèle", note: "API, auth, catalogue", color: "--model", tint: "--model-tint" },
+  { id: "exec", name: "Exécution locale", short: "Exécution", note: "shell, patch, fichiers", color: "--exec", tint: "--exec-tint" },
+  { id: "base", name: "Fondations", short: "Fondations", note: "types, config, utilitaires", color: "--base", tint: "--base-tint" }
+];
+
+// Generated from `tokei -t Rust` (code column) on the final tree.
+const CRATES = /*CRATES*/[{"name": "agent-message-board-client", "layer": "ext", "loc": 578, "role": "Client du tableau de messages entre agents."}, {"name": "agent-roles", "layer": "ext", "loc": 538, "role": "Rôles d'agents définis par fichier."}, {"name": "apply-patch", "layer": "exec", "loc": 1866, "role": "Parseur et application des patchs du modèle."}, {"name": "arg0", "layer": "exec", "loc": 321, "role": "Dispatch par argv0 (apply_patch en commande)."}, {"name": "async-utils", "layer": "base", "loc": 39, "role": "Utilitaires async."}, {"name": "cli", "layer": "cli", "loc": 679, "role": "Le binaire codex : one-shot, REPL, --json, rendu terminal, réponses aux questions MCP."}, {"name": "codex-api", "layer": "model", "loc": 3537, "role": "API Responses (SSE et WebSocket), images, recherche, modèles."}, {"name": "codex-client", "layer": "model", "loc": 247, "role": "Client HTTP de base : SSE et retries."}, {"name": "codex-home", "layer": "ext", "loc": 99, "role": "AGENTS.md global de ~/.codex."}, {"name": "codex-mcp", "layer": "ext", "loc": 5859, "role": "Gestion des serveurs MCP : connexions, catalogue d'outils, élicitations."}, {"name": "collaboration-mode-templates", "layer": "base", "loc": 2, "role": "Modèles de modes de collaboration."}, {"name": "config", "layer": "base", "loc": 5290, "role": "Chargement de config.toml en couches."}, {"name": "config-schema", "layer": "base", "loc": 17, "role": "Outil qui génère le schéma JSON de la config."}, {"name": "context-fragments", "layer": "base", "loc": 359, "role": "Fragments de contexte injectés dans le prompt."}, {"name": "core", "layer": "engine", "loc": 52017, "role": "Session, tours, routeur d'outils, contexte, compaction, sous-agents."}, {"name": "core-api", "layer": "cli", "loc": 40, "role": "Façade : ce que le CLI importe du moteur."}, {"name": "exec-server", "layer": "exec", "loc": 3817, "role": "Environnement local : processus et système de fichiers."}, {"name": "ext/agent-message-board", "layer": "ext", "loc": 1857, "role": "Tableau de messages entre agents (désactivé par défaut)."}, {"name": "ext/extension-api", "layer": "ext", "loc": 1356, "role": "Contrats des extensions : outils, contexte, cycle de vie."}, {"name": "ext/image-generation", "layer": "ext", "loc": 886, "role": "Outil de génération d'images."}, {"name": "ext/items", "layer": "ext", "loc": 120, "role": "Types d'items partagés par les extensions."}, {"name": "ext/skills", "layer": "ext", "loc": 3843, "role": "Extension skills : catalogue, chargement, mentions explicites."}, {"name": "ext/web-search", "layer": "ext", "loc": 539, "role": "Outil web.run vers l'endpoint de recherche OpenAI."}, {"name": "features", "layer": "base", "loc": 1137, "role": "Feature flags et leurs valeurs par défaut."}, {"name": "file-system", "layer": "exec", "loc": 491, "role": "Abstraction du système de fichiers local."}, {"name": "git-utils", "layer": "exec", "loc": 2408, "role": "Infos git du workspace (métadonnées de requête)."}, {"name": "history", "layer": "base", "loc": 1754, "role": "Types d'historique et de rollout en mémoire."}, {"name": "hooks", "layer": "ext", "loc": 5686, "role": "Hooks : pre/post tool use, stop, compaction, session."}, {"name": "http-client", "layer": "model", "loc": 4347, "role": "Fabrique de clients HTTP, proxys, CA personnalisées."}, {"name": "install-context", "layer": "exec", "loc": 267, "role": "Détection du mode d'installation du binaire."}, {"name": "keyring-store", "layer": "model", "loc": 258, "role": "Trousseau système pour les identifiants."}, {"name": "login", "layer": "model", "loc": 4378, "role": "Login ChatGPT, clé API, refresh des tokens."}, {"name": "model-provider", "layer": "model", "loc": 877, "role": "Capacités du provider OpenAI et auth associée."}, {"name": "model-provider-info", "layer": "model", "loc": 352, "role": "Définition des providers (OpenAI, compatibles)."}, {"name": "models-manager", "layer": "model", "loc": 1140, "role": "Catalogue de modèles : embarqué et rafraîchi."}, {"name": "prompts", "layer": "base", "loc": 442, "role": "Instructions de base par modèle."}, {"name": "protocol", "layer": "base", "loc": 9881, "role": "Types partagés : événements, opérations, items, modèles."}, {"name": "rmcp-client", "layer": "ext", "loc": 11224, "role": "Client MCP bas niveau : stdio, HTTP streamable, OAuth."}, {"name": "secrets", "layer": "model", "loc": 576, "role": "Stockage des secrets d'auth."}, {"name": "shell-command", "layer": "exec", "loc": 2380, "role": "Détection du shell, snapshot d'environnement, parsing."}, {"name": "skills", "layer": "ext", "loc": 1137, "role": "Lecture des SKILL.md et skills système embarqués."}, {"name": "terminal-detection", "layer": "model", "loc": 303, "role": "Détection du terminal pour le user-agent."}, {"name": "thread-store", "layer": "base", "loc": 625, "role": "Registre des threads en mémoire."}, {"name": "tools", "layer": "base", "loc": 2031, "role": "Définitions d'outils et sérialisation vers l'API."}, {"name": "utils/absolute-path", "layer": "base", "loc": 367, "role": "Utilitaire."}, {"name": "utils/audio", "layer": "base", "loc": 242, "role": "Utilitaire."}, {"name": "utils/cache", "layer": "base", "loc": 126, "role": "Utilitaire."}, {"name": "utils/git-discovery", "layer": "exec", "loc": 88, "role": "Recherche de la racine git."}, {"name": "utils/home-dir", "layer": "base", "loc": 50, "role": "Utilitaire."}, {"name": "utils/image", "layer": "base", "loc": 456, "role": "Utilitaire."}, {"name": "utils/output-truncation", "layer": "base", "loc": 226, "role": "Utilitaire."}, {"name": "utils/path-uri", "layer": "base", "loc": 1382, "role": "Utilitaire."}, {"name": "utils/path-utils", "layer": "base", "loc": 350, "role": "Utilitaire."}, {"name": "utils/process", "layer": "exec", "loc": 13, "role": "Utilitaires de processus."}, {"name": "utils/pty", "layer": "exec", "loc": 3942, "role": "Lancement de processus en pseudo-terminal."}, {"name": "utils/redacted-string", "layer": "base", "loc": 40, "role": "Utilitaire."}, {"name": "utils/rustls-provider", "layer": "base", "loc": 27, "role": "Utilitaire."}, {"name": "utils/stream-parser", "layer": "base", "loc": 743, "role": "Utilitaire."}, {"name": "utils/string", "layer": "base", "loc": 296, "role": "Utilitaire."}, {"name": "utils/template", "layer": "base", "loc": 243, "role": "Utilitaire."}, {"name": "websocket-client", "layer": "model", "loc": 490, "role": "Transport WebSocket vers l'API Responses."}]/*END*/;
+const META = /*META*/{"loc": 144681, "crates": 61, "commit": "b228c70295", "date": "13/10/2026"}/*END*/;
+
+// ---------------------------------------------------------------------------
+// Loop diagram
+// ---------------------------------------------------------------------------
+const NS = "http://www.w3.org/2000/svg";
+const svg = document.getElementById("loop-svg");
+const C = { x: 480, y: 245, r: 150 };
+const ring = ["sample", "stream", "tools", "record", "decide"];
+const angles = { sample: -90, stream: -18, tools: 54, record: 126, decide: 198 };
+const pos = {};
+for (const id of ring) {
+  const a = angles[id] * Math.PI / 180;
+  pos[id] = { x: C.x + C.r * Math.cos(a), y: C.y + C.r * Math.sin(a) };
+}
+pos.input = { x: 60, y: 110 };
+pos.context = { x: 205, y: 110 };
+pos.compact = { x: C.x, y: C.y };
+pos.done = { x: 160, y: 395 };
+
+function el(name, attrs, parent) {
+  const node = document.createElementNS(NS, name);
+  for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+  (parent || svg).appendChild(node);
+  return node;
+}
+
+const defs = el("defs", {});
+for (const [id, color] of [["arrow-core", "var(--core)"], ["arrow-ink", "var(--ink)"], ["arrow-faint", "var(--ink-faint)"]]) {
+  const m = el("marker", { id, viewBox: "0 0 10 10", refX: "8", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto-start-reverse" }, defs);
+  el("path", { d: "M0 1 L9 5 L0 9 z", fill: color, "fill-opacity": id === "arrow-core" ? "0.6" : "0.75" }, m);
+}
+
+const R = 30; // node radius
+function trim(a, b, ra = R, rb = R) {
+  const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy);
+  return { a: { x: a.x + dx / d * ra, y: a.y + dy / d * ra }, b: { x: b.x - dx / d * (rb + 4), y: b.y - dy / d * (rb + 4) } };
+}
+function arcBetween(id1, id2) {
+  // circular arc along the ring, trimmed by node radius
+  const a1 = angles[id1] * Math.PI / 180, a2raw = angles[id2] * Math.PI / 180;
+  const a2 = a2raw <= a1 ? a2raw + 2 * Math.PI : a2raw;
+  const pad = (R + 6) / C.r;
+  const s = a1 + pad, e = a2 - pad;
+  const p1 = { x: C.x + C.r * Math.cos(s), y: C.y + C.r * Math.sin(s) };
+  const p2 = { x: C.x + C.r * Math.cos(e), y: C.y + C.r * Math.sin(e) };
+  return `M${p1.x.toFixed(1)} ${p1.y.toFixed(1)} A${C.r} ${C.r} 0 0 1 ${p2.x.toFixed(1)} ${p2.y.toFixed(1)}`;
+}
+
+// ring edges
+const ringPath = [];
+for (let i = 0; i < ring.length; i++) {
+  const d = arcBetween(ring[i], ring[(i + 1) % ring.length]);
+  ringPath.push(d);
+  el("path", { d, class: "edge cycle", "marker-end": "url(#arrow-core)" });
+}
+// entry edges
+function straight(from, to, cls, marker) {
+  const t = trim(pos[from], pos[to]);
+  return el("path", { d: `M${t.a.x} ${t.a.y} L${t.b.x} ${t.b.y}`, class: `edge ${cls}`, "marker-end": `url(#${marker})` });
+}
+straight("input", "context", "exit", "arrow-ink");
+{
+  // context → sample: gentle curve
+  const a = pos.context, b = pos.sample;
+  const t = trim(a, b);
+  el("path", { d: `M${t.a.x} ${t.a.y} Q ${(a.x + b.x) / 2} ${a.y - 40} ${t.b.x} ${t.b.y}`, class: "edge exit", "marker-end": "url(#arrow-ink)" });
+}
+// exit: decide → done
+straight("decide", "done", "exit", "arrow-ink");
+// compaction branches
+straight("decide", "compact", "dashed", "arrow-faint");
+{
+  const t = trim(pos.compact, pos.sample);
+  el("path", { d: `M${t.a.x} ${t.a.y} L${t.b.x} ${t.b.y}`, class: "edge dashed", "marker-end": "url(#arrow-faint)" });
+}
+
+// edge labels
+function label(x, y, text, anchor = "start") { el("text", { x, y, class: "edge-label", "text-anchor": anchor }).textContent = text; }
+label((pos.decide.x + pos.done.x) / 2 - 12, (pos.decide.y + pos.done.y) / 2 + 4, "plus aucun appel", "end");
+label(pos.compact.x + 30, pos.compact.y + 5, "fenêtre ≥ 90 %", "start");
+
+// nodes
+const nodeEls = {};
+for (const s of STEPS) {
+  const p = pos[s.id];
+  const g = el("g", { class: `node ${s.kind}`, transform: `translate(${p.x.toFixed(1)} ${p.y.toFixed(1)})`, tabindex: "0", role: "button", "aria-label": `${s.n === "✓" ? "" : "Étape " + s.n + " : "}${s.label}` });
+  el("circle", { r: s.kind === "side" ? 24 : R, class: "body" }, g);
+  el("text", { class: "num" }, g).textContent = s.n;
+  // label placement: outside the ring
+  let lx = 0, ly = R + 18, anchor = "middle";
+  if (s.id === "sample") { ly = -R - 22; }
+  if (s.id === "stream") { lx = R + 10; ly = -4; anchor = "start"; }
+  if (s.id === "tools") { lx = R + 10; ly = 6; anchor = "start"; }
+  if (s.id === "decide") { lx = -R - 10; ly = -6; anchor = "end"; }
+  if (s.id === "compact") { ly = 44; }
+  if (s.id === "done") { ly = R + 20; }
+  el("text", { class: "label", x: lx, y: ly, "text-anchor": anchor }, g).textContent = s.label;
+  el("text", { class: "sub", x: lx, y: ly + 15, "text-anchor": anchor }, g).textContent = s.sub;
+  g.addEventListener("click", () => select(s.id));
+  g.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); select(s.id); } });
+  nodeEls[s.id] = g;
+}
+
+// detail panel
+const detail = document.getElementById("detail");
+function chips(list, cls) { return list.length ? `<div class="chips">${list.map((x) => `<span class="chip ${cls}">${x}</span>`).join("")}</div>` : ""; }
+function select(id) {
+  const s = STEPS.find((x) => x.id === id);
+  for (const [k, g] of Object.entries(nodeEls)) g.classList.toggle("active", k === id);
+  detail.innerHTML = `
+    <div class="where">${s.n === "✓" || s.n === "C" ? s.label : "étape " + s.n}</div>
+    <h3>${s.title}</h3>
+    <p>${s.body}</p>
+    <ul>${s.bullets.map((b) => `<li>${b}</li>`).join("")}</ul>
+    ${chips(s.hooks.map((h) => "hook " + h), "hook")}
+    ${chips(s.events, "event")}
+    <div class="refs">${s.refs.map((r) => `<code>${r}</code>`).join("")}</div>`;
+}
+select("input");
+
+// one orchestrated motion: a pulse runs the loop once on load
+(function pulse() {
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  const paths = ringPath.map((d) => el("path", { d, fill: "none", stroke: "none" }));
+  const dot = el("circle", { r: 5, class: "pulse" });
+  const lengths = paths.map((p) => p.getTotalLength());
+  const total = lengths.reduce((a, b) => a + b, 0);
+  const duration = 3200;
+  let start;
+  function frame(t) {
+    if (!start) start = t;
+    let d = ((t - start) / duration) * total;
+    if (d >= total) { dot.remove(); paths.forEach((p) => p.remove()); return; }
+    let i = 0;
+    while (d > lengths[i]) { d -= lengths[i]; i++; }
+    const pt = paths[i].getPointAtLength(d);
+    dot.setAttribute("cx", pt.x); dot.setAttribute("cy", pt.y);
+    requestAnimationFrame(frame);
+  }
+  setTimeout(() => requestAnimationFrame(frame), 500);
+})();
+
+// ---------------------------------------------------------------------------
+// Trace list
+// ---------------------------------------------------------------------------
+const order = ["input", "context", "sample", "stream", "tools", "record", "decide", "compact", "done"];
+document.getElementById("trace-list").innerHTML = order.map((id) => {
+  const s = STEPS.find((x) => x.id === id);
+  return `<li>
+    <div class="n">${s.n}</div>
+    <div><h3>${s.title}</h3><p>${s.body}</p>${chips(s.hooks.map((h) => "hook " + h), "hook")}${chips(s.events, "event")}</div>
+    <div class="side">${s.refs.map((r) => `<code>${r}</code>`).join("")}</div>
+  </li>`;
+}).join("");
+
+// ---------------------------------------------------------------------------
+// Tools table
+// ---------------------------------------------------------------------------
+const runnerName = { exec: "exécution locale", ext: "MCP", core: "moteur", model: "côté OpenAI" };
+const runnerColor = { exec: "--exec", ext: "--ext", core: "--core", model: "--model" };
+document.querySelector("#tools-table tbody").innerHTML = TOOLS.map((t) => `<tr${t.off ? ' class="off"' : ""}>
+  <td><code>${t.name}</code></td>
+  <td class="when">${t.when}</td>
+  <td><span class="runner"><span class="swatch" style="background:var(${runnerColor[t.runner]})"></span>${t.by}</span></td>
+</tr>`).join("");
+
+// ---------------------------------------------------------------------------
+// Architecture bands
+// ---------------------------------------------------------------------------
+const tip = document.getElementById("tip");
+const fmt = (n) => n.toLocaleString("fr-FR");
+const bands = document.getElementById("bands");
+{
+  const share = document.getElementById("share");
+  const grand = CRATES.reduce((a, c) => a + c.loc, 0);
+  for (const layer of LAYERS) {
+    const sum = CRATES.filter((c) => c.layer === layer.id).reduce((a, c) => a + c.loc, 0);
+    if (!sum) continue;
+    const pct = (sum / grand) * 100;
+    const seg = document.createElement("div");
+    seg.style.flex = `${sum} 1 0`;
+    seg.style.background = `var(${layer.color})`;
+    seg.title = `${layer.name} : ${fmt(sum)} lignes (${pct.toFixed(0)} %)`;
+    seg.textContent = pct >= 6 ? `${layer.short} ${pct.toFixed(0)} %` : "";
+    share.appendChild(seg);
+  }
+  share.insertAdjacentHTML("afterend", `<p class="share-legend">Part de chaque couche dans les ${fmt(grand)} lignes de code. Le détail par crate suit, une bande par couche.</p>`);
+}
+for (const layer of LAYERS) {
+  const crates = CRATES.filter((c) => c.layer === layer.id).sort((a, b) => b.loc - a.loc);
+  if (!crates.length) continue;
+  const total = crates.reduce((a, c) => a + c.loc, 0);
+  // fold crates thinner than 5 % of the band into one block
+  const big = crates.filter((c) => c.loc / total >= 0.05);
+  const small = crates.filter((c) => c.loc / total < 0.05);
+  const blocks = big.map((c) => ({ ...c }));
+  if (small.length) {
+    blocks.push({
+      name: `+${small.length} petits`,
+      loc: small.reduce((a, c) => a + c.loc, 0),
+      role: small.map((c) => `${c.name} (${fmt(c.loc)})`).join(", "),
+      folded: true
+    });
+  }
+  const band = document.createElement("div");
+  band.className = "band";
+  band.innerHTML = `<div class="meta"><b>${layer.name}</b><span>${layer.note}, ${fmt(total)} lignes</span></div><div class="row"></div>`;
+  const row = band.querySelector(".row");
+  for (const b of blocks) {
+    const d = document.createElement("div");
+    d.className = "crate";
+    d.tabIndex = 0;
+    d.style.flex = `${Math.max(b.loc, total * 0.07)} 1 0`;
+    d.style.background = `var(${layer.tint})`;
+    d.style.color = `var(${layer.color})`;
+    d.innerHTML = `<div class="name">${b.name}</div><div class="loc">${fmt(b.loc)}</div>`;
+    const text = `<b>${b.name}</b><br>${b.role || ""}`;
+    const show = (x, y) => { tip.innerHTML = text; tip.style.left = Math.min(x + 14, window.innerWidth - 320) + "px"; tip.style.top = y + 14 + "px"; tip.style.opacity = 1; };
+    d.addEventListener("mousemove", (e) => show(e.clientX, e.clientY));
+    d.addEventListener("mouseleave", () => { tip.style.opacity = 0; });
+    d.addEventListener("focus", () => { const r = d.getBoundingClientRect(); show(r.left, r.bottom); });
+    d.addEventListener("blur", () => { tip.style.opacity = 0; });
+    row.appendChild(d);
+  }
+  bands.appendChild(band);
+}
+
+// header numbers + footer
+if (META.loc) document.getElementById("loc-now").textContent = Math.round(META.loc / 1000) + " k";
+if (META.crates) document.getElementById("crates-now").textContent = META.crates;
+document.getElementById("foot").innerHTML = META.commit
+  ? `Généré depuis le commit <code>${META.commit}</code> de sderosiaux/codex, ${META.date}. Lignes de code comptées avec tokei, hors commentaires et lignes vides.`
+  : "";
+</script>
+</body>
+</html>
