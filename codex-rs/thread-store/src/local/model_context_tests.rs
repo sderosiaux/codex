@@ -9,12 +9,10 @@ use codex_protocol::items::TurnItem;
 use codex_protocol::items::UserMessageItem;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::HistoryPosition;
 use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::MultiAgentVersion;
-use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnContextItem;
@@ -685,17 +683,10 @@ fn turn_context(root: &Path, turn_id: &str) -> RolloutItem {
         root_turn_id: None,
         disabled_plugin_ids: None,
         cwd: serde_json::from_value(serde_json::json!(root)).expect("absolute cwd"),
-        approval_policy: AskForApproval::Never,
-        approvals_reviewer: None,
-        sandbox_policy: SandboxPolicy::new_read_only_policy(),
-        permission_profile: None,
-        active_permission_profile: None,
-        file_system_sandbox_policy: None,
         model: "test-model".to_string(),
         comp_hash: None,
         collaboration_mode: None,
         multi_agent_version: None,
-        realtime_active: None,
         cyber_access_program: None,
         effort: None,
         summary: Some(ReasoningSummary::Auto),
@@ -708,7 +699,6 @@ fn compacted(message: &str, replacement_history: Option<Vec<ResponseItem>>) -> R
         replacement_history: replacement_history
             .map(|items| items.into_iter().map(Into::into).collect()),
         retained_context: None,
-        guardian_history: None,
         mcp_resource_origins: None,
         window_number: Some(1),
         first_window_id: None,

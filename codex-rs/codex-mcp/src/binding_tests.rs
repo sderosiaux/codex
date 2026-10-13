@@ -4,15 +4,9 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
-use codex_config::AppToolApproval;
-use codex_config::Constrained;
-use codex_config::types::ApprovalsReviewer;
 use codex_protocol::mcp::McpServerInfo;
-use codex_protocol::models::PermissionProfile;
-use codex_protocol::protocol::AskForApproval;
 use codex_rmcp_client::InProcessTransportFactory;
 use codex_rmcp_client::RmcpClient;
-use codex_utils_absolute_path::AbsolutePathBuf;
 use futures::FutureExt;
 use pretty_assertions::assert_eq;
 use rmcp::model::JsonObject;
@@ -51,11 +45,7 @@ struct TestStep {
     tool_catalog: Arc<ClientToolCatalog>,
 }
 
-async fn test_step(
-    label: &str,
-    approval_mode: AppToolApproval,
-    supports_sandbox_state_meta: bool,
-) -> TestStep {
+async fn test_step(label: &str) -> TestStep {
     let tool = ToolInfo {
         server_name: SERVER_NAME.to_string(),
         supports_parallel_tool_calls: false,
@@ -96,7 +86,6 @@ async fn test_step(
         tool_catalog: Arc::clone(&tool_catalog),
         tool_timeout: None,
         server_instructions: None,
-        server_supports_sandbox_state_meta_capability: supports_sandbox_state_meta,
         codex_apps_tools_cache_context: None,
     });
     let clients = Arc::new(McpBindingClients::new(HashMap::from([(
@@ -105,18 +94,7 @@ async fn test_step(
     )])));
     let connections = Arc::new(McpConnectionSet::empty(/*prefix_mcp_tool_names*/ true));
     let mut config = crate::mcp::tests::test_mcp_config(std::env::temp_dir());
-    if label == "old" {
-        config.approval_policy = Constrained::allow_any(AskForApproval::Never);
-        config.permission_profile = PermissionProfile::Disabled;
-    } else {
-        config.approvals_reviewer = ApprovalsReviewer::AutoReview;
-    }
-    config
-        .server_permission_profiles
-        .insert(SERVER_NAME.to_string(), config.permission_profile.clone());
-    config
-        .environment_use_mxc
-        .insert(format!("{label}-environment"), label == "new");
+    config.chatgpt_base_url = format!("https://{label}.chatgpt.example");
     let config = Arc::new(config);
     let prepared = PreparedMcpCall::new(
         Arc::clone(&connections),
@@ -131,13 +109,10 @@ async fn test_step(
                 "https://{label}.example"
             ))),
             supports_parallel_tool_calls: false,
-            default_tools_approval_mode: Some(approval_mode),
-            tool_approval_modes: HashMap::new(),
         },
         Some(format!("{label}-plugin")),
         label == "old",
-    )
-    .expect("test call should retain its thread-owned permission profile");
+    );
     let calls = HashMap::from([((SERVER_NAME.to_string(), TOOL_NAME.to_string()), prepared)]);
 
     TestStep {
@@ -155,26 +130,15 @@ async fn test_step(
 }
 
 #[tokio::test]
-async fn prepared_call_keeps_captured_connection_and_authority_after_refresh() -> anyhow::Result<()>
-{
-    let old = test_step(
-        "old",
-        AppToolApproval::Prompt,
-        /*supports_sandbox_state_meta*/ true,
-    )
-    .await;
+async fn prepared_call_keeps_captured_connection_and_config_after_refresh() -> anyhow::Result<()> {
+    let old = test_step("old").await;
     let old_call = old
         .step
         .prepare_call(SERVER_NAME, TOOL_NAME)
         .expect("old step should prepare the advertised tool");
     let old_connections = Arc::downgrade(&old.step.connections);
 
-    let new = test_step(
-        "new",
-        AppToolApproval::Approve,
-        /*supports_sandbox_state_meta*/ false,
-    )
-    .await;
+    let new = test_step("new").await;
     let new_call = new
         .step
         .prepare_call(SERVER_NAME, TOOL_NAME)
@@ -187,12 +151,8 @@ async fn prepared_call_keeps_captured_connection_and_authority_after_refresh() -
             old_call.server_origin(),
             old_call.server_environment_id(),
             old_call.server_pollutes_memory(),
-            old_call.tool_approval_mode(),
             old_call.plugin_id(),
             old_call.is_selected_plugin_server(),
-            old_call
-                .server_supports_sandbox_state_meta_capability()
-                .await?,
         ),
         (
             Some("old catalog"),
@@ -200,9 +160,7 @@ async fn prepared_call_keeps_captured_connection_and_authority_after_refresh() -
             Some("https://old.example"),
             "old-environment",
             true,
-            AppToolApproval::Prompt,
             Some("old-plugin"),
-            true,
             true,
         )
     );
@@ -211,42 +169,17 @@ async fn prepared_call_keeps_captured_connection_and_authority_after_refresh() -
             new.step.tools()[0].tool.description.as_deref(),
             new_call.tool_info().tool.description.as_deref(),
             new_call.server_environment_id(),
-            new_call.tool_approval_mode(),
         ),
-        (
-            Some("new catalog"),
-            Some("new catalog"),
-            "new-environment",
-            AppToolApproval::Approve,
-        )
+        (Some("new catalog"), Some("new catalog"), "new-environment",)
     );
     assert!(Arc::ptr_eq(&old_call.client.client, &old.client));
     assert!(!Arc::ptr_eq(&old.client, &new.client));
     assert_eq!(
         (
-            old_call.config().approval_policy.value(),
-            old_call.permission_profile(),
-            old_call.config().approvals_reviewer,
-            old_call.config().environment_use_mxc.get("old-environment"),
+            old_call.config().chatgpt_base_url.as_str(),
+            new_call.config().chatgpt_base_url.as_str(),
         ),
-        (
-            AskForApproval::Never,
-            &PermissionProfile::Disabled,
-            ApprovalsReviewer::User,
-            Some(&false),
-        )
-    );
-    assert_eq!(
-        (
-            new_call.config().approval_policy.value(),
-            new_call.config().approvals_reviewer,
-            new_call.config().environment_use_mxc.get("new-environment"),
-        ),
-        (
-            AskForApproval::OnRequest,
-            ApprovalsReviewer::AutoReview,
-            Some(&true)
-        )
+        ("https://old.chatgpt.example", "https://new.chatgpt.example",)
     );
 
     drop(old.step);
@@ -264,22 +197,12 @@ async fn prepared_call_keeps_captured_connection_and_authority_after_refresh() -
 
 #[tokio::test]
 async fn prepared_call_does_not_reroute_after_captured_connection_closes() {
-    let old = test_step(
-        "old",
-        AppToolApproval::Prompt,
-        /*supports_sandbox_state_meta*/ true,
-    )
-    .await;
+    let old = test_step("old").await;
     let old_call = old
         .step
         .prepare_call(SERVER_NAME, TOOL_NAME)
         .expect("old step should prepare the advertised tool");
-    let new = test_step(
-        "new",
-        AppToolApproval::Approve,
-        /*supports_sandbox_state_meta*/ false,
-    )
-    .await;
+    let new = test_step("new").await;
     assert!(!Arc::ptr_eq(&old.client, &new.client));
 
     old.client.shutdown().await;
@@ -300,12 +223,7 @@ async fn prepared_call_does_not_reroute_after_captured_connection_closes() {
 
 #[tokio::test]
 async fn prepared_call_is_rejected_after_catalog_refresh() {
-    let step = test_step(
-        "old",
-        AppToolApproval::Prompt,
-        /*supports_sandbox_state_meta*/ true,
-    )
-    .await;
+    let step = test_step("old").await;
     let prepared = step
         .step
         .prepare_call(SERVER_NAME, TOOL_NAME)
@@ -335,12 +253,7 @@ async fn prepared_call_is_rejected_after_catalog_refresh() {
 
 #[tokio::test]
 async fn stale_prepared_call_does_not_run_preparation() {
-    let step = test_step(
-        "old",
-        AppToolApproval::Prompt,
-        /*supports_sandbox_state_meta*/ true,
-    )
-    .await;
+    let step = test_step("old").await;
     let prepared = step
         .step
         .prepare_call(SERVER_NAME, TOOL_NAME)
@@ -368,12 +281,7 @@ async fn stale_prepared_call_does_not_run_preparation() {
 
 #[tokio::test]
 async fn preparation_holds_catalog_authority_until_it_finishes() {
-    let step = test_step(
-        "old",
-        AppToolApproval::Prompt,
-        /*supports_sandbox_state_meta*/ true,
-    )
-    .await;
+    let step = test_step("old").await;
     let prepared = step
         .step
         .prepare_call(SERVER_NAME, TOOL_NAME)
@@ -409,85 +317,4 @@ async fn preparation_holds_catalog_authority_until_it_finishes() {
     refresh
         .await
         .expect("catalog refresh should finish after preparation");
-}
-
-#[tokio::test]
-async fn sandbox_executable_requires_local_stdio_and_a_full_cli() -> anyhow::Result<()> {
-    #[cfg(unix)]
-    use std::os::unix::ffi::OsStrExt;
-
-    let step = test_step(
-        "old",
-        AppToolApproval::Approve,
-        /*supports_sandbox_state_meta*/ true,
-    )
-    .await;
-    let call = step
-        .step
-        .prepare_call(SERVER_NAME, TOOL_NAME)
-        .expect("prepared call");
-    // Use a probe-capable CLI so remote/HTTP exclusions cannot pass merely
-    // because the supplied executable lacks the sandbox capability.
-    let executable = codex_utils_cargo_bin::cargo_bin("codex")?;
-    for (server, runtime_environment, path, expected) in [
-        (
-            serde_json::json!({"command": "mcp"}),
-            "local",
-            Some(executable.clone()),
-            Some(AbsolutePathBuf::from_absolute_path_checked(&executable)?),
-        ),
-        // The Rust test harness accepts `sandbox --help`, but must not be
-        // advertised as a sandbox launcher: it lacks `--sandbox-state-json`.
-        (
-            serde_json::json!({"command": "mcp"}),
-            "local",
-            Some(std::env::current_exe()?),
-            None,
-        ),
-        (serde_json::json!({"command": "mcp"}), "local", None, None),
-        #[cfg(unix)]
-        (
-            serde_json::json!({"command": "mcp"}),
-            "local",
-            Some(std::ffi::OsStr::from_bytes(b"/non-utf8-\xff/codex").into()),
-            None,
-        ),
-        (
-            serde_json::json!({"command": "mcp"}),
-            "local",
-            Some("codex".into()),
-            None,
-        ),
-        (
-            serde_json::json!({"command": "mcp", "environment_id": "remote"}),
-            "remote",
-            Some(executable.clone()),
-            None,
-        ),
-        (
-            serde_json::json!({"command": "mcp"}),
-            "remote",
-            Some(executable.clone()),
-            None,
-        ),
-        (
-            serde_json::json!({"url": "http://127.0.0.1:8080/mcp"}),
-            "local",
-            Some(executable),
-            None,
-        ),
-    ] {
-        let mut call = call.clone();
-        let config = Arc::make_mut(&mut call.config);
-        config.codex_self_exe = path;
-        let mut catalog = crate::ResolvedMcpCatalog::builder();
-        catalog.register(crate::McpServerRegistration::from_config(
-            SERVER_NAME.to_owned(),
-            serde_json::from_value(server)?,
-        ));
-        config.mcp_server_catalog = catalog.build();
-        call.server_metadata.environment_id = runtime_environment.to_owned();
-        assert_eq!(call.sandbox_codex_executable().await, expected);
-    }
-    Ok(())
 }

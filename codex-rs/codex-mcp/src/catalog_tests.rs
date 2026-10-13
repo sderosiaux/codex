@@ -1,16 +1,12 @@
-use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::time::Duration;
 
-use codex_config::AppToolApproval;
 use codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID;
 use codex_config::McpServerAuth;
 use codex_config::McpServerConfig;
 use codex_config::McpServerIdpOAuthConfig;
 use codex_config::McpServerToolConfig;
 use codex_config::McpServerTransportConfig;
-use codex_protocol::mcp_policy::EnvironmentMcpPolicy;
-use codex_protocol::mcp_policy::PluginMcpRequirements;
 use codex_utils_path_uri::PathUri;
 use pretty_assertions::assert_eq;
 
@@ -47,19 +43,12 @@ fn server(url: &str) -> McpServerConfig {
         disabled_reason: None,
         startup_timeout_sec: Some(Duration::from_secs(7)),
         tool_timeout_sec: Some(Duration::from_secs(11)),
-        default_tools_approval_mode: Some(AppToolApproval::Prompt),
         enabled_tools: Some(vec!["read".to_string()]),
         disabled_tools: Some(vec!["write".to_string()]),
         scopes: None,
         oauth: None,
         oauth_resource: None,
-        tools: HashMap::from([(
-            "read".to_string(),
-            McpServerToolConfig {
-                approval_mode: Some(AppToolApproval::Approve),
-                ..Default::default()
-            },
-        )]),
+        tools: HashMap::from([("read".to_string(), McpServerToolConfig::default())]),
     }
 }
 
@@ -507,7 +496,6 @@ fn selected_plugins_override_discovered_plugins_but_not_config() {
     let selected = server("https://selected-alpha.example/mcp");
     let mut discovered = server("https://local.example/mcp");
     discovered.enabled = false;
-    discovered.default_tools_approval_mode = Some(AppToolApproval::Auto);
     let mut builder = ResolvedMcpCatalog::builder();
     builder.register(McpServerRegistration::from_plugin(
         "docs".to_string(),
@@ -723,11 +711,7 @@ fn extension_protocol_mode_follows_the_winner_through_materialization() {
 }
 
 #[test]
-fn environment_policy_exempts_only_explicitly_host_owned_apps() {
-    let policy = EnvironmentMcpPolicy {
-        servers: Some(BTreeMap::new()),
-        plugins: None,
-    };
+fn unavailable_environment_exempts_only_explicitly_host_owned_apps() {
     for (registration, expected) in [
         (
             McpServerRegistration::from_extension(
@@ -749,8 +733,8 @@ fn environment_policy_exempts_only_explicitly_host_owned_apps() {
     ] {
         let mut builder = ResolvedMcpCatalog::builder();
         builder.register(registration);
-        let catalog = builder
-            .build_with_environment_authority(|_| McpEnvironmentAuthority::Restricted(&policy));
+        let catalog =
+            builder.build_with_environment_authority(|_| McpEnvironmentAuthority::Unavailable);
         assert_eq!(
             catalog
                 .server(CODEX_APPS_MCP_SERVER_NAME)
@@ -763,7 +747,7 @@ fn environment_policy_exempts_only_explicitly_host_owned_apps() {
 }
 
 #[test]
-fn environment_policy_preserves_selected_plugin_and_empty_server_allowlist_semantics() {
+fn environment_authority_controls_selected_plugin_servers() {
     let mut builder = ResolvedMcpCatalog::builder();
     builder.register(McpServerRegistration::from_selected_plugin(
         "selected".to_string(),
@@ -772,22 +756,14 @@ fn environment_policy_preserves_selected_plugin_and_empty_server_allowlist_seman
         DEFAULT_MCP_SERVER_ENVIRONMENT_ID,
         server("https://plugin.example/mcp"),
     ));
-    let metadata_only_policy = EnvironmentMcpPolicy {
-        servers: None,
-        plugins: Some(BTreeMap::from([(
-            "metadata-only-plugin".to_string(),
-            PluginMcpRequirements { mcp_servers: None },
-        )])),
-    };
-    let deny_all_policy = EnvironmentMcpPolicy {
-        servers: Some(BTreeMap::new()),
-        plugins: None,
-    };
-
-    for (policy, expected) in [(&metadata_only_policy, true), (&deny_all_policy, false)] {
+    for (authority, expected) in [
+        (McpEnvironmentAuthority::Unrestricted, true),
+        (McpEnvironmentAuthority::SelectedPluginsOnly, true),
+        (McpEnvironmentAuthority::Unavailable, false),
+    ] {
         let resolved = builder
             .clone()
-            .build_with_environment_authority(|_| McpEnvironmentAuthority::Restricted(policy));
+            .build_with_environment_authority(|_| authority);
         assert_eq!(
             resolved
                 .server("selected")

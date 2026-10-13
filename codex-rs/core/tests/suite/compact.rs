@@ -18,11 +18,9 @@ use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::Settings;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::ImageReference;
-use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelServiceTier;
 use codex_protocol::openai_models::ModelsResponse;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::HookEventName;
@@ -38,7 +36,7 @@ use codex_utils_path_uri::PathUri;
 use core_test_support::PathBufExt;
 use core_test_support::context_snapshot;
 use core_test_support::context_snapshot::ContextSnapshotOptions;
-use core_test_support::hooks::trust_discovered_hooks;
+use core_test_support::hooks::enable_discovered_hooks;
 use core_test_support::responses;
 use core_test_support::responses::ev_reasoning_item;
 use core_test_support::responses::mount_models_once;
@@ -46,7 +44,6 @@ use core_test_support::responses::strip_response_item_ids_from_json;
 use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::local_requests;
 use core_test_support::test_codex::test_codex;
-use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::test_path_buf;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_match;
@@ -123,17 +120,12 @@ fn disabled_permission_user_turn(
     cwd: PathBuf,
     model: String,
 ) -> TurnInputRequest {
-    let (sandbox_policy, permission_profile) =
-        turn_permission_fields(PermissionProfile::Disabled, cwd.as_path());
     TurnInputRequest::user_input(vec![UserInput::Text {
         text: text.into(),
         text_elements: Vec::new(),
     }])
     .with_thread_settings(ThreadSettingsOverrides {
         environments: Some(local_requests(cwd.abs())),
-        approval_policy: Some(AskForApproval::Never),
-        sandbox_policy: Some(sandbox_policy),
-        permission_profile,
         collaboration_mode: Some(CollaborationMode {
             mode: ModeKind::Default,
             settings: Settings {
@@ -810,7 +802,7 @@ async fn manual_pre_compact_block_decision_does_not_block_compaction() {
         .with_pre_build_hook(write_unsupported_blocking_pre_compact_hook)
         .with_config(move |config| {
             config.model_provider = model_provider;
-            trust_discovered_hooks(config);
+            enable_discovered_hooks(config);
             set_test_compact_prompt(config);
         });
     let test = builder.build(&server).await.expect("create conversation");
@@ -877,7 +869,7 @@ async fn compact_hooks_respect_matchers_and_post_runs_after_compaction() {
         .with_pre_build_hook(write_matching_compact_hooks)
         .with_config(move |config| {
             config.model_provider = model_provider;
-            trust_discovered_hooks(config);
+            enable_discovered_hooks(config);
             set_test_compact_prompt(config);
         });
     let test = builder.build(&server).await.expect("create conversation");
@@ -1053,10 +1045,7 @@ async fn reasoning_effort_override_remote_v2_compaction_resets_pinned_effort(
         .with_config(move |config| {
             config.model_provider.stream_max_retries = Some(0);
             config.model_reasoning_effort = Some(ReasoningEffort::Medium);
-            config
-                .features
-                .enable(Feature::ReasoningEffortOverride)
-                .expect("test config should allow feature update");
+            config.features.enable(Feature::ReasoningEffortOverride);
             set_test_compact_prompt(config);
         })
         .build_with_auto_env(&server)
@@ -2606,10 +2595,7 @@ async fn previous_model_compaction_resolves_selected_settings() -> Result<()> {
             config.model_provider = model_provider;
             config.model_reasoning_summary = None;
             config.service_tier = Some(ServiceTier::Fast.request_value().to_string());
-            config
-                .features
-                .enable(Feature::FastMode)
-                .expect("enable FastMode");
+            config.features.enable(Feature::FastMode);
             set_test_compact_prompt(config);
         })
         .build_with_auto_env(&server)
@@ -3594,7 +3580,6 @@ async fn body_after_prefix_model_switch_budget_compacts_with_next_model() {
         .with_config(move |config| {
             config.model_provider = model_provider;
             set_test_compact_prompt(config);
-            let _ = config.features.enable(Feature::RemoteModels);
             config.model_auto_compact_token_limit = Some(20);
             config.model_auto_compact_token_limit_scope =
                 AutoCompactTokenLimitScope::BodyAfterPrefix;
@@ -4696,10 +4681,7 @@ async fn paginated_compaction_cold_resume_from_bounded_suffix() -> Result<()> {
         })
         .with_history_mode(codex_protocol::protocol::ThreadHistoryMode::Paginated)
         .with_config(move |config| {
-            config
-                .features
-                .disable(Feature::MultiAgentV2)
-                .expect("disable override");
+            config.features.disable(Feature::MultiAgentV2);
             config.agents_enabled = true;
             config.model_provider = provider;
             config.include_environment_context = false;
@@ -5496,7 +5478,6 @@ async fn snapshot_request_shape_pre_turn_compaction_strips_incoming_model_switch
             config.update_plan_enabled = true;
             config.model_provider = model_provider;
             set_test_compact_prompt(config);
-            let _ = config.features.enable(Feature::RemoteModels);
             config.model_auto_compact_token_limit = Some(200);
         })
         .build(&server)

@@ -142,7 +142,6 @@ pub async fn maybe_parse_apply_patch_verified(
     argv: &[String],
     cwd: &PathUri,
     fs: &dyn ExecutorFileSystem,
-    sandbox: Option<&codex_exec_server::FileSystemSandboxContext>,
 ) -> MaybeApplyPatchVerified {
     // Detect a raw patch body passed directly as the command or as the body of a shell
     // script. In these cases, report an explicit error rather than applying the patch.
@@ -158,7 +157,7 @@ pub async fn maybe_parse_apply_patch_verified(
     }
 
     match maybe_parse_apply_patch(argv, cwd) {
-        MaybeApplyPatch::Body(args) => verify_apply_patch_args(args, cwd, fs, sandbox).await,
+        MaybeApplyPatch::Body(args) => verify_apply_patch_args(args, cwd, fs).await,
         MaybeApplyPatch::ShellParseError(e) => MaybeApplyPatchVerified::ShellParseError(e),
         MaybeApplyPatch::PatchParseError(e) => MaybeApplyPatchVerified::CorrectnessError(e.into()),
         MaybeApplyPatch::NotApplyPatch => MaybeApplyPatchVerified::NotApplyPatch,
@@ -169,9 +168,8 @@ pub async fn verify_apply_patch_args(
     args: ApplyPatchArgs,
     cwd: &PathUri,
     fs: &dyn ExecutorFileSystem,
-    sandbox: Option<&codex_exec_server::FileSystemSandboxContext>,
 ) -> MaybeApplyPatchVerified {
-    match try_verify_apply_patch_args(args, cwd, fs, sandbox).await {
+    match try_verify_apply_patch_args(args, cwd, fs).await {
         Ok(action) => MaybeApplyPatchVerified::Body(action),
         Err(err) => MaybeApplyPatchVerified::CorrectnessError(err),
     }
@@ -181,7 +179,6 @@ async fn try_verify_apply_patch_args(
     args: ApplyPatchArgs,
     cwd: &PathUri,
     fs: &dyn ExecutorFileSystem,
-    sandbox: Option<&codex_exec_server::FileSystemSandboxContext>,
 ) -> Result<ApplyPatchAction, ApplyPatchError> {
     let ApplyPatchArgs {
         patch,
@@ -209,18 +206,18 @@ async fn try_verify_apply_patch_args(
                 changes.insert(path, ApplyPatchFileChange::Add { content: contents });
             }
             Hunk::DeleteFile { .. } => {
-                let content = fs
-                    .read_file_text(&path, Default::default(), sandbox)
-                    .await
-                    .map_err(|source| {
-                        ApplyPatchError::IoError(IoError {
-                            context: format!(
-                                "Failed to read {}",
-                                path.inferred_native_path_string()
-                            ),
-                            source,
-                        })
-                    })?;
+                let content =
+                    fs.read_file_text(&path, Default::default())
+                        .await
+                        .map_err(|source| {
+                            ApplyPatchError::IoError(IoError {
+                                context: format!(
+                                    "Failed to read {}",
+                                    path.inferred_native_path_string()
+                                ),
+                                source,
+                            })
+                        })?;
                 changes.insert(path, ApplyPatchFileChange::Delete { content });
             }
             Hunk::UpdateFile {
@@ -230,7 +227,7 @@ async fn try_verify_apply_patch_args(
                     unified_diff,
                     content: contents,
                     ..
-                } = unified_diff_from_chunks(&path, &chunks, fs, sandbox).await?;
+                } = unified_diff_from_chunks(&path, &chunks, fs).await?;
                 changes.insert(
                     path,
                     ApplyPatchFileChange::Update {
@@ -513,8 +510,7 @@ mod tests {
             maybe_parse_apply_patch_verified(
                 &args,
                 &PathUri::from_host_native_path(dir.path()).expect("absolute test path"),
-                LOCAL_FS.as_ref(),
-                /*sandbox*/ None,
+                LOCAL_FS.as_ref()
             )
             .await,
             MaybeApplyPatchVerified::CorrectnessError(ApplyPatchError::ImplicitInvocation)
@@ -530,8 +526,7 @@ mod tests {
             maybe_parse_apply_patch_verified(
                 &args,
                 &PathUri::from_host_native_path(dir.path()).expect("absolute test path"),
-                LOCAL_FS.as_ref(),
-                /*sandbox*/ None,
+                LOCAL_FS.as_ref()
             )
             .await,
             MaybeApplyPatchVerified::CorrectnessError(ApplyPatchError::ImplicitInvocation)
@@ -765,7 +760,6 @@ PATCH"#,
             &argv,
             &PathUri::from_host_native_path(session_dir.path()).expect("absolute test path"),
             LOCAL_FS.as_ref(),
-            /*sandbox*/ None,
         )
         .await;
 
@@ -821,7 +815,6 @@ PATCH"#,
             &argv,
             &PathUri::from_host_native_path(session_dir.path()).expect("absolute test path"),
             LOCAL_FS.as_ref(),
-            /*sandbox*/ None,
         )
         .await;
         let action = match result {
@@ -868,13 +861,7 @@ PATCH"#,
         ];
 
         for argv in [add_argv, move_argv] {
-            let result = maybe_parse_apply_patch_verified(
-                &argv,
-                &cwd,
-                LOCAL_FS.as_ref(),
-                /*sandbox*/ None,
-            )
-            .await;
+            let result = maybe_parse_apply_patch_verified(&argv, &cwd, LOCAL_FS.as_ref()).await;
 
             assert!(matches!(result, MaybeApplyPatchVerified::Body(_)));
         }
@@ -901,7 +888,6 @@ PATCH"#,
             &argv,
             &PathUri::from_host_native_path(session_dir.path()).expect("absolute test path"),
             LOCAL_FS.as_ref(),
-            /*sandbox*/ None,
         )
         .await;
 

@@ -4,7 +4,6 @@ use crate::auth::PlanType;
 pub use crate::auth::RefreshTokenFailedError;
 pub use crate::auth::RefreshTokenFailedReason;
 use crate::exec_output::ExecToolCallOutput;
-use crate::network_policy::NetworkPolicyDecisionPayload;
 use crate::protocol::CodexErrorInfo;
 use crate::protocol::ErrorEvent;
 use crate::protocol::MisalignmentErrorDetails;
@@ -39,28 +38,9 @@ pub type Result<T> = std::result::Result<T, CodexErr>;
 /// Limit UI error messages to a reasonable size while keeping useful context.
 const ERROR_MESSAGE_UI_MAX_BYTES: usize = 2 * 1024;
 
+/// Failure modes of a spawned command that are not ordinary non-zero exits.
 #[derive(Error, Debug)]
-pub enum SandboxErr {
-    /// Error from sandbox execution
-    #[error(
-        "sandbox denied exec error, exit code: {}, stdout: {}, stderr: {}",
-        .output.exit_code, .output.stdout.text, .output.stderr.text
-    )]
-    Denied {
-        output: Box<ExecToolCallOutput>,
-        network_policy_decision: Option<NetworkPolicyDecisionPayload>,
-    },
-
-    /// Error from linux seccomp filter setup
-    #[cfg(target_os = "linux")]
-    #[error("seccomp setup error")]
-    SeccompInstall(#[from] seccompiler::Error),
-
-    /// Error from linux seccomp backend
-    #[cfg(target_os = "linux")]
-    #[error("seccomp backend error")]
-    SeccompBackend(#[from] seccompiler::BackendError),
-
+pub enum ExecErr {
     /// Command timed out
     #[error("command timed out")]
     Timeout { output: Box<ExecToolCallOutput> },
@@ -68,10 +48,6 @@ pub enum SandboxErr {
     /// Command was killed by a signal
     #[error("command was killed by a signal")]
     Signal(i32),
-
-    /// Error from linux landlock
-    #[error("Landlock was not able to fully enforce all sandbox rules")]
-    LandlockRestrict,
 }
 
 pub struct CodexErr {
@@ -181,11 +157,9 @@ pub enum CodexErrorDetails {
     /// Agent loop died unexpectedly
     #[error("internal error; agent loop died unexpectedly")]
     InternalAgentDied,
-    /// Sandbox error
-    #[error("sandbox error: {0}")]
-    Sandbox(#[from] SandboxErr),
-    #[error("codex-linux-sandbox was required but not provided")]
-    LandlockSandboxExecutableNotProvided,
+    /// Command execution error
+    #[error("exec error: {0}")]
+    Exec(#[from] ExecErr),
     #[error("unsupported operation: {0}")]
     UnsupportedOperation(String),
     #[error("{0}")]
@@ -199,12 +173,6 @@ pub enum CodexErrorDetails {
     Io(#[from] io::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
-    #[cfg(target_os = "linux")]
-    #[error(transparent)]
-    LandlockRuleset(#[from] landlock::RulesetError),
-    #[cfg(target_os = "linux")]
-    #[error(transparent)]
-    LandlockPathFd(#[from] landlock::PathFdError),
     #[error(transparent)]
     TokioJoin(#[from] JoinError),
     #[error("{0}")]
@@ -258,8 +226,8 @@ impl From<CancelErr> for CodexErr {
     }
 }
 
-impl From<SandboxErr> for CodexErr {
-    fn from(error: SandboxErr) -> Self {
+impl From<ExecErr> for CodexErr {
+    fn from(error: ExecErr) -> Self {
         CodexErrorDetails::from(error).into()
     }
 }
@@ -278,20 +246,6 @@ impl From<serde_json::Error> for CodexErr {
 
 impl From<JoinError> for CodexErr {
     fn from(error: JoinError) -> Self {
-        CodexErrorDetails::from(error).into()
-    }
-}
-
-#[cfg(target_os = "linux")]
-impl From<landlock::RulesetError> for CodexErr {
-    fn from(error: landlock::RulesetError) -> Self {
-        CodexErrorDetails::from(error).into()
-    }
-}
-
-#[cfg(target_os = "linux")]
-impl From<landlock::PathFdError> for CodexErr {
-    fn from(error: landlock::PathFdError) -> Self {
         CodexErrorDetails::from(error).into()
     }
 }
@@ -348,7 +302,6 @@ impl CodexErr {
         UsageNotIncluded,
         InternalServerError,
         InternalAgentDied,
-        LandlockSandboxExecutableNotProvided,
     );
 
     codex_err_tuple_constructors!(
@@ -360,16 +313,12 @@ impl CodexErr {
         ResponseStreamFailed(error: ResponseStreamFailed),
         ConnectionFailed(error: ConnectionFailedError),
         RetryLimit(error: RetryLimitReachedError),
-        Sandbox(error: SandboxErr),
+        Exec(error: ExecErr),
         UnsupportedOperation(message: String),
         RefreshTokenFailed(error: RefreshTokenFailedError),
         Fatal(message: String),
         Io(error: io::Error),
         Json(error: serde_json::Error),
-        #[cfg(target_os = "linux")]
-        LandlockRuleset(error: landlock::RulesetError),
-        #[cfg(target_os = "linux")]
-        LandlockPathFd(error: landlock::PathFdError),
         TokioJoin(error: JoinError),
         EnvVar(error: EnvVarError),
     );
@@ -412,8 +361,7 @@ impl CodexErr {
             | CodexErrorDetails::ToolCollision(_)
             | CodexErrorDetails::RefreshTokenFailed(_)
             | CodexErrorDetails::UnsupportedOperation(_)
-            | CodexErrorDetails::Sandbox(_)
-            | CodexErrorDetails::LandlockSandboxExecutableNotProvided
+            | CodexErrorDetails::Exec(_)
             | CodexErrorDetails::ContextWindowExceeded
             | CodexErrorDetails::ThreadNotFound(_)
             | CodexErrorDetails::AgentLimitReached { .. }
@@ -443,8 +391,6 @@ impl CodexErr {
                 self.server_retry_delay()
                     .unwrap_or_else(|| backoff(retry_count)),
             ),
-            #[cfg(target_os = "linux")]
-            CodexErrorDetails::LandlockRuleset(_) | CodexErrorDetails::LandlockPathFd(_) => None,
         }
     }
 
@@ -509,7 +455,6 @@ impl CodexErr {
             CodexErrorDetails::UnsupportedOperation(_)
             | CodexErrorDetails::ThreadNotFound(_)
             | CodexErrorDetails::AgentLimitReached { .. } => CodexErrorInfo::BadRequest,
-            CodexErrorDetails::Sandbox(_) => CodexErrorInfo::SandboxError,
             _ => CodexErrorInfo::Other,
         }
     }
@@ -888,26 +833,7 @@ impl std::fmt::Display for EnvVarError {
 
 pub fn get_error_message_ui(e: &CodexErr) -> String {
     let message = match e.details() {
-        CodexErrorDetails::Sandbox(SandboxErr::Denied { output, .. }) => {
-            let aggregated = output.aggregated_output.text.trim();
-            if !aggregated.is_empty() {
-                output.aggregated_output.text.clone()
-            } else {
-                let stderr = output.stderr.text.trim();
-                let stdout = output.stdout.text.trim();
-                match (stderr.is_empty(), stdout.is_empty()) {
-                    (false, false) => format!("{stderr}\n{stdout}"),
-                    (false, true) => output.stderr.text.clone(),
-                    (true, false) => output.stdout.text.clone(),
-                    (true, true) => format!(
-                        "command failed inside sandbox with exit code {}",
-                        output.exit_code
-                    ),
-                }
-            }
-        }
-        // Timeouts are not sandbox errors from a UX perspective; present them plainly.
-        CodexErrorDetails::Sandbox(SandboxErr::Timeout { output }) => {
+        CodexErrorDetails::Exec(ExecErr::Timeout { output }) => {
             format!(
                 "error: command timed out after {} ms",
                 output.duration.as_millis()

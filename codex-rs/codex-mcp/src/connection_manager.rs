@@ -249,7 +249,6 @@ impl McpConnectionSet {
             client_mcp_extensions,
             auth,
             auth_manager,
-            elicitation_reviewer,
             elicitation_lifecycle,
         } = input;
         let store_mode = config.mcp_oauth_credentials_store_mode;
@@ -283,21 +282,14 @@ impl McpConnectionSet {
             startup_policy == McpStartupPolicy::LazyWhenCached && previous.is_some();
         let reusable_previous = previous.filter(|previous| {
             !previous.servers.is_empty()
-                && previous.elicitation_requests.update(
-                    Arc::clone(&config),
-                    elicitation_reviewer.clone(),
-                    elicitation_lifecycle.clone(),
-                )
+                && previous
+                    .elicitation_requests
+                    .update(elicitation_lifecycle.clone())
         });
         let elicitation_requests = if let Some(previous) = reusable_previous {
             previous.elicitation_requests.clone()
         } else {
-            ElicitationRequestManager::new(
-                Arc::clone(&config),
-                elicitation_reviewer,
-                elicitation_lifecycle,
-                elicitation_router,
-            )
+            ElicitationRequestManager::new(elicitation_lifecycle, elicitation_router)
         };
         let tool_plugin_context = Arc::new(tool_plugin_context);
         let startup_submit_id = submit_id;
@@ -318,11 +310,7 @@ impl McpConnectionSet {
         {
             let server = server.with_read_only_mcp_tools(config.requires_read_only_mcp_tools);
             let registration = config.mcp_server_catalog.server(&server_name);
-            let client_mcp_extensions = crate::client_capabilities::server_mcp_extensions(
-                &client_mcp_extensions,
-                &server_name,
-                registration,
-            );
+            let client_mcp_extensions = client_mcp_extensions.clone();
             let is_host_owned_codex_apps = registration.is_some_and(|server| {
                 server
                     .source()

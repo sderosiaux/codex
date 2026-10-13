@@ -10,7 +10,6 @@ use codex_protocol::ThreadId;
 use codex_protocol::items::TurnItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::GitInfo;
-use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadMemoryMode;
 use codex_protocol::protocol::UserMessageEvent;
@@ -67,12 +66,7 @@ impl ThreadMetadataSync {
         } else {
             None
         };
-        let guardian_review = codex_state::is_guardian_review_source(&params.source);
         let update = ThreadMetadataPatch {
-            name: (guardian_review && params.history_mode == ThreadHistoryMode::Paginated)
-                .then(|| Some(codex_state::GUARDIAN_THREAD_TITLE.to_string())),
-            title: guardian_review.then(|| codex_state::GUARDIAN_THREAD_TITLE.to_string()),
-            preview: guardian_review.then(|| codex_state::GUARDIAN_THREAD_PREVIEW.to_string()),
             model_provider: Some(params.metadata.model_provider.clone()),
             created_at: Some(created_at),
             updated_at: Some(created_at),
@@ -93,9 +87,9 @@ impl ThreadMetadataSync {
         Self {
             thread_id: params.thread_id,
             cwd_seen: !cwd.as_os_str().is_empty(),
-            preview_seen: guardian_review,
-            first_user_message_seen: guardian_review,
-            title_seen: guardian_review,
+            preview_seen: false,
+            first_user_message_seen: false,
+            title_seen: false,
             pending_update: Some(update),
             pending_update_generation: 1,
             last_touch_persisted_at: None,
@@ -108,11 +102,6 @@ impl ThreadMetadataSync {
         params: &ResumeThreadParams,
         metadata: Option<&ThreadMetadata>,
     ) -> Self {
-        let guardian_review = metadata.is_some_and(|metadata| {
-            serde_json::from_str::<SessionSource>(&metadata.source)
-                .as_ref()
-                .is_ok_and(codex_state::is_guardian_review_source)
-        });
         let mut sync = Self {
             thread_id: params.thread_id,
             cwd_seen: params
@@ -120,14 +109,12 @@ impl ThreadMetadataSync {
                 .cwd
                 .as_ref()
                 .is_some_and(|cwd| !cwd.as_os_str().is_empty()),
-            preview_seen: guardian_review
-                || metadata
-                    .and_then(|metadata| metadata.preview.as_deref())
-                    .is_some_and(|preview| !preview.is_empty()),
-            first_user_message_seen: guardian_review
-                || metadata.is_some_and(|metadata| metadata.first_user_message.is_some()),
-            title_seen: guardian_review
-                || metadata.is_some_and(|metadata| !metadata.title.is_empty()),
+            preview_seen: metadata
+                .and_then(|metadata| metadata.preview.as_deref())
+                .is_some_and(|preview| !preview.is_empty()),
+            first_user_message_seen: metadata
+                .is_some_and(|metadata| metadata.first_user_message.is_some()),
+            title_seen: metadata.is_some_and(|metadata| !metadata.title.is_empty()),
             pending_update: None,
             pending_update_generation: 0,
             last_touch_persisted_at: None,
@@ -246,13 +233,6 @@ impl ThreadMetadataSync {
         for item in items {
             match item {
                 RolloutItem::SessionMeta(meta_line) if meta_line.meta.id == self.thread_id => {
-                    // Never derive display metadata from the synthetic prompt.
-                    if codex_state::is_guardian_review_source(&meta_line.meta.source) {
-                        self.preview_seen = true;
-                        self.first_user_message_seen = true;
-                        self.title_seen = true;
-                        update.preview = Some(codex_state::GUARDIAN_THREAD_PREVIEW.to_string());
-                    }
                     update.created_at = parse_session_timestamp(meta_line.meta.timestamp.as_str());
                     update.creator_user_id = meta_line.meta.creator_user_id.clone();
                     update.creator_account_id = meta_line.meta.creator_account_id.clone();
@@ -292,8 +272,6 @@ impl ThreadMetadataSync {
                     }
                     update.model = Some(turn_ctx.model.clone());
                     update.reasoning_effort = Some(turn_ctx.effort.clone());
-                    update.approval_mode = Some(turn_ctx.approval_policy);
-                    update.permission_profile = Some(turn_ctx.permission_profile());
                 }
                 RolloutItem::EventMsg(EventMsg::UserMessage(user)) => {
                     self.observe_user_message(user, &mut update);
@@ -335,8 +313,6 @@ impl ThreadMetadataSync {
                     update.model_provider = Some(settings.model_provider_id.clone());
                     update.reasoning_effort = Some(settings.reasoning_effort.clone());
                     update.cwd = Some(settings.cwd.clone().into_path_buf());
-                    update.approval_mode = Some(settings.approval_policy);
-                    update.permission_profile = Some(settings.permission_profile.clone());
                 }
                 RolloutItem::SessionMeta(_)
                 | RolloutItem::EventMsg(_)
@@ -344,10 +320,8 @@ impl ThreadMetadataSync {
                 | RolloutItem::InterAgentCommunication(_)
                 | RolloutItem::InterAgentCommunicationMetadata { .. }
                 | RolloutItem::Compacted(_)
-                | RolloutItem::RealtimeItem(_)
                 | RolloutItem::TokenUsageRecord(_)
                 | RolloutItem::RetainedContext(_)
-                | RolloutItem::SecurityRiskScore(_)
                 | RolloutItem::WorldState(_) => {}
             }
         }
@@ -432,8 +406,6 @@ fn update_has_metadata_facts(update: &ThreadMetadataPatch) -> bool {
         || update.agent_path.is_some()
         || update.cwd.is_some()
         || update.cli_version.is_some()
-        || update.approval_mode.is_some()
-        || update.permission_profile.is_some()
         || update.token_usage.is_some()
         || update.first_user_message.is_some()
         || update.git_info.is_some()
@@ -450,22 +422,18 @@ fn git_info_patch_from_observation(git_info: GitInfo) -> GitInfoPatch {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use codex_protocol::config_types::ApprovalsReviewer;
     use codex_protocol::config_types::CollaborationMode;
     use codex_protocol::config_types::ModeKind;
     use codex_protocol::config_types::ReasoningSummary;
     use codex_protocol::config_types::Settings;
     use codex_protocol::items::UserMessageItem;
-    use codex_protocol::models::PermissionProfile;
     use codex_protocol::openai_models::ReasoningEffort;
-    use codex_protocol::protocol::AskForApproval;
     use codex_protocol::protocol::ItemCompletedEvent;
     use codex_protocol::protocol::SessionMeta;
     use codex_protocol::protocol::SessionMetaLine;
     use codex_protocol::protocol::SessionSource;
-    use codex_protocol::protocol::SubAgentSource;
+    use std::sync::Arc;
+
     use codex_protocol::protocol::ThreadGoal;
     use codex_protocol::protocol::ThreadGoalStatus;
     use codex_protocol::protocol::ThreadGoalUpdatedEvent;
@@ -517,44 +485,6 @@ mod tests {
             (update.patch.project_id, update.patch.originator.as_deref()),
             (None, Some("test_originator")),
         );
-    }
-
-    #[test]
-    fn guardian_resume_without_session_meta_preserves_compact_metadata() {
-        let thread_id = ThreadId::new();
-        let mut metadata = codex_state::ThreadMetadataBuilder::new(
-            thread_id,
-            Default::default(),
-            Utc::now(),
-            SessionSource::SubAgent(SubAgentSource::Other("guardian".to_string())),
-        )
-        .build("test-provider");
-        metadata.history_mode = ThreadHistoryMode::Paginated;
-
-        let sync = ThreadMetadataSync::for_resume(
-            &resume_params(
-                thread_id,
-                vec![RolloutItem::EventMsg(EventMsg::ItemCompleted(
-                    ItemCompletedEvent {
-                        thread_id,
-                        turn_id: "turn-1".to_string(),
-                        item: TurnItem::UserMessage(UserMessageItem::new(&[UserInput::Text {
-                            text: "large synthetic guardian prompt".to_string(),
-                            text_elements: Vec::new(),
-                        }])),
-                        started_at_ms: Some(0),
-                        completed_at_ms: 0,
-                    },
-                ))],
-            ),
-            Some(&metadata),
-        );
-
-        let update = sync.take_pending_update().expect("pending metadata update");
-        assert_eq!(update.patch.name, None);
-        assert_eq!(update.patch.title, None);
-        assert_eq!(update.patch.preview, None);
-        assert_eq!(update.patch.first_user_message, None);
     }
 
     #[test]
@@ -676,7 +606,6 @@ mod tests {
             message: "compacted".to_string(),
             replacement_history: None,
             retained_context: None,
-            guardian_history: None,
             mcp_resource_origins: None,
             window_number: None,
             first_window_id: None,
@@ -731,7 +660,6 @@ mod tests {
     fn thread_settings_applied_updates_live_metadata() {
         let thread_id = ThreadId::new();
         let mut sync = resume_sync(thread_id, Vec::new());
-        let permission_profile = PermissionProfile::workspace_write();
         let cwd = std::env::current_dir()
             .expect("current directory")
             .join("updated/workspace");
@@ -744,10 +672,6 @@ mod tests {
                     model: "gpt-5.2-codex".to_string(),
                     model_provider_id: "updated-provider".to_string(),
                     service_tier: None,
-                    approval_policy: AskForApproval::Never,
-                    approvals_reviewer: ApprovalsReviewer::User,
-                    permission_profile: permission_profile.clone(),
-                    active_permission_profile: None,
                     cwd: cwd.clone().try_into().expect("absolute settings cwd"),
                     runtime_workspace_roots: None,
                     reasoning_effort: Some(ReasoningEffort::Ultra),
@@ -779,8 +703,6 @@ mod tests {
             Some(Some(ReasoningEffort::Ultra))
         );
         assert_eq!(update.patch.cwd, Some(cwd));
-        assert_eq!(update.patch.approval_mode, Some(AskForApproval::Never));
-        assert_eq!(update.patch.permission_profile, Some(permission_profile));
 
         let RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) = &mut item else {
             panic!("thread settings applied item");

@@ -17,19 +17,12 @@ pub async fn resolve_amazon_bedrock_region(
 ) -> Result<String> {
     let provider = AmazonBedrockModelProvider::new(provider_info, auth_manager);
     let managed_auth = provider.managed_auth();
-    let factory = provider.http_client_factory.clone().with_network_policy(
-        provider
-            .http_client_factory
-            .network_policy()
-            .clone()
-            .for_current_account(),
-    );
     resolve_region(
         provider.auth_source(),
         managed_auth.as_ref(),
         &provider.aws,
         provider.endpoint,
-        &factory,
+        &provider.http_client_factory,
     )
     .await
 }

@@ -1826,7 +1826,6 @@ async fn build_config(
         keyring_backend_kind: AuthKeyringBackendKind::Direct,
         forced_login_method,
         forced_chatgpt_workspace_id,
-        managed_auth_policy: ManagedAuthPolicy::default(),
         chatgpt_base_url: None,
         auth_route_config: crate::test_support::transport_default_auth_route_config(),
     }
@@ -1898,10 +1897,6 @@ impl AuthManagerConfig for TestAuthManagerConfig {
         self.0.forced_chatgpt_workspace_id.clone()
     }
 
-    fn managed_auth_policy(&self) -> ManagedAuthPolicy {
-        self.0.managed_auth_policy.clone()
-    }
-
     fn chatgpt_base_url(&self) -> String {
         self.0
             .chatgpt_base_url
@@ -1922,13 +1917,6 @@ fn test_auth_manager_config(codex_home: &Path) -> TestAuthManagerConfig {
         forced_login_method: Some(ForcedLoginMethod::Chatgpt),
         chatgpt_base_url: Some("https://chatgpt-staging.com/backend-api".to_string()),
         forced_chatgpt_workspace_id: Some(vec!["forced-workspace".to_string()]),
-        managed_auth_policy: ManagedAuthPolicy {
-            allowed_login_methods: Some(vec![ForcedLoginMethod::Chatgpt]),
-            allowed_chatgpt_workspaces: Some(vec![
-                "forced-workspace".to_string(),
-                "managed-workspace".to_string(),
-            ]),
-        },
         auth_route_config: AuthRouteConfig::from_http_client_factory(HttpClientFactory::new(
             OutboundProxyPolicy::RespectSystemProxy,
         )),
@@ -2280,7 +2268,7 @@ async fn auth_manager_rejects_disallowed_stored_and_external_auth() {
         /*forced_chatgpt_workspace_id*/ None,
     )
     .await;
-    config.managed_auth_policy.allowed_login_methods = Some(vec![ForcedLoginMethod::Chatgpt]);
+    config.forced_login_method = Some(ForcedLoginMethod::Chatgpt);
     let manager =
         AuthManager::shared_from_auth_config(config, /*enable_codex_api_key_env*/ false)
             .await
@@ -2294,7 +2282,7 @@ async fn auth_manager_rejects_disallowed_stored_and_external_auth() {
             ))))
             .await
             .is_err(),
-        "external auth cannot bypass managed login policy"
+        "external auth cannot bypass the forced login method"
     );
 }
 
@@ -2311,7 +2299,7 @@ async fn api_only_policy_rejects_access_tokens_before_hydration() {
         /*forced_chatgpt_workspace_id*/ None,
     )
     .await;
-    config.managed_auth_policy.allowed_login_methods = Some(vec![ForcedLoginMethod::Api]);
+    config.forced_login_method = Some(ForcedLoginMethod::Api);
     let manager =
         AuthManager::shared_from_auth_config(config, /*enable_codex_api_key_env*/ false)
             .await
@@ -2345,8 +2333,7 @@ async fn workspace_policy_rejects_agent_identity_before_hydration() {
         /*forced_chatgpt_workspace_id*/ None,
     )
     .await;
-    config.managed_auth_policy.allowed_chatgpt_workspaces =
-        Some(vec![WORKSPACE_ID_ALLOWED.to_string()]);
+    config.forced_chatgpt_workspace_id = Some(vec![WORKSPACE_ID_ALLOWED.to_string()]);
     let manager =
         AuthManager::shared_from_auth_config(config, /*enable_codex_api_key_env*/ false)
             .await
@@ -2381,8 +2368,7 @@ async fn workspace_policy_rejects_agent_identity_before_hydration() {
             /*forced_chatgpt_workspace_id*/ None,
         )
         .await;
-        config.managed_auth_policy.allowed_chatgpt_workspaces =
-            Some(vec![WORKSPACE_ID_ALLOWED.to_string()]);
+        config.forced_chatgpt_workspace_id = Some(vec![WORKSPACE_ID_ALLOWED.to_string()]);
         let manager =
             AuthManager::shared_from_auth_config(config, /*enable_codex_api_key_env*/ false)
                 .await
@@ -2498,7 +2484,6 @@ async fn enforce_login_restrictions_logs_out_for_personal_access_token_workspace
         keyring_backend_kind: AuthKeyringBackendKind::default(),
         forced_login_method: None,
         forced_chatgpt_workspace_id: Some(vec![WORKSPACE_ID_ALLOWED.to_string()]),
-        managed_auth_policy: ManagedAuthPolicy::default(),
         chatgpt_base_url: None,
         auth_route_config: crate::test_support::transport_default_auth_route_config(),
     };
@@ -2624,7 +2609,6 @@ async fn enforce_login_restrictions_logs_out_for_agent_identity_workspace_mismat
         keyring_backend_kind: AuthKeyringBackendKind::Direct,
         forced_login_method: None,
         forced_chatgpt_workspace_id: Some(vec![WORKSPACE_ID_ALLOWED.to_string()]),
-        managed_auth_policy: ManagedAuthPolicy::default(),
         chatgpt_base_url: Some(chatgpt_base_url),
         auth_route_config: crate::test_support::transport_default_auth_route_config(),
     };

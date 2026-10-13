@@ -56,9 +56,6 @@ pub fn hook_states_from_stack(
             if let Some(enabled) = state.enabled {
                 effective_state.enabled = Some(enabled);
             }
-            if let Some(trusted_hash) = state.trusted_hash {
-                effective_state.trusted_hash = Some(trusted_hash);
-            }
         }
     }
 
@@ -78,23 +75,19 @@ mod tests {
     #[test]
     fn hook_states_from_stack_respects_layer_precedence() {
         let key = "file:/tmp/hooks.json:pre_tool_use:0:0";
-        let stack = ConfigLayerStack::new(
-            vec![
-                ConfigLayerEntry::new(
-                    ConfigLayerSource::User {
-                        file: test_path_buf("/tmp/config.toml").abs(),
-                        profile: None,
-                    },
-                    config_with_hook_override(key, Some(/*enabled*/ false)),
-                ),
-                ConfigLayerEntry::new(
-                    ConfigLayerSource::SessionFlags,
-                    config_with_hook_override(key, Some(/*enabled*/ true)),
-                ),
-            ],
-            Default::default(),
-            Default::default(),
-        )
+        let stack = ConfigLayerStack::new(vec![
+            ConfigLayerEntry::new(
+                ConfigLayerSource::User {
+                    file: test_path_buf("/tmp/config.toml").abs(),
+                    profile: None,
+                },
+                config_with_hook_override(key, Some(/*enabled*/ false)),
+            ),
+            ConfigLayerEntry::new(
+                ConfigLayerSource::SessionFlags,
+                config_with_hook_override(key, Some(/*enabled*/ true)),
+            ),
+        ])
         .expect("config layer stack");
 
         assert_eq!(
@@ -103,44 +96,32 @@ mod tests {
                 key.to_string(),
                 HookStateToml {
                     enabled: Some(true),
-                    trusted_hash: None,
                 },
             )])
         );
     }
 
     #[test]
-    fn hook_states_from_stack_merges_fields_across_layers() {
+    fn hook_states_from_stack_keeps_lower_layer_value_when_higher_layer_is_unset() {
         let key = "file:/tmp/hooks.json:pre_tool_use:0:0";
-        let stack = ConfigLayerStack::new(
-            vec![
-                ConfigLayerEntry::new(
-                    ConfigLayerSource::User {
-                        file: test_path_buf("/tmp/config.toml").abs(),
-                        profile: None,
+        let stack = ConfigLayerStack::new(vec![
+            ConfigLayerEntry::new(
+                ConfigLayerSource::User {
+                    file: test_path_buf("/tmp/config.toml").abs(),
+                    profile: None,
+                },
+                config_with_hook_state(
+                    key,
+                    HookStateToml {
+                        enabled: Some(/*enabled*/ false),
                     },
-                    config_with_hook_state(
-                        key,
-                        HookStateToml {
-                            enabled: Some(/*enabled*/ false),
-                            trusted_hash: None,
-                        },
-                    ),
                 ),
-                ConfigLayerEntry::new(
-                    ConfigLayerSource::SessionFlags,
-                    config_with_hook_state(
-                        key,
-                        HookStateToml {
-                            enabled: None,
-                            trusted_hash: Some("sha256:trusted".to_string()),
-                        },
-                    ),
-                ),
-            ],
-            Default::default(),
-            Default::default(),
-        )
+            ),
+            ConfigLayerEntry::new(
+                ConfigLayerSource::SessionFlags,
+                config_with_hook_state(key, HookStateToml { enabled: None }),
+            ),
+        ])
         .expect("config layer stack");
 
         assert_eq!(
@@ -149,7 +130,6 @@ mod tests {
                 key.to_string(),
                 HookStateToml {
                     enabled: Some(false),
-                    trusted_hash: Some("sha256:trusted".to_string()),
                 },
             )])
         );
@@ -169,17 +149,13 @@ mod tests {
             },
         }))
         .expect("config TOML should deserialize");
-        let stack = ConfigLayerStack::new(
-            vec![ConfigLayerEntry::new(
-                ConfigLayerSource::User {
-                    file: test_path_buf("/tmp/config.toml").abs(),
-                    profile: None,
-                },
-                config,
-            )],
-            Default::default(),
-            Default::default(),
-        )
+        let stack = ConfigLayerStack::new(vec![ConfigLayerEntry::new(
+            ConfigLayerSource::User {
+                file: test_path_buf("/tmp/config.toml").abs(),
+                profile: None,
+            },
+            config,
+        )])
         .expect("config layer stack");
 
         assert_eq!(
@@ -188,7 +164,6 @@ mod tests {
                 key.to_string(),
                 HookStateToml {
                     enabled: Some(false),
-                    trusted_hash: None,
                 },
             )])
         );
@@ -210,17 +185,13 @@ mod tests {
             },
         }))
         .expect("config TOML should deserialize");
-        let stack = ConfigLayerStack::new(
-            vec![ConfigLayerEntry::new(
-                ConfigLayerSource::User {
-                    file: test_path_buf("/tmp/config.toml").abs(),
-                    profile: None,
-                },
-                config,
-            )],
-            Default::default(),
-            Default::default(),
-        )
+        let stack = ConfigLayerStack::new(vec![ConfigLayerEntry::new(
+            ConfigLayerSource::User {
+                file: test_path_buf("/tmp/config.toml").abs(),
+                profile: None,
+            },
+            config,
+        )])
         .expect("config layer stack");
 
         assert_eq!(
@@ -229,20 +200,13 @@ mod tests {
                 key.to_string(),
                 HookStateToml {
                     enabled: Some(false),
-                    trusted_hash: None,
                 },
             )])
         );
     }
 
     fn config_with_hook_override(key: &str, enabled: Option<bool>) -> TomlValue {
-        config_with_hook_state(
-            key,
-            HookStateToml {
-                enabled,
-                trusted_hash: None,
-            },
-        )
+        config_with_hook_state(key, HookStateToml { enabled })
     }
 
     fn config_with_hook_state(key: &str, state: HookStateToml) -> TomlValue {

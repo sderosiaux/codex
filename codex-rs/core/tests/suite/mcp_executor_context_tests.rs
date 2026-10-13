@@ -76,10 +76,7 @@ async fn thread_projection_preserves_executor_order_and_unavailable_selections()
     let test = test_codex()
         .with_extensions(Arc::new(extensions.build()))
         .with_config(|config| {
-            config
-                .features
-                .enable(Feature::DeferredExecutor)
-                .expect("enable selected executors");
+            config.features.enable(Feature::DeferredExecutor);
         })
         .build_with_auto_env(&server)
         .await?;

@@ -10,8 +10,6 @@ use std::time::Instant;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
-use codex_protocol::models::PermissionProfile;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::user_input::UserInput;
@@ -29,7 +27,6 @@ use core_test_support::streaming_sse::StreamingSseChunk;
 use core_test_support::streaming_sse::start_streaming_sse_server;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::test_codex;
-use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
@@ -38,8 +35,6 @@ use tokio::sync::oneshot;
 
 async fn run_turn(test: &TestCodex, prompt: &str) -> anyhow::Result<()> {
     let session_model = test.session_configured.model.clone();
-    let (sandbox_policy, permission_profile) =
-        turn_permission_fields(PermissionProfile::Disabled, test.cwd.path());
 
     test.codex
         .start_or_steer_turn(
@@ -49,9 +44,6 @@ async fn run_turn(test: &TestCodex, prompt: &str) -> anyhow::Result<()> {
             }])
             .with_thread_settings(ThreadSettingsOverrides {
                 environments: Some(local_requests(test.config.cwd.clone())),
-                approval_policy: Some(AskForApproval::Never),
-                sandbox_policy: Some(sandbox_policy),
-                permission_profile,
                 collaboration_mode: Some(CollaborationMode {
                     mode: ModeKind::Default,
                     settings: Settings {
@@ -361,8 +353,6 @@ async fn shell_tools_start_before_response_completed_when_stream_delayed() -> an
         .await?;
 
     let session_model = test.session_configured.model.clone();
-    let (sandbox_policy, permission_profile) =
-        turn_permission_fields(PermissionProfile::Disabled, test.cwd.path());
     test.codex
         .start_or_steer_turn(
             TurnInputRequest::user_input(vec![UserInput::Text {
@@ -371,9 +361,6 @@ async fn shell_tools_start_before_response_completed_when_stream_delayed() -> an
             }])
             .with_thread_settings(ThreadSettingsOverrides {
                 environments: Some(local_requests(test.config.cwd.clone())),
-                approval_policy: Some(AskForApproval::Never),
-                sandbox_policy: Some(sandbox_policy),
-                permission_profile,
                 collaboration_mode: Some(CollaborationMode {
                     mode: ModeKind::Default,
                     settings: Settings {

@@ -1,4 +1,3 @@
-use super::analytics::ToolCallAnalytics;
 use super::*;
 use crate::tools::handlers::multi_agents_spec::create_list_agents_tool;
 use codex_tools::ToolSpec;
@@ -22,12 +21,7 @@ impl ToolExecutor<ToolInvocation> for Handler {
     where
         ToolInvocation: 'a,
     {
-        Box::pin(async move {
-            let analytics = ToolCallAnalytics::new(&invocation, CollabAgentTool::ListAgents);
-            let result = self.handle_call(invocation).await;
-            analytics.finish(&result);
-            result
-        })
+        Box::pin(async move { self.handle_call(invocation).await })
     }
 }
 
@@ -106,9 +100,5 @@ impl ToolOutput for ListAgentsResult {
 
     fn to_response_item(&self, call_id: &str, payload: &ToolPayload) -> ResponseInputItem {
         tool_output_response_item(call_id, payload, self, Some(true), "list_agents")
-    }
-
-    fn code_mode_result(&self, _payload: &ToolPayload) -> JsonValue {
-        tool_output_code_mode_result(self, "list_agents")
     }
 }

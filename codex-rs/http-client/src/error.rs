@@ -8,8 +8,6 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum TransportError {
-    #[error(transparent)]
-    Policy(#[from] crate::NetworkPolicyDenied),
     #[error("http {status}: {body:?}")]
     Http {
         status: StatusCode,
@@ -37,8 +35,7 @@ impl TransportError {
     pub fn retry_after(&self) -> Option<RetryAfter> {
         match self {
             Self::Http { retry_after, .. } => *retry_after,
-            Self::Policy(_)
-            | Self::RetryLimit
+            Self::RetryLimit
             | Self::Timeout
             | Self::Connection(_)
             | Self::Network(_)

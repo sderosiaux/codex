@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use codex_exec_server::Environment;
-use codex_network_proxy::CUSTOM_CA_ENV_KEYS;
+use codex_rmcp_client::CUSTOM_CA_ENV_KEYS;
 use codex_rmcp_client::ElicitationAction;
 use codex_rmcp_client::ElicitationResponse;
 use codex_rmcp_client::ExecutorStdioServerLauncher;

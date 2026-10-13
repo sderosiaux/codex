@@ -17,7 +17,6 @@ use codex_tools::ResponsesApiNamespaceTool;
 use codex_tools::ResponsesApiTool;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
-use serde_json::Value as JsonValue;
 use serde_json::json;
 use std::collections::BTreeMap;
 
@@ -37,12 +36,6 @@ impl ToolOutput for CurrentTimeOutput {
 
     fn to_response_item(&self, call_id: &str, payload: &ToolPayload) -> ResponseInputItem {
         FunctionToolOutput::from_text(self.0.body(), Some(true)).to_response_item(call_id, payload)
-    }
-
-    fn code_mode_result(&self, _payload: &ToolPayload) -> JsonValue {
-        json!({
-            "current_time": self.0.formatted_time(),
-        })
     }
 }
 
@@ -127,8 +120,4 @@ impl ToolExecutor<ToolInvocation> for CurrentTimeHandler {
     }
 }
 
-impl CoreToolRuntime for CurrentTimeHandler {
-    fn is_builtin_control_tool(&self) -> bool {
-        true
-    }
-}
+impl CoreToolRuntime for CurrentTimeHandler {}

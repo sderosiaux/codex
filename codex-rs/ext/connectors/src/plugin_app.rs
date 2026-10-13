@@ -47,11 +47,7 @@ impl PluginAppProvider {
         };
         let contents = plugin
             .file_system()
-            .read_file_text(
-                config_path,
-                ReadFileOptions::default(),
-                /*sandbox*/ None,
-            )
+            .read_file_text(config_path, ReadFileOptions::default())
             .await
             .map_err(|source| PluginAppProviderError::ReadConfig {
                 plugin_id: plugin_id.to_string(),

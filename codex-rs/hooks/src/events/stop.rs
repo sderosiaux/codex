@@ -79,14 +79,7 @@ impl StopHookTarget {
                         | HookSource::Project
                         | HookSource::SessionFlags
                         | HookSource::Plugin => false,
-                        HookSource::System
-                        | HookSource::Mdm
-                        | HookSource::CloudRequirements
-                        | HookSource::CloudManagedConfig
-                        | HookSource::LegacyManagedConfigFile
-                        | HookSource::LegacyManagedConfigMdm
-                        // Required hooks can have unknown attribution; retain them fail-closed.
-                        | HookSource::Unknown => true,
+                        HookSource::System | HookSource::Unknown => true,
                     }
             })
             .collect()

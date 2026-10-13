@@ -1060,14 +1060,9 @@ mod tests {
     -> anyhow::Result<()> {
         let (client_websocket, control, mut outbound_rx) =
             ControlledWebSocket::new(/*write_ready*/ true);
-        let runtime_paths = crate::ExecServerRuntimeOptions::new(
-            std::env::current_exe()?,
-            /*codex_linux_sandbox_exe*/ None,
-        )
-        .map_err(anyhow::Error::from)?;
         let environment_task = tokio::spawn(run_multiplexed_environment(
             client_websocket,
-            ConnectionProcessor::new(runtime_paths),
+            ConnectionProcessor::new(),
             "test-environment".to_string(),
             "test-registration".to_string(),
             NoiseChannelIdentity::generate()?,

@@ -10,7 +10,6 @@ use crate::agent::types::AgentMetadata;
 use crate::agent::types::LiveAgent;
 use crate::agent::types::MessageDeliveryMode;
 use crate::agent::types::SpawnAgentOptions;
-use crate::codex_thread::GuardianRootSnapshot;
 use crate::codex_thread::ThreadConfigSnapshot;
 use crate::config::Config;
 use crate::rollout_budget::RolloutBudgetReminder;
@@ -19,13 +18,11 @@ use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
 use codex_protocol::error::Result;
 use codex_protocol::protocol::AgentStatus;
-use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::turn_input::TurnStartOptions;
 use codex_protocol::user_input::UserInput;
-use codex_rollout_trace::ThreadTraceContext;
 use futures::future::BoxFuture;
 
 // Keep dynamic dispatch a compile-time property of the contract.
@@ -127,23 +124,14 @@ pub trait AgentControl: Send + Sync {
     fn record_usage(&self, usage: TokenUsage) -> BoxFuture<'_, Result<()>>;
 
     /// Report the terminal result to the parent and completion activity to the task
-    /// initiator. Local delivery remains best effort and uses the reporting runtime's
-    /// diagnostic trace; it is not deduplicated.
-    fn turn_finished<'a>(
-        &'a self,
-        outcome: AgentTurnOutcome,
-        trace: &'a ThreadTraceContext,
-    ) -> BoxFuture<'a, ()>;
+    /// initiator. Local delivery remains best effort and is not deduplicated.
+    fn turn_finished(&self, outcome: AgentTurnOutcome) -> BoxFuture<'_, ()>;
 
     /// Read the latest shared service tier for use at normal runtime config update points.
     fn service_tier(&self) -> Option<String>;
 
     /// Publish a shared setting synchronously with the runtime's root-owned config update.
     fn propagate_config_update(&self, update: AgentConfigUpdate);
-
-    /// Read the existing bounded root evidence for a worker. The local backend returns
-    /// `None` for the root, a non-V2 tree, or an unavailable root runtime.
-    fn get_guardian_package(&self, agent: ThreadId) -> BoxFuture<'_, Option<GuardianRootSnapshot>>;
 
     fn pending_budget_reminder<'a>(
         &'a self,
@@ -239,8 +227,6 @@ pub struct AgentTurnOutcome {
     pub parent_turn_id: Option<String>,
     pub initiating_agent_path: Option<AgentPath>,
     pub status: AgentStatus,
-    /// Typed reason used to choose guidance in the parent notification.
-    pub error_info: Option<CodexErrorInfo>,
 }
 
 /// Settings shared by the tree. A service tier of `None` restores the default tier.

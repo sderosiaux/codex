@@ -3,7 +3,6 @@
 
 use std::sync::Arc;
 
-use codex_sandboxing::SandboxType;
 use opentelemetry::trace::SpanContext;
 
 use crate::telemetry::ExecutorRegistration;
@@ -21,7 +20,6 @@ pub(crate) struct ProcessTelemetry {
 pub(crate) enum ProcessTelemetryEvent {
     Start,
     SpawnFailed,
-    SandboxDenied,
     Exit {
         exit_code: i32,
         termination_requested: bool,
@@ -29,18 +27,12 @@ pub(crate) enum ProcessTelemetryEvent {
 }
 
 impl ProcessTelemetry {
-    pub(crate) fn log(&self, event: ProcessTelemetryEvent, sandbox: SandboxType) {
-        let (event_name, exit_code, termination_requested, reason) = match event {
-            ProcessTelemetryEvent::Start => ("codex.exec_server.process_start", None, None, None),
+    pub(crate) fn log(&self, event: ProcessTelemetryEvent) {
+        let (event_name, exit_code, termination_requested) = match event {
+            ProcessTelemetryEvent::Start => ("codex.exec_server.process_start", None, None),
             ProcessTelemetryEvent::SpawnFailed => {
-                ("codex.exec_server.process_spawn_failed", None, None, None)
+                ("codex.exec_server.process_spawn_failed", None, None)
             }
-            ProcessTelemetryEvent::SandboxDenied => (
-                "codex.exec_server.sandbox_denied",
-                None,
-                None,
-                Some("inferred_denial"),
-            ),
             ProcessTelemetryEvent::Exit {
                 exit_code,
                 termination_requested,
@@ -48,7 +40,6 @@ impl ProcessTelemetry {
                 "codex.exec_server.process_exit",
                 Some(exit_code),
                 Some(termination_requested),
-                None,
             ),
         };
         let trace_id = self
@@ -69,10 +60,8 @@ impl ProcessTelemetry {
             tool.call_id = self.tool_call_id.as_deref(),
             executor.environment_id = self.executor_registration.as_ref().map(|registration| registration.environment_id.as_str()),
             executor.registration_id = self.executor_registration.as_ref().map(|registration| registration.executor_registration_id.as_str()),
-            sandbox.type = ?sandbox,
             process.exit_code = exit_code,
             process.termination_requested = termination_requested,
-            reason,
         );
     }
 }

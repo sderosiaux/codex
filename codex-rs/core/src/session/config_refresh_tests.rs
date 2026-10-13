@@ -35,7 +35,7 @@ async fn file_reload_restores_host_feature_defaults_after_override_removal(host_
         .map(|feature| (feature, host_default))
         .collect();
     for feature in features {
-        initial.features.set_enabled(feature, host_default).unwrap();
+        initial.features.set_enabled(feature, host_default);
     }
     session
         .state
@@ -85,9 +85,8 @@ async fn reload_user_config_layer_resolves_paths_without_resetting_runtime_setti
         .build()
         .await
         .unwrap();
-    let mut servers = initial.mcp_servers.get().clone();
     let McpServerTransportConfig::StreamableHttp { http_headers, .. } =
-        &mut servers.get_mut("ordinary").unwrap().transport
+        &mut initial.mcp_servers.get_mut("ordinary").unwrap().transport
     else {
         unreachable!()
     };
@@ -95,7 +94,6 @@ async fn reload_user_config_layer_resolves_paths_without_resetting_runtime_setti
         "Authorization".into(),
         "Bearer synthetic-host".into(),
     )]));
-    initial.mcp_servers.set(servers).unwrap();
     session
         .state
         .lock()
@@ -146,9 +144,7 @@ async fn hook_refresh_retries_current_plugin_policy_after_owner_replacement() ->
     )?;
     let user_config = "[features]\nplugins = true\nhooks = true\n[plugins.\"sample@test\"]\n";
     std::fs::write(&file, user_config)?;
-    let mut initial = load_latest_config_for_session(&session).await;
-    initial.bypass_hook_trust = true;
-    let initial = Arc::new(initial);
+    let initial = Arc::new(load_latest_config_for_session(&session).await);
     session
         .state
         .lock()

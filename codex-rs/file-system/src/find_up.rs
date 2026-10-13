@@ -1,6 +1,5 @@
 use crate::ExecutorFileSystem;
 use crate::FileSystemResult;
-use crate::FileSystemSandboxContext;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
 use futures::StreamExt;
@@ -29,7 +28,6 @@ pub async fn find_nearest_ancestor_with_markers(
     start: &PathUri,
     markers: Vec<String>,
     error_policy: FindUpErrorPolicy,
-    sandbox: Option<&FileSystemSandboxContext>,
 ) -> FileSystemResult<Option<PathUri>> {
     find_nearest_ancestor(
         file_system,
@@ -42,7 +40,6 @@ pub async fn find_nearest_ancestor_with_markers(
                 .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))
         },
         error_policy,
-        sandbox,
     )
     .await
 }
@@ -56,7 +53,6 @@ pub async fn find_nearest_native_ancestor_with_markers(
     start: &AbsolutePathBuf,
     markers: Vec<String>,
     error_policy: FindUpErrorPolicy,
-    sandbox: Option<&FileSystemSandboxContext>,
 ) -> FileSystemResult<Option<AbsolutePathBuf>> {
     find_nearest_ancestor(
         file_system,
@@ -65,7 +61,6 @@ pub async fn find_nearest_native_ancestor_with_markers(
         AbsolutePathBuf::parent,
         |ancestor, marker| Ok(PathUri::from_abs_path(&ancestor.join(marker))),
         error_policy,
-        sandbox,
     )
     .await
 }
@@ -77,7 +72,6 @@ async fn find_nearest_ancestor<P, Parent, MarkerPath>(
     parent: Parent,
     mut marker_path: MarkerPath,
     error_policy: FindUpErrorPolicy,
-    sandbox: Option<&FileSystemSandboxContext>,
 ) -> FileSystemResult<Option<P>>
 where
     P: Clone + Send,
@@ -104,7 +98,7 @@ where
         .map(|(ancestor, marker_path)| async move {
             let marker_path = marker_path?;
             match file_system
-                .get_metadata(&marker_path, crate::GetMetadataOptions::default(), sandbox)
+                .get_metadata(&marker_path, crate::GetMetadataOptions::default())
                 .await
             {
                 Ok(_) => Ok(Some(ancestor)),

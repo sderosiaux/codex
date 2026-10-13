@@ -1,11 +1,8 @@
 use anyhow::Context;
-use codex_config::AppToolApproval;
 use codex_config::McpServerToolConfig;
-use codex_config::test_support::CloudConfigBundleFixture;
 use codex_core::EnvironmentConfig;
 use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
-use codex_core::windows_sandbox::WindowsSandboxLevelExt;
 use codex_core_plugins::ExecutorPluginProvider;
 use codex_core_plugins::PluginCatalog;
 use codex_core_plugins::PluginCatalogEntry;
@@ -19,7 +16,6 @@ use codex_exec_server::CapabilityRootDiscovery;
 use codex_exec_server::EnvironmentManager;
 use codex_exec_server::ExecutorCapabilityDiscoveryCache;
 use codex_exec_server::ExecutorCapabilityDiscoverySnapshot;
-use codex_exec_server::FileSystemSandboxContext;
 use codex_exec_server::LOCAL_ENVIRONMENT_ID;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionDataInit;
@@ -33,8 +29,6 @@ use codex_mcp_extension::PluginsThreadState;
 use codex_mcp_extension::install_plugin_providers;
 use codex_protocol::capabilities::CapabilityRootLocation;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
-use codex_protocol::config_types::WindowsSandboxLevel;
-use codex_protocol::models::PermissionProfileSnapshot;
 use codex_utils_path_uri::PathUri;
 use core_test_support::apps_test_server::AppsTestServer;
 use core_test_support::apps_test_server::recorded_apps_tool_calls;
@@ -74,80 +68,6 @@ struct PackageSummary {
     plugin_display_name: String,
     source_environment_id: String,
     connector_ids: Vec<String>,
-}
-
-#[tokio::test]
-async fn selected_plugin_servers_use_managed_requirements_for_the_selected_root_id() -> TestResult {
-    let codex_home = tempfile::tempdir()?;
-    let plugin_root = tempfile::tempdir()?;
-    std::fs::create_dir_all(plugin_root.path().join(".codex-plugin"))?;
-    std::fs::write(
-        plugin_root.path().join(".codex-plugin/plugin.json"),
-        r#"{"name":"different-manifest-name","interface":{"displayName":"Selected Demo"}}"#,
-    )?;
-    std::fs::write(
-        plugin_root.path().join(".mcp.json"),
-        r#"{
-  "mcpServers": {
-    "allowed": {"command":"allowed-command"},
-    "mismatched": {"command":"wrong-command"},
-    "unlisted": {"command":"unlisted-command"}
-  }
-}"#,
-    )?;
-    std::fs::write(
-        codex_home.path().join("config.toml"),
-        "[plugins.\"selected-root\".mcp_servers.mismatched]\nenabled = true\n[plugins.\"selected-root\".mcp_servers.unlisted]\nenabled = true",
-    )?;
-    let config = ConfigBuilder::default()
-        .codex_home(codex_home.path().to_path_buf())
-        .fallback_cwd(Some(codex_home.path().to_path_buf()))
-        .cloud_config_bundle(
-            CloudConfigBundleFixture::loader_with_enterprise_requirement(
-                r#"
-[plugins."selected-root".mcp_servers.allowed.identity]
-command = "allowed-command"
-
-[plugins."selected-root".mcp_servers.mismatched.identity]
-command = "expected-command"
-"#,
-            ),
-        )
-        .build()
-        .await?;
-
-    let contributions = selected_plugin_contributions(&config, plugin_root.path()).await?;
-
-    assert_eq!(
-        contributions,
-        vec![
-            ContributionSummary {
-                name: "allowed".to_string(),
-                plugin_id: "selected-root".to_string(),
-                plugin_display_name: "Selected Demo".to_string(),
-                source_environment_id: LOCAL_ENVIRONMENT_ID.to_string(),
-                selection_order: 0,
-                enabled: true,
-            },
-            ContributionSummary {
-                name: "mismatched".to_string(),
-                plugin_id: "selected-root".to_string(),
-                plugin_display_name: "Selected Demo".to_string(),
-                source_environment_id: LOCAL_ENVIRONMENT_ID.to_string(),
-                selection_order: 0,
-                enabled: false,
-            },
-            ContributionSummary {
-                name: "unlisted".to_string(),
-                plugin_id: "selected-root".to_string(),
-                plugin_display_name: "Selected Demo".to_string(),
-                source_environment_id: LOCAL_ENVIRONMENT_ID.to_string(),
-                selection_order: 0,
-                enabled: false,
-            },
-        ]
-    );
-    Ok(())
 }
 
 #[tokio::test]
@@ -229,7 +149,7 @@ async fn denied_malformed_plugin_retains_identity_without_capabilities() -> Test
             .fallback_cwd(Some(codex_home.path().to_path_buf()))
             .build()
             .await?;
-        config.features.set_enabled(Feature::ExecutorCapabilityDiscovery, discovery_enabled)?;
+        config.features.set_enabled(Feature::ExecutorCapabilityDiscovery, discovery_enabled);
 
         let expected = if expected_denied {
             vec![(
@@ -296,13 +216,19 @@ async fn selected_root_ownership_retries_errors_and_caches_success() -> TestResu
     let default_off = "[plugins._default]\nenabled = false\n";
     let standalone = &selected_roots[2];
     let CapabilityRootLocation::Environment { path, .. } = &standalone.location;
-    let sandbox_contexts = HashMap::from([(
-        LOCAL_ENVIRONMENT_ID.to_string(),
-        FileSystemSandboxContext::from_permission_profile(Default::default(), path.clone()),
-    )]);
 
+    // An unreadable root makes the ownership probe fail; the next step must retry it.
+    let unreadable_root_error = cfg!(unix);
     for (phase, enabled_root, expected) in [
-        (0, None, vec![("standalone", vec![])]),
+        (
+            0,
+            None,
+            if unreadable_root_error {
+                vec![("standalone", vec![])]
+            } else {
+                Vec::new()
+            },
+        ),
         (1, None, vec![]),
         (2, Some("owned-subfolder"), vec![("selected-root", vec![])]),
         (
@@ -350,8 +276,12 @@ async fn selected_root_ownership_retries_errors_and_caches_success() -> TestResu
             .fallback_cwd(Some(codex_home.path().to_path_buf()))
             .build()
             .await?;
-        // A warning requires metadata probing, which the test filesystem cannot sandbox.
-        // Complete discovery retries ownership under the same sandbox, root, and policy.
+        // A warning requires metadata probing; complete discovery retries ownership for the
+        // same root and policy.
+        #[cfg(unix)]
+        if phase == 0 {
+            set_unix_mode(standalone_root.path(), 0o000)?;
+        }
         let discovery = (phase < 2).then(|| {
             ExecutorCapabilityDiscoverySnapshot::new(
                 std::slice::from_ref(standalone),
@@ -368,7 +298,6 @@ async fn selected_root_ownership_retries_errors_and_caches_success() -> TestResu
                     },
                     error: None,
                 }))],
-                sandbox_contexts.clone(),
             )
         });
         let selected = registry.mcp_server_contributors()[0]
@@ -384,6 +313,8 @@ async fn selected_root_ownership_retries_errors_and_caches_success() -> TestResu
                 &config.plugins,
             )
             .await;
+        #[cfg(unix)]
+        set_unix_mode(standalone_root.path(), 0o755)?;
         let mut actual = Vec::new();
         for plugin in selected {
             let contribution = plugin.mcp.await;
@@ -413,62 +344,10 @@ async fn selected_root_ownership_retries_errors_and_caches_success() -> TestResu
     Ok(())
 }
 
-#[tokio::test]
-async fn managed_plugins_requirement_disables_selected_plugin_capabilities() -> TestResult {
-    let codex_home = tempfile::tempdir()?;
-    let plugin_root = tempfile::tempdir()?;
-    std::fs::create_dir_all(plugin_root.path().join(".codex-plugin"))?;
-    std::fs::write(
-        plugin_root.path().join(".codex-plugin/plugin.json"),
-        r#"{"name":"selected-root","interface":{"displayName":"Selected Root"}}"#,
-    )?;
-    std::fs::write(
-        plugin_root.path().join(".mcp.json"),
-        r#"{"mcpServers":{"probe":{"command":"probe-command"}}}"#,
-    )?;
-    let mut config = ConfigBuilder::default()
-        .codex_home(codex_home.path().to_path_buf())
-        .fallback_cwd(Some(codex_home.path().to_path_buf()))
-        .cloud_config_bundle(
-            CloudConfigBundleFixture::loader_with_enterprise_requirement(
-                r#"
-[features]
-plugins = false
-"#,
-            ),
-        )
-        .build()
-        .await?;
-    assert!(!config.features.enabled(Feature::Plugins));
-
-    let direct = raw_selected_plugin_contributions(&config, plugin_root.path()).await?;
-    assert!(
-        matches!(
-            direct.as_slice(),
-            [(selected_root_id, _, contribution)]
-                if selected_root_id == "selected-root"
-                    && contribution.source_environment_id == LOCAL_ENVIRONMENT_ID
-                    && contribution.servers.is_empty()
-        ),
-        "managed Plugins disable should preserve only the direct selected-root identity"
-    );
-
-    config
-        .features
-        .enable(Feature::ExecutorCapabilityDiscovery)
-        .expect("test config should allow feature update");
-    let discovered = raw_selected_plugin_contributions(&config, plugin_root.path()).await?;
-    assert!(
-        matches!(
-            discovered.as_slice(),
-            [(selected_root_id, _, contribution)]
-                if selected_root_id == "selected-root"
-                    && contribution.source_environment_id == LOCAL_ENVIRONMENT_ID
-                    && contribution.servers.is_empty()
-        ),
-        "managed Plugins disable should preserve only the discovered selected-root identity"
-    );
-    Ok(())
+#[cfg(unix)]
+fn set_unix_mode(path: &std::path::Path, mode: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
 }
 
 #[tokio::test]
@@ -486,19 +365,16 @@ async fn high_level_discovery_matches_the_existing_plugin_provider() -> TestResu
   "mcpServers": {
     "first": {
       "command": "first",
-      "default_tools_approval_mode": "writes",
       "enabled_tools": ["read", "deploy", "trusted", "package-only"],
       "disabled_tools": ["package-denied"],
       "tools": {
-        "read": {"approval_mode": "prompt", "output_token_limit": 12000},
-        "deploy": {"approval_mode": "approve", "output_token_limit": 4000},
-        "trusted": {"approval_mode": "approve"}
+        "read": {"output_token_limit": 12000},
+        "deploy": {"output_token_limit": 4000}
       }
     },
     "second": {
       "command": "second",
-      "enabled": false,
-      "default_tools_approval_mode": "prompt"
+      "enabled": false
     }
   }
 }"#,
@@ -508,23 +384,17 @@ async fn high_level_discovery_matches_the_existing_plugin_provider() -> TestResu
         r#"
 [plugins."selected-root".mcp_servers.first]
 enabled = false
-default_tools_approval_mode = "prompt"
 enabled_tools = ["read", "deploy", "trusted", "host-only"]
 disabled_tools = ["write"]
 
 [plugins."selected-root".mcp_servers.first.tools.read]
-approval_mode = "approve"
 output_token_limit = 8000
 
 [plugins."selected-root".mcp_servers.first.tools.deploy]
 output_token_limit = 9000
 
-[plugins."selected-root".mcp_servers.first.tools.trusted]
-approval_mode = "approve"
-
 [plugins."selected-root".mcp_servers.second]
 enabled = true
-default_tools_approval_mode = "auto"
 "#,
     )?;
     let mut config = ConfigBuilder::default()
@@ -547,16 +417,13 @@ default_tools_approval_mode = "auto"
     assert_eq!(
         (
             server.enabled,
-            server.default_tools_approval_mode,
             server.enabled_tools,
             server.disabled_tools,
             server.tools,
             declared_disabled_server.enabled,
-            declared_disabled_server.default_tools_approval_mode,
         ),
         (
             false,
-            Some(AppToolApproval::Prompt),
             Some(vec![
                 "read".to_string(),
                 "deploy".to_string(),
@@ -567,33 +434,20 @@ default_tools_approval_mode = "auto"
                 (
                     "read".to_string(),
                     McpServerToolConfig {
-                        approval_mode: Some(AppToolApproval::Prompt),
                         output_token_limit: std::num::NonZeroUsize::new(8_000),
                     },
                 ),
                 (
                     "deploy".to_string(),
                     McpServerToolConfig {
-                        approval_mode: Some(AppToolApproval::Prompt),
                         output_token_limit: std::num::NonZeroUsize::new(4_000),
-                    },
-                ),
-                (
-                    "trusted".to_string(),
-                    McpServerToolConfig {
-                        approval_mode: Some(AppToolApproval::Approve),
-                        ..Default::default()
                     },
                 ),
             ]),
             false,
-            Some(AppToolApproval::Prompt),
         )
     );
-    config
-        .features
-        .enable(Feature::ExecutorCapabilityDiscovery)
-        .expect("test config should allow feature update");
+    config.features.enable(Feature::ExecutorCapabilityDiscovery);
     let high_level = selected_plugin_contributions(&config, plugin_root.path()).await?;
 
     assert_eq!(
@@ -654,7 +508,7 @@ async fn raw_selected_plugin_contributions(
     {
         Some(
             ExecutorCapabilityDiscoveryCache::new(environment_manager)
-                .snapshot(&selected_capability_roots, &Default::default())
+                .snapshot(&selected_capability_roots)
                 .await,
         )
     } else {
@@ -778,14 +632,11 @@ async fn run_cloud_plugin_projection_scenarios() -> anyhow::Result<()> {
             .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
             .with_model_info_override("gpt-5.5", |model| model.supports_search_tool = false)
             .with_config(move |config| {
-                assert!(config.features.enable(Feature::Plugins).is_ok());
-                assert!(config.features.enable(Feature::Apps).is_ok());
-                assert!(
-                    config
-                        .features
-                        .enable(Feature::ExecutorCapabilityDiscovery)
-                        .is_ok()
-                );
+                config
+                    .features
+                    .enable(Feature::Plugins)
+                    .enable(Feature::Apps)
+                    .enable(Feature::ExecutorCapabilityDiscovery);
                 config.chatgpt_base_url = apps.chatgpt_base_url;
             });
         let test = builder.build(&server).await?;
@@ -814,16 +665,7 @@ async fn run_cloud_plugin_projection_scenarios() -> anyhow::Result<()> {
                     EnvironmentConfig {
                         allow_login_shell: false,
                         workspace_roots: selection.workspace_roots.clone(),
-                        permission_profile: PermissionProfileSnapshot::legacy(
-                            test.config.permissions.permission_profile().clone(),
-                        ),
                         shell_environment_policy: Default::default(),
-                        windows_sandbox_level: WindowsSandboxLevel::from_config(&test.config),
-                        windows_sandbox_type: test.config.permissions.windows_sandbox_type,
-                        use_legacy_landlock: test.config.features.use_legacy_landlock(),
-                        exec_policy: None,
-                        mcp_policy: None,
-                        network_policy: None,
                         selected_capability_roots: vec![SelectedCapabilityRoot {
                             id: "notes@marketplace".into(),
                             location: CapabilityRootLocation::Environment {

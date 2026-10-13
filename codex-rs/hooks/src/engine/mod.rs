@@ -14,8 +14,6 @@ use crate::events::compact::PreCompactRequest;
 use crate::events::compact::StatelessHookOutcome;
 use crate::events::interrupt::InterruptOutcome;
 use crate::events::interrupt::InterruptRequest;
-use crate::events::permission_request::PermissionRequestOutcome;
-use crate::events::permission_request::PermissionRequestRequest;
 use crate::events::post_tool_use::PostToolUseOutcome;
 use crate::events::post_tool_use::PostToolUseRequest;
 use crate::events::pre_tool_use::PreToolUseOutcome;
@@ -40,7 +38,6 @@ use codex_protocol::protocol::HookExecutionMode;
 use codex_protocol::protocol::HookHandlerType;
 use codex_protocol::protocol::HookRunSummary;
 use codex_protocol::protocol::HookSource;
-use codex_protocol::protocol::HookTrustStatus;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
 use serde_json::Map;
@@ -48,7 +45,6 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
-use std::time::Duration;
 
 use command_runner::CommandHookRuntime;
 
@@ -170,7 +166,6 @@ impl ConfiguredHandler {
     fn event_name_label(&self) -> &'static str {
         match self.event_name {
             codex_protocol::protocol::HookEventName::PreToolUse => "pre-tool-use",
-            codex_protocol::protocol::HookEventName::PermissionRequest => "permission-request",
             codex_protocol::protocol::HookEventName::PostToolUse => "post-tool-use",
             codex_protocol::protocol::HookEventName::PreCompact => "pre-compact",
             codex_protocol::protocol::HookEventName::PostCompact => "post-compact",
@@ -214,16 +209,12 @@ pub struct HookListEntry {
     pub plugin_id: Option<String>,
     pub display_order: i64,
     pub enabled: bool,
-    pub is_managed: bool,
-    pub current_hash: String,
-    pub trust_status: HookTrustStatus,
 }
 
 #[derive(Clone)]
 pub(crate) struct ClaudeHooksEngine {
     pub(crate) handlers: Vec<ConfiguredHandler>,
     warnings: Vec<String>,
-    required_load_errors: Vec<String>,
     pub(crate) command_runtime: CommandHookRuntime,
     pub(crate) mcp_executor: Arc<dyn HookMcpExecutor>,
 }
@@ -231,7 +222,6 @@ pub(crate) struct ClaudeHooksEngine {
 impl ClaudeHooksEngine {
     pub(crate) fn new(
         enabled: bool,
-        bypass_hook_trust: bool,
         config_layer_stack: Option<&ConfigLayerStack>,
         plugin_hook_sources: Vec<PluginHookSource>,
         plugin_hook_load_warnings: Vec<String>,
@@ -242,7 +232,6 @@ impl ClaudeHooksEngine {
             return Self {
                 handlers: Vec::new(),
                 warnings: Vec::new(),
-                required_load_errors: Vec::new(),
                 command_runtime,
                 mcp_executor,
             };
@@ -253,18 +242,15 @@ impl ClaudeHooksEngine {
             config_layer_stack,
             plugin_hook_sources,
             plugin_hook_load_warnings,
-            bypass_hook_trust,
         );
         if !enabled {
             discovered.handlers.retain(|handler| handler.builtin);
-            // Disabled ordinary hooks must not emit warnings or reject session startup.
+            // Disabled ordinary hooks must not emit warnings.
             discovered.warnings.clear();
-            discovered.required_load_errors.clear();
         }
         Self {
             handlers: discovered.handlers,
             warnings: discovered.warnings,
-            required_load_errors: discovered.required_load_errors,
             command_runtime,
             mcp_executor,
         }
@@ -348,10 +334,6 @@ impl ClaudeHooksEngine {
         }
     }
 
-    pub(crate) fn required_load_errors(&self) -> &[String] {
-        &self.required_load_errors
-    }
-
     pub(crate) fn preview_session_start(
         &self,
         request: &SessionStartRequest,
@@ -361,27 +343,6 @@ impl ClaudeHooksEngine {
 
     pub(crate) fn preview_pre_tool_use(&self, request: &PreToolUseRequest) -> Vec<HookRunSummary> {
         crate::events::pre_tool_use::preview(&self.handlers, request)
-    }
-
-    pub(crate) fn preview_permission_request(
-        &self,
-        request: &PermissionRequestRequest,
-    ) -> Vec<HookRunSummary> {
-        crate::events::permission_request::preview(&self.handlers, request)
-    }
-
-    pub(crate) fn max_permission_request_timeout(&self) -> Duration {
-        Duration::from_secs(
-            self.handlers
-                .iter()
-                .filter(|handler| {
-                    handler.event_name == HookEventName::PermissionRequest
-                        && handler.can_apply_control_effects()
-                })
-                .map(|handler| handler.timeout_sec)
-                .max()
-                .unwrap_or_default(),
-        )
     }
 
     pub(crate) fn preview_post_tool_use(
@@ -401,13 +362,6 @@ impl ClaudeHooksEngine {
 
     pub(crate) async fn run_pre_tool_use(&self, request: PreToolUseRequest) -> PreToolUseOutcome {
         crate::events::pre_tool_use::run(self, request).await
-    }
-
-    pub(crate) async fn run_permission_request(
-        &self,
-        request: PermissionRequestRequest,
-    ) -> PermissionRequestOutcome {
-        crate::events::permission_request::run(self, request).await
     }
 
     pub(crate) async fn run_post_tool_use(

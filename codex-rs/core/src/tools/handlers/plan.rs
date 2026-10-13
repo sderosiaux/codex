@@ -13,7 +13,6 @@ use codex_protocol::plan_tool::UpdatePlanArgs;
 use codex_protocol::protocol::EventMsg;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
-use serde_json::Value as JsonValue;
 
 pub struct PlanHandler;
 
@@ -38,10 +37,6 @@ impl ToolOutput for PlanToolOutput {
             call_id: call_id.to_string(),
             output,
         }
-    }
-
-    fn code_mode_result(&self, _payload: &ToolPayload) -> JsonValue {
-        JsonValue::Object(serde_json::Map::new())
     }
 }
 
@@ -99,11 +94,7 @@ impl PlanHandler {
     }
 }
 
-impl CoreToolRuntime for PlanHandler {
-    fn is_builtin_control_tool(&self) -> bool {
-        true
-    }
-}
+impl CoreToolRuntime for PlanHandler {}
 
 fn parse_update_plan_arguments(arguments: &str) -> Result<UpdatePlanArgs, FunctionCallError> {
     serde_json::from_str::<UpdatePlanArgs>(arguments).map_err(|e| {

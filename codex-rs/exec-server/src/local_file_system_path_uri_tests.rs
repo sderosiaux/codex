@@ -6,8 +6,8 @@ use super::*;
 
 #[tokio::test]
 async fn direct_file_system_rejects_non_native_uri_as_invalid_input() {
-    let error = DirectFileSystem
-        .read_file(&non_native_uri(), Default::default(), /*sandbox*/ None)
+    let error = LocalFileSystem
+        .read_file(&non_native_uri(), Default::default())
         .await
         .expect_err("non-native URI should be rejected");
 

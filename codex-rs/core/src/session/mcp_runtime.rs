@@ -7,11 +7,8 @@
 use super::session::SessionConfiguration;
 use super::*;
 use crate::mcp::McpRuntimeProjection;
-use codex_config::McpServerDisabledReason;
 use codex_config::McpServerTransportConfig;
-use codex_file_system::WindowsSandboxSelection;
 use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
-use codex_mcp::ElicitationReviewerHandle;
 use codex_mcp::McpServerRegistration;
 use codex_mcp::McpServerSource;
 use codex_mcp::McpStartupPolicy;
@@ -39,11 +36,6 @@ impl Session {
         next: &SessionConfiguration,
     ) -> bool {
         current.cwd() != next.cwd()
-            || current.step_settings.approval_policy.value()
-                != next.step_settings.approval_policy.value()
-            || current.step_settings.approvals_reviewer != next.step_settings.approvals_reviewer
-            || current.permission_profile() != next.permission_profile()
-            || current.windows_sandbox_level != next.windows_sandbox_level
     }
 
     /// Waits on this session's refreshed server before tool execution is admitted.
@@ -138,7 +130,6 @@ impl Session {
             &desired,
             mcp_projection,
             /*ready_selected_capability_roots*/ &[],
-            Some(self.mcp_elicitation_reviewer()),
         )
         .instrument(info_span!(
             "session_init.mcp_manager_init",
@@ -152,7 +143,6 @@ impl Session {
     /// Adds effective executor-owned configuration from this exact thread snapshot.
     pub(super) fn project_selected_environment_mcp_servers<'a>(
         &'a self,
-        config: &'a Config,
         environments: &'a TurnEnvironmentSnapshot,
         mut projection: McpRuntimeProjection,
     ) -> BoxFuture<'a, McpRuntimeProjection> {
@@ -246,21 +236,6 @@ impl Session {
                         continue;
                     }
                     server.environment_id = environment_id.clone();
-                    if let Some(requirements) = config
-                        .config_layer_stack
-                        .requirements()
-                        .mcp_servers
-                        .as_ref()
-                        && !requirements
-                            .value
-                            .get(&name)
-                            .is_some_and(|requirement| server.matches_requirement(requirement))
-                    {
-                        server.enabled = false;
-                        server.disabled_reason = Some(McpServerDisabledReason::Requirements {
-                            source: requirements.source.clone(),
-                        });
-                    }
                     registered.insert(name.clone());
                     catalog
                         .get_or_insert_with(|| projection.config.mcp_server_catalog.to_builder())
@@ -286,22 +261,13 @@ impl Session {
         desired: &McpDesiredState,
         mcp_projection: McpRuntimeProjection,
         ready_selected_capability_roots: &[SelectedCapabilityRoot],
-        elicitation_reviewer: Option<ElicitationReviewerHandle>,
     ) {
         let mcp_projection = self
-            .project_selected_environment_mcp_servers(
-                &desired.config,
-                &desired.environments,
-                mcp_projection,
-            )
+            .project_selected_environment_mcp_servers(&desired.environments, mcp_projection)
             .await;
         let selected_plugins = mcp_projection.selected_plugins.clone();
-        let input = self.build_mcp_runtime_input(
-            desired,
-            mcp_projection,
-            ready_selected_capability_roots,
-            elicitation_reviewer,
-        );
+        let input =
+            self.build_mcp_runtime_input(desired, mcp_projection, ready_selected_capability_roots);
         AuthStorageOriginator::from_client_name(&desired.originator)
             .scope(self.services.mcp_runtime.replace(input))
             .await;
@@ -313,7 +279,6 @@ impl Session {
         desired: &McpDesiredState,
         mcp_projection: McpRuntimeProjection,
         ready_selected_capability_roots: &[SelectedCapabilityRoot],
-        elicitation_reviewer: Option<ElicitationReviewerHandle>,
     ) -> McpRuntimeInput {
         let auth = desired.auth.clone();
         let McpRuntimeProjection {
@@ -321,9 +286,6 @@ impl Session {
             plugins_available,
             selected_plugins: _,
         } = mcp_projection;
-        config.approval_policy = desired.config.permissions.approval_policy.clone();
-        config.permission_profile = desired.config.permissions.effective_permission_profile();
-        config.approvals_reviewer = desired.config.approvals_reviewer;
         config.environment_cwds = desired
             .environments
             .turn_environments()
@@ -338,35 +300,7 @@ impl Session {
             .environment_cwds
             .entry(codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string())
             .or_insert_with(|| PathUri::from_abs_path(&desired.config.cwd));
-        config.environment_use_mxc = desired
-            .environments
-            .turn_environments()
-            .map(|environment| {
-                (
-                    environment.selection.environment_id.clone(),
-                    environment.windows_sandbox_selection_for_turn_metadata()
-                        == WindowsSandboxSelection::Mxc,
-                )
-            })
-            .collect();
-        config
-            .environment_use_mxc
-            .entry(codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string())
-            .or_insert(
-                cfg!(windows)
-                    && desired.config.effective_local_windows_sandbox_type()
-                        == SandboxType::WindowsMxc,
-            );
         let mcp_servers = effective_mcp_servers(&config, auth.as_ref());
-        config.set_server_permission_profiles(
-            &mcp_servers,
-            desired.environments.turn_environments().map(|environment| {
-                (
-                    environment.selection.environment_id.clone(),
-                    environment.permission_profile_with_workspace_roots(),
-                )
-            }),
-        );
         let mcp_config = Arc::new(config);
         let runtime_context = McpRuntimeContext::new(
             self.services.turn_environments.environment_manager(),
@@ -396,7 +330,6 @@ impl Session {
             client_mcp_extensions: self.services.client_mcp_extensions.for_mcp_servers(),
             auth,
             auth_manager: Some(Arc::clone(&self.services.auth_manager)),
-            elicitation_reviewer,
             elicitation_lifecycle: Some(self.mcp_elicitation_lifecycle()),
         }
     }

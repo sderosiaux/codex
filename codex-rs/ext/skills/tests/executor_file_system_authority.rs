@@ -7,7 +7,6 @@ use std::sync::atomic::Ordering;
 use codex_config::ConfigLayerEntry;
 use codex_config::ConfigLayerSource;
 use codex_config::ConfigLayerStack;
-use codex_config::ConfigRequirementsToml;
 use codex_exec_server::CapabilityRootDiscovery;
 use codex_exec_server::CapabilityTextFile;
 use codex_exec_server::CopyOptions;
@@ -23,7 +22,6 @@ use codex_exec_server::ExecutorFileSystemFuture;
 use codex_exec_server::FileMetadata;
 use codex_exec_server::FileSystemEnvironmentAccessor;
 use codex_exec_server::FileSystemReadStream;
-use codex_exec_server::FileSystemSandboxContext;
 use codex_exec_server::GetMetadataOptions;
 use codex_exec_server::LOCAL_FS;
 #[cfg(windows)]
@@ -40,7 +38,6 @@ use codex_exec_server::WindowsSandboxSelection;
 use codex_exec_server::WriteFileOptions;
 use codex_protocol::capabilities::CapabilityRootLocation;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
-use codex_protocol::models::PermissionProfile;
 #[cfg(windows)]
 use codex_protocol::permissions::FileSystemSandboxPolicy;
 #[cfg(windows)]
@@ -142,11 +139,7 @@ impl SyntheticFileSystem {
 }
 
 impl ExecutorFileSystem for SyntheticFileSystem {
-    fn canonicalize<'a>(
-        &'a self,
-        path: &'a PathUri,
-        _sandbox: Option<&'a FileSystemSandboxContext>,
-    ) -> ExecutorFileSystemFuture<'a, PathUri> {
+    fn canonicalize<'a>(&'a self, path: &'a PathUri) -> ExecutorFileSystemFuture<'a, PathUri> {
         Box::pin(SyntheticFileSystem::canonicalize(self, path))
     }
 
@@ -154,7 +147,6 @@ impl ExecutorFileSystem for SyntheticFileSystem {
         &'a self,
         path: &'a PathUri,
         _options: ReadFileOptions,
-        _sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, Vec<u8>> {
         Box::pin(SyntheticFileSystem::read_file(self, path))
     }
@@ -162,7 +154,6 @@ impl ExecutorFileSystem for SyntheticFileSystem {
     fn read_file_stream<'a>(
         &'a self,
         _path: &'a PathUri,
-        _sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, FileSystemReadStream> {
         Box::pin(async {
             Err(io::Error::new(
@@ -177,7 +168,6 @@ impl ExecutorFileSystem for SyntheticFileSystem {
         _path: &'a PathUri,
         _contents: Vec<u8>,
         _options: WriteFileOptions,
-        _sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, ()> {
         Box::pin(async move { Err(io::Error::new(io::ErrorKind::Unsupported, "read only")) })
     }
@@ -186,7 +176,6 @@ impl ExecutorFileSystem for SyntheticFileSystem {
         &'a self,
         _path: &'a PathUri,
         _options: CreateDirectoryOptions,
-        _sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, ()> {
         Box::pin(async move { Err(io::Error::new(io::ErrorKind::Unsupported, "read only")) })
     }
@@ -195,7 +184,6 @@ impl ExecutorFileSystem for SyntheticFileSystem {
         &'a self,
         path: &'a PathUri,
         _options: GetMetadataOptions,
-        _sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, FileMetadata> {
         Box::pin(async move { self.metadata(path) })
     }
@@ -203,7 +191,6 @@ impl ExecutorFileSystem for SyntheticFileSystem {
     fn read_directory<'a>(
         &'a self,
         path: &'a PathUri,
-        _sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, Vec<ReadDirectoryEntry>> {
         Box::pin(SyntheticFileSystem::read_directory(self, path))
     }
@@ -212,7 +199,6 @@ impl ExecutorFileSystem for SyntheticFileSystem {
         &'a self,
         path: &'a PathUri,
         options: WalkOptions,
-        _sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, WalkOutcome> {
         Box::pin(async move {
             self.metadata(path)?;
@@ -240,7 +226,6 @@ impl ExecutorFileSystem for SyntheticFileSystem {
         &'a self,
         _path: &'a PathUri,
         _options: RemoveOptions,
-        _sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, ()> {
         Box::pin(async move { Err(io::Error::new(io::ErrorKind::Unsupported, "read only")) })
     }
@@ -250,7 +235,6 @@ impl ExecutorFileSystem for SyntheticFileSystem {
         _source_path: &'a PathUri,
         _destination_path: &'a PathUri,
         _options: CopyOptions,
-        _sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, ()> {
         Box::pin(async move { Err(io::Error::new(io::ErrorKind::Unsupported, "read only")) })
     }
@@ -268,17 +252,12 @@ async fn skill_loading_and_reads_use_the_supplied_executor_file_system() {
     assert!(!alias_root.as_path().exists());
     assert!(!canonical_root.as_path().exists());
 
-    let config_layer_stack = ConfigLayerStack::new(
-        vec![ConfigLayerEntry::new(
-            ConfigLayerSource::Project {
-                dot_codex_folder: project_folder,
-            },
-            toml::from_str("[skills.bundled]\nenabled = false\n")
-                .expect("valid bundled skills config"),
-        )],
-        Default::default(),
-        ConfigRequirementsToml::default(),
-    )
+    let config_layer_stack = ConfigLayerStack::new(vec![ConfigLayerEntry::new(
+        ConfigLayerSource::Project {
+            dot_codex_folder: project_folder,
+        },
+        toml::from_str("[skills.bundled]\nenabled = false\n").expect("valid bundled skills config"),
+    )])
     .expect("valid project config stack");
     let cwd = AbsolutePathBuf::from_absolute_path_checked(test_root).expect("absolute test root");
     let service = HostSkillsService::new_with_restriction_product(
@@ -322,8 +301,7 @@ async fn windows_executor_skill_read_requires_a_requested_sandbox() -> io::Resul
         std::env::current_exe()?,
         /*codex_linux_sandbox_exe*/ None,
     )?;
-    let file_system: Arc<dyn ExecutorFileSystem> =
-        Arc::new(LocalFileSystem::with_runtime_paths(runtime_paths));
+    let file_system: Arc<dyn ExecutorFileSystem> = Arc::new(LocalFileSystem::new());
     let provider = ExecutorSkillProvider::new_with_restriction_product(
         Arc::new(EnvironmentManager::default_for_tests()),
         /*restriction_product*/ None,
@@ -333,7 +311,7 @@ async fn windows_executor_skill_read_requires_a_requested_sandbox() -> io::Resul
         "local",
         PathUri::from_host_native_path(test_root.join("skill/SKILL.md"))?,
     );
-    let access = FileSystemEnvironmentAccessor::unrestricted(&file_system);
+    let access = FileSystemEnvironmentAccessor::new(&file_system);
     let read = provider
         .read(SkillReadRequest {
             authority: SkillAuthority::new(SkillSourceKind::Executor, "windows-root"),
@@ -359,7 +337,7 @@ async fn windows_executor_skill_read_requires_a_requested_sandbox() -> io::Resul
         PathUri::from_host_native_path(&test_root)?,
     );
     sandbox.windows_sandbox_selection = WindowsSandboxSelection::Disabled;
-    let access = FileSystemEnvironmentAccessor::new(&file_system, sandbox);
+    let access = FileSystemEnvironmentAccessor::new(&file_system);
     let error = provider
         .read(SkillReadRequest {
             authority: SkillAuthority::new(SkillSourceKind::Executor, "windows-root"),
@@ -494,7 +472,6 @@ async fn executor_discovery_preserves_posix_and_windows_locator_alias_roots() {
                 warnings: Vec::new(),
                 error: None,
             }))],
-            HashMap::new(),
         );
         let catalog = provider
             .list(SkillListQuery {
@@ -631,7 +608,7 @@ async fn executor_discovery_routes_produce_equivalent_catalog_metadata() {
         .await
         .expect("list directly discovered executor skills");
     let discovery = ExecutorCapabilityDiscoveryCache::new(manager)
-        .snapshot(&executor_roots, &Default::default())
+        .snapshot(&executor_roots)
         .await;
     let bundled = provider
         .list(query(Some(discovery.clone())))
@@ -763,7 +740,7 @@ async fn pre_discovered_executor_catalog_snapshot() {
         },
     }];
     let executor_capability_discovery = ExecutorCapabilityDiscoveryCache::new(manager)
-        .snapshot(&executor_roots, &Default::default())
+        .snapshot(&executor_roots)
         .await;
     let catalog = provider
         .list(SkillListQuery {
@@ -940,7 +917,7 @@ async fn high_level_discovery_reuses_materialized_skill_contents_for_reads() {
         },
     }];
     let executor_capability_discovery = ExecutorCapabilityDiscoveryCache::new(manager)
-        .snapshot(&executor_roots, &Default::default())
+        .snapshot(&executor_roots)
         .await;
     let catalog = provider
         .list(SkillListQuery {
@@ -959,7 +936,7 @@ async fn high_level_discovery_reuses_materialized_skill_contents_for_reads() {
     let [entry] = catalog.entries.as_slice() else {
         panic!("expected exactly one skill");
     };
-    let access = FileSystemEnvironmentAccessor::unrestricted(&LOCAL_FS);
+    let access = FileSystemEnvironmentAccessor::new(&LOCAL_FS);
     let request = SkillReadRequest {
         authority: entry.authority.clone(),
         package: entry.id.clone(),
@@ -977,61 +954,6 @@ async fn high_level_discovery_reuses_materialized_skill_contents_for_reads() {
 }
 
 #[tokio::test]
-async fn high_level_discovery_cache_separates_filesystem_permission_contexts() {
-    let test_root = create_local_skill_root("permission-context").expect("create local skill root");
-    let manager = Arc::new(EnvironmentManager::default_for_tests());
-    let cache = ExecutorCapabilityDiscoveryCache::new(manager);
-    let executor_roots = vec![SelectedCapabilityRoot {
-        id: "permission-root".to_string(),
-        location: CapabilityRootLocation::Environment {
-            environment_id: "local".to_string(),
-            path: PathUri::from_host_native_path(&test_root).expect("skill root URI"),
-        },
-    }];
-    cache.snapshot(&executor_roots, &HashMap::new()).await;
-
-    let updated_contents =
-        "---\nname: synthetic\ndescription: Updated executor skill.\n---\n\nUPDATED_BODY\n";
-    std::fs::write(test_root.join("skill/SKILL.md"), updated_contents)
-        .expect("update executor skill");
-    let sandbox_contexts = HashMap::from([(
-        "local".to_string(),
-        FileSystemSandboxContext::from_permission_profile(
-            PermissionProfile::Disabled,
-            PathUri::from_host_native_path(&test_root).expect("skill root URI"),
-        ),
-    )]);
-    let second_snapshot = cache.snapshot(&executor_roots, &sandbox_contexts).await;
-    let second_discovery = second_snapshot.roots()[0]
-        .result
-        .as_ref()
-        .expect("second discovery");
-
-    assert_eq!(
-        second_discovery.skills[0].instructions.contents,
-        updated_contents
-    );
-    assert_eq!(second_snapshot.sandbox_contexts(), &sandbox_contexts);
-
-    let restored_contents =
-        "---\nname: synthetic\ndescription: Restored executor skill.\n---\n\nRESTORED_BODY\n";
-    std::fs::write(test_root.join("skill/SKILL.md"), restored_contents)
-        .expect("restore executor skill");
-    let restored_snapshot = cache.snapshot(&executor_roots, &HashMap::new()).await;
-    let restored_discovery = restored_snapshot.roots()[0]
-        .result
-        .as_ref()
-        .expect("restored discovery");
-
-    assert_eq!(
-        restored_discovery.skills[0].instructions.contents,
-        restored_contents
-    );
-
-    std::fs::remove_dir_all(test_root).expect("remove skill directory");
-}
-
-#[tokio::test]
 async fn high_level_discovery_batches_more_than_128_roots() {
     let test_root = create_local_skill_root("many-roots").expect("create local skill root");
     let manager = Arc::new(EnvironmentManager::default_for_tests());
@@ -1046,7 +968,7 @@ async fn high_level_discovery_batches_more_than_128_roots() {
         })
         .collect::<Vec<_>>();
 
-    let snapshot = cache.snapshot(&executor_roots, &HashMap::new()).await;
+    let snapshot = cache.snapshot(&executor_roots).await;
 
     assert_eq!(snapshot.roots().len(), executor_roots.len());
     assert!(snapshot.roots().iter().all(|root| root.result.is_ok()));

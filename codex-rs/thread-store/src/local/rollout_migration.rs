@@ -35,7 +35,6 @@ use tokio::time::Instant;
 
 use super::LocalThreadStore;
 use super::helpers::distinct_thread_metadata_title;
-use super::helpers::has_guardian_default_title;
 use super::thread_history;
 use super::thread_history::ProjectedRolloutLine;
 use super::thread_history::RolloutProjectionStep;
@@ -1099,12 +1098,9 @@ impl LocalThreadStore {
             }
             let title = distinct_thread_metadata_title(&metadata);
             let indexed_name = legacy_names.get(&thread_id).cloned();
-            let legacy_name = if has_guardian_default_title(&metadata) {
-                indexed_name.or(title)
-            } else {
-                title.or(indexed_name)
-            }
-            .filter(|name| !name.trim().is_empty());
+            let legacy_name = title
+                .or(indexed_name)
+                .filter(|name| !name.trim().is_empty());
             if !state_db
                 .mark_thread_paginated(thread_id, legacy_name.as_deref())
                 .await
@@ -1163,12 +1159,6 @@ impl LocalThreadStore {
                         Default::default()
                     } else {
                         project_rollout_line(&line)
-                    },
-                    realtime_item: match line.item {
-                        RolloutItem::RealtimeItem(item) if !is_inherited_subagent_history => {
-                            Some(item)
-                        }
-                        _ => None,
                     },
                 },
             )));

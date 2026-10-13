@@ -20,7 +20,6 @@ use crate::CapabilityRootsDiscoverResponse;
 use crate::EnvironmentConfigReadParams;
 use crate::EnvironmentConfigReadResponse;
 use crate::ExecServerError;
-use crate::ExecServerRuntimeOptions;
 use crate::ExecutorFileSystem;
 use crate::HttpClient;
 use crate::NoiseChannelIdentity;
@@ -101,7 +100,6 @@ pub struct EnvironmentManager {
     default_environment: Option<String>,
     pub(super) environments: RwLock<HashMap<String, Arc<Environment>>>,
     local_environment: Option<Arc<Environment>>,
-    local_runtime_paths: Option<ExecServerRuntimeOptions>,
     http_client_factory: HttpClientFactory,
 }
 
@@ -152,7 +150,6 @@ impl EnvironmentManager {
                 Arc::new(Environment::default_for_tests()),
             )])),
             local_environment: Some(Arc::new(Environment::default_for_tests())),
-            local_runtime_paths: None,
             // Test-only construction has no application config from which to resolve proxy policy.
             http_client_factory: HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
         }
@@ -164,20 +161,15 @@ impl EnvironmentManager {
             default_environment: None,
             environments: RwLock::new(HashMap::new()),
             local_environment: None,
-            local_runtime_paths: None,
             http_client_factory,
         }
     }
 
     /// Builds a test-only manager from a raw exec-server URL value.
-    pub async fn create_for_tests(
-        exec_server_url: Option<String>,
-        local_runtime_paths: Option<ExecServerRuntimeOptions>,
-    ) -> Self {
+    pub async fn create_for_tests(exec_server_url: Option<String>) -> Self {
         let provider = DefaultEnvironmentProvider::new(exec_server_url);
         match Self::from_snapshot(
             provider.snapshot_inner(),
-            local_runtime_paths,
             // Test-only construction has no application config from which to resolve proxy policy.
             HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
         ) {
@@ -206,12 +198,11 @@ impl EnvironmentManager {
     /// Builds a manager from `CODEX_HOME` with an explicit outbound HTTP policy.
     pub async fn from_codex_home(
         codex_home: impl AsRef<std::path::Path>,
-        local_runtime_paths: Option<ExecServerRuntimeOptions>,
         http_client_factory: HttpClientFactory,
     ) -> Result<Self, ExecServerError> {
         Self::prepare_from_codex_home(codex_home)
             .await?
-            .build(local_runtime_paths, http_client_factory)
+            .build(http_client_factory)
     }
 
     /// Discovers environment-variable environments without starting connections.
@@ -226,18 +217,12 @@ impl EnvironmentManager {
     }
 
     /// Builds a manager from environment variables with an explicit outbound HTTP policy.
-    pub async fn from_env(
-        local_runtime_paths: Option<ExecServerRuntimeOptions>,
-        http_client_factory: HttpClientFactory,
-    ) -> Result<Self, ExecServerError> {
-        Self::prepare_from_env()
-            .await?
-            .build(local_runtime_paths, http_client_factory)
+    pub async fn from_env(http_client_factory: HttpClientFactory) -> Result<Self, ExecServerError> {
+        Self::prepare_from_env().await?.build(http_client_factory)
     }
 
     pub(crate) fn from_noise_environment_config(
         config: NoiseRendezvousEnvironmentConfig,
-        local_runtime_paths: Option<ExecServerRuntimeOptions>,
         http_client_factory: HttpClientFactory,
     ) -> Result<Self, ExecServerError> {
         let connect_provider = config.into_connect_provider(http_client_factory.clone())?;
@@ -245,7 +230,6 @@ impl EnvironmentManager {
             default_environment: Some(REMOTE_ENVIRONMENT_ID.to_string()),
             environments: RwLock::new(HashMap::new()),
             local_environment: None,
-            local_runtime_paths,
             http_client_factory,
         };
         let identity = noise_channel_identity()?;
@@ -254,7 +238,6 @@ impl EnvironmentManager {
                 provider: connect_provider,
                 identity,
             },
-            manager.local_runtime_paths.clone(),
             manager.http_client_factory.clone(),
             ScopedSkillsConfig::default(),
         ));
@@ -264,15 +247,11 @@ impl EnvironmentManager {
 
     /// Builds a test-only manager that keeps the provider default while also
     /// allowing tests to select the local environment explicitly.
-    pub async fn create_for_tests_with_local(
-        exec_server_url: Option<String>,
-        local_runtime_paths: ExecServerRuntimeOptions,
-    ) -> Self {
+    pub async fn create_for_tests_with_local(exec_server_url: Option<String>) -> Self {
         let mut snapshot = DefaultEnvironmentProvider::new(exec_server_url).snapshot_inner();
         snapshot.include_local = true;
         match Self::from_snapshot(
             snapshot,
-            Some(local_runtime_paths),
             // Test-only construction has no application config from which to resolve proxy policy.
             HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
         ) {
@@ -283,7 +262,6 @@ impl EnvironmentManager {
 
     pub(crate) fn from_snapshot(
         snapshot: EnvironmentProviderSnapshot,
-        local_runtime_paths: Option<ExecServerRuntimeOptions>,
         http_client_factory: HttpClientFactory,
     ) -> Result<Self, ExecServerError> {
         let EnvironmentProviderSnapshot {
@@ -294,15 +272,7 @@ impl EnvironmentManager {
         let mut environment_map =
             HashMap::with_capacity(environments.len() + usize::from(include_local));
         let local_environment = if include_local {
-            let local_runtime_paths = local_runtime_paths.clone().ok_or_else(|| {
-                ExecServerError::Protocol(
-                    "local environment requires configured runtime paths".to_string(),
-                )
-            })?;
-            let local_environment = Arc::new(Environment::local(
-                local_runtime_paths,
-                http_client_factory.clone(),
-            ));
+            let local_environment = Arc::new(Environment::local(http_client_factory.clone()));
             environment_map.insert(
                 LOCAL_ENVIRONMENT_ID.to_string(),
                 Arc::clone(&local_environment),
@@ -327,12 +297,8 @@ impl EnvironmentManager {
                     "environment id `{LOCAL_ENVIRONMENT_ID}` is reserved for EnvironmentManager"
                 )));
             }
-            let environment = Environment::remote_with_transport(
-                transport,
-                /*local_runtime_paths*/ None,
-                http_client_factory.clone(),
-                skills,
-            );
+            let environment =
+                Environment::remote_with_transport(transport, http_client_factory.clone(), skills);
             if environment_map
                 .insert(id.clone(), Arc::new(environment))
                 .is_some()
@@ -361,7 +327,6 @@ impl EnvironmentManager {
             default_environment,
             environments: RwLock::new(environment_map),
             local_environment,
-            local_runtime_paths,
             http_client_factory,
         })
     }
@@ -512,12 +477,8 @@ impl EnvironmentManager {
     ) -> Result<(), ExecServerError> {
         validate_environment_id(&environment_id)?;
         let transport = options.into_transport_params()?;
-        let environment = Environment::remote_with_transport(
-            transport,
-            self.local_runtime_paths.clone(),
-            self.http_client_factory.clone(),
-            skills,
-        );
+        let environment =
+            Environment::remote_with_transport(transport, self.http_client_factory.clone(), skills);
         self.insert_environment(environment_id, Arc::new(environment))
     }
 
@@ -557,7 +518,6 @@ impl EnvironmentManager {
                 readiness: provisioning_status_rx,
                 transport: ExecServerTransportParams::NoiseRendezvous { provider, identity },
             })),
-            self.local_runtime_paths.clone(),
             self.http_client_factory.clone(),
             ScopedSkillsConfig::default(),
         );
@@ -698,7 +658,6 @@ pub struct Environment {
     exec_backend: Arc<dyn ExecBackend>,
     filesystem: Arc<dyn ExecutorFileSystem>,
     http_client: Arc<dyn HttpClient>,
-    local_runtime_paths: Option<ExecServerRuntimeOptions>,
 }
 
 impl Environment {
@@ -711,12 +670,11 @@ impl Environment {
             provisioning_status_tx: None,
             startup_task: Arc::new(Mutex::new(None)),
             exec_backend: Arc::new(LocalProcess::default()),
-            filesystem: Arc::new(LocalFileSystem::unsandboxed()),
+            filesystem: Arc::new(LocalFileSystem::new()),
             // Test-only construction has no application config from which to resolve proxy policy.
             http_client: Arc::new(RouteAwareHttpClient::new(HttpClientFactory::new(
                 OutboundProxyPolicy::ReqwestDefault,
             ))),
-            local_runtime_paths: None,
         }
     }
 }
@@ -731,21 +689,15 @@ impl Environment {
     /// Builds an environment using the caller's effective outbound HTTP policy.
     pub fn create(
         exec_server_url: Option<String>,
-        local_runtime_paths: ExecServerRuntimeOptions,
         http_client_factory: HttpClientFactory,
     ) -> Result<Self, ExecServerError> {
-        Self::create_inner(
-            exec_server_url,
-            Some(local_runtime_paths),
-            http_client_factory,
-        )
+        Self::create_inner(exec_server_url, http_client_factory)
     }
 
     /// Builds a test-only environment without configured sandbox helper paths.
     pub fn create_for_tests(exec_server_url: Option<String>) -> Result<Self, ExecServerError> {
         Self::create_inner(
             exec_server_url,
-            /*local_runtime_paths*/ None,
             HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
         )
     }
@@ -754,7 +706,6 @@ impl Environment {
     /// local runtime paths used when creating local filesystem helpers.
     fn create_inner(
         exec_server_url: Option<String>,
-        local_runtime_paths: Option<ExecServerRuntimeOptions>,
         http_client_factory: HttpClientFactory,
     ) -> Result<Self, ExecServerError> {
         let (exec_server_url, disabled) = normalize_exec_server_url(exec_server_url);
@@ -770,51 +721,37 @@ impl Environment {
                     exec_server_url,
                     DEFAULT_REMOTE_EXEC_SERVER_CONNECT_TIMEOUT,
                 ),
-                local_runtime_paths,
                 http_client_factory,
                 ScopedSkillsConfig::default(),
             ),
-            None => match local_runtime_paths {
-                Some(local_runtime_paths) => Self::local(local_runtime_paths, http_client_factory),
-                None => Self::default_for_tests(),
-            },
+            None => Self::local(http_client_factory),
         })
     }
 
-    pub(crate) fn local(
-        local_runtime_paths: ExecServerRuntimeOptions,
-        http_client_factory: HttpClientFactory,
-    ) -> Self {
+    pub(crate) fn local(http_client_factory: HttpClientFactory) -> Self {
         Self {
             remote_client: None,
             skills: ScopedSkillsConfig::default(),
             ready_info: Arc::new(ArcSwapOption::empty()),
             provisioning_status_tx: None,
             startup_task: Arc::new(Mutex::new(None)),
-            exec_backend: Arc::new(LocalProcess::with_local_runtime_paths(
-                local_runtime_paths.clone(),
-            )),
-            filesystem: Arc::new(LocalFileSystem::with_runtime_paths(
-                local_runtime_paths.clone(),
-            )),
+            exec_backend: Arc::new(LocalProcess::default()),
+            filesystem: Arc::new(LocalFileSystem::new()),
             http_client: Arc::new(RouteAwareHttpClient::new(http_client_factory)),
-            local_runtime_paths: Some(local_runtime_paths),
         }
     }
 
     pub(crate) fn remote_with_transport(
         remote_transport: ExecServerTransportParams,
-        local_runtime_paths: Option<ExecServerRuntimeOptions>,
         http_client_factory: HttpClientFactory,
         skills: ScopedSkillsConfig,
     ) -> Self {
         let client = LazyRemoteExecServerClient::new(remote_transport, http_client_factory);
-        Self::remote_with_client(client, local_runtime_paths, skills)
+        Self::remote_with_client(client, skills)
     }
 
     pub(crate) fn remote_with_client(
         client: LazyRemoteExecServerClient,
-        local_runtime_paths: Option<ExecServerRuntimeOptions>,
         skills: ScopedSkillsConfig,
     ) -> Self {
         let exec_backend: Arc<dyn ExecBackend> = Arc::new(RemoteProcess::new(client.clone()));
@@ -830,7 +767,6 @@ impl Environment {
             exec_backend,
             filesystem,
             http_client: Arc::new(client),
-            local_runtime_paths,
         }
     }
 
@@ -935,10 +871,6 @@ impl Environment {
             .map(LazyRemoteExecServerClient::subscribe_connection_state)
     }
 
-    pub fn local_runtime_paths(&self) -> Option<&ExecServerRuntimeOptions> {
-        self.local_runtime_paths.as_ref()
-    }
-
     /// Returns environment information from the selected execution/filesystem environment.
     /// Remote metadata is cached for the current client's lifetime.
     #[tracing::instrument(
@@ -1028,11 +960,9 @@ impl Environment {
     ) -> Result<EnvironmentConfigReadResponse, ExecServerError> {
         match &self.remote_client {
             Some(client) => client.get().await?.read_environment_config(params).await,
-            None => {
-                read_environment_config(self.filesystem.as_ref(), params, /*prefer_mxc*/ None)
-                    .await
-                    .map_err(|error| ExecServerError::Protocol(error.to_string()))
-            }
+            None => read_environment_config(self.filesystem.as_ref(), params)
+                .await
+                .map_err(|error| ExecServerError::Protocol(error.to_string())),
         }
     }
 
@@ -1065,24 +995,7 @@ impl Environment {
             Some(client) => {
                 let mut connection_state = client.subscribe_connection_state();
                 let client = client.get().await?;
-                let discover = || async {
-                    if params.roots.iter().any(|root| {
-                        root.sandbox
-                            .as_ref()
-                            .is_some_and(crate::FileSystemSandboxContext::should_read_from_sandbox)
-                    }) && !client
-                        .environment_info()
-                        .await?
-                        .capabilities
-                        .capability_discovery_sandbox
-                    {
-                        return Err(ExecServerError::Protocol(
-                            "exec-server does not support sandboxed capability discovery"
-                                .to_string(),
-                        ));
-                    }
-                    client.discover_capability_roots(params.clone()).await
-                };
+                let discover = || async { client.discover_capability_roots(params.clone()).await };
                 match discover().await {
                     Err(error) if crate::client::is_retryable_recovery_error(&error) => {
                         tracing::warn!(%error, "replaying capability discovery after executor recovery");
@@ -1238,7 +1151,6 @@ mod tests {
     use super::LOCAL_ENVIRONMENT_ID;
     use super::REMOTE_ENVIRONMENT_ID;
     use super::noise_environment_config_from_values;
-    use crate::ExecServerRuntimeOptions;
     use crate::ProcessId;
     use crate::client_api::DEFAULT_REMOTE_EXEC_SERVER_CONNECT_TIMEOUT;
     use crate::client_api::ExecServerTransportParams;
@@ -1263,14 +1175,6 @@ mod tests {
             "ws://127.0.0.1:8765".to_string(),
             DEFAULT_REMOTE_EXEC_SERVER_CONNECT_TIMEOUT,
         )
-    }
-
-    fn test_runtime_paths() -> ExecServerRuntimeOptions {
-        ExecServerRuntimeOptions::new(
-            std::env::current_exe().expect("current exe"),
-            /*codex_linux_sandbox_exe*/ None,
-        )
-        .expect("runtime paths")
     }
 
     fn assert_local_environment_unavailable(manager: &EnvironmentManager) {
@@ -1307,7 +1211,6 @@ mod tests {
 
         let manager = EnvironmentManager::from_noise_environment_config(
             config,
-            /*local_runtime_paths*/ None,
             HttpClientFactory::new(OutboundProxyPolicy::RespectSystemProxy),
         )
         .expect("build environment manager");
@@ -1331,12 +1234,9 @@ mod tests {
 
     #[tokio::test]
     async fn create_local_environment_does_not_connect() {
-        let environment = Environment::create(
-            /*exec_server_url*/ None,
-            test_runtime_paths(),
-            legacy_http_client_factory(),
-        )
-        .expect("create environment");
+        let environment =
+            Environment::create(/*exec_server_url*/ None, legacy_http_client_factory())
+                .expect("create environment");
 
         assert!(!environment.is_remote());
         assert!(environment.info().await.is_ok());
@@ -1344,9 +1244,7 @@ mod tests {
 
     #[tokio::test]
     async fn environment_manager_normalizes_empty_url() {
-        let manager =
-            EnvironmentManager::create_for_tests(Some(String::new()), Some(test_runtime_paths()))
-                .await;
+        let manager = EnvironmentManager::create_for_tests(Some(String::new())).await;
 
         let environment = manager.default_environment().expect("default environment");
         assert_eq!(manager.default_environment_id(), Some(LOCAL_ENVIRONMENT_ID));
@@ -1384,11 +1282,8 @@ mod tests {
 
     #[tokio::test]
     async fn environment_manager_creates_remote_environment_for_url() {
-        let manager = EnvironmentManager::create_for_tests(
-            Some("ws://127.0.0.1:8765".to_string()),
-            Some(test_runtime_paths()),
-        )
-        .await;
+        let manager =
+            EnvironmentManager::create_for_tests(Some("ws://127.0.0.1:8765".to_string())).await;
 
         let environment = manager.default_environment().expect("default environment");
         assert_eq!(
@@ -1431,12 +1326,8 @@ mod tests {
             default: EnvironmentDefault::EnvironmentId(REMOTE_ENVIRONMENT_ID.to_string()),
             include_local: false,
         };
-        let manager = EnvironmentManager::from_snapshot(
-            snapshot,
-            Some(test_runtime_paths()),
-            legacy_http_client_factory(),
-        )
-        .expect("environment manager");
+        let manager = EnvironmentManager::from_snapshot(snapshot, legacy_http_client_factory())
+            .expect("environment manager");
 
         assert_eq!(
             manager.default_environment_id(),
@@ -1463,12 +1354,8 @@ mod tests {
             default: EnvironmentDefault::Disabled,
             include_local: false,
         };
-        let err = EnvironmentManager::from_snapshot(
-            snapshot,
-            Some(test_runtime_paths()),
-            legacy_http_client_factory(),
-        )
-        .expect_err("empty id should fail");
+        let err = EnvironmentManager::from_snapshot(snapshot, legacy_http_client_factory())
+            .expect_err("empty id should fail");
 
         assert_eq!(
             err.to_string(),
@@ -1487,12 +1374,8 @@ mod tests {
             default: EnvironmentDefault::Disabled,
             include_local: false,
         };
-        let err = EnvironmentManager::from_snapshot(
-            snapshot,
-            Some(test_runtime_paths()),
-            legacy_http_client_factory(),
-        )
-        .expect_err("local id should fail");
+        let err = EnvironmentManager::from_snapshot(snapshot, legacy_http_client_factory())
+            .expect_err("local id should fail");
 
         assert_eq!(
             err.to_string(),
@@ -1511,12 +1394,8 @@ mod tests {
             default: EnvironmentDefault::EnvironmentId("devbox".to_string()),
             include_local: true,
         };
-        let manager = EnvironmentManager::from_snapshot(
-            snapshot,
-            Some(test_runtime_paths()),
-            legacy_http_client_factory(),
-        )
-        .expect("manager");
+        let manager = EnvironmentManager::from_snapshot(snapshot, legacy_http_client_factory())
+            .expect("manager");
 
         assert_eq!(manager.default_environment_id(), Some("devbox"));
         assert_eq!(
@@ -1537,12 +1416,8 @@ mod tests {
             default: EnvironmentDefault::Disabled,
             include_local: true,
         };
-        let manager = EnvironmentManager::from_snapshot(
-            snapshot,
-            Some(test_runtime_paths()),
-            legacy_http_client_factory(),
-        )
-        .expect("manager");
+        let manager = EnvironmentManager::from_snapshot(snapshot, legacy_http_client_factory())
+            .expect("manager");
 
         assert_eq!(manager.default_environment_id(), None);
         assert!(manager.default_environment().is_none());
@@ -1565,12 +1440,8 @@ mod tests {
             default: EnvironmentDefault::EnvironmentId("missing".to_string()),
             include_local: true,
         };
-        let err = EnvironmentManager::from_snapshot(
-            snapshot,
-            Some(test_runtime_paths()),
-            legacy_http_client_factory(),
-        )
-        .expect_err("unknown default should fail");
+        let err = EnvironmentManager::from_snapshot(snapshot, legacy_http_client_factory())
+            .expect_err("unknown default should fail");
 
         assert_eq!(
             err.to_string(),
@@ -1580,11 +1451,7 @@ mod tests {
 
     #[tokio::test]
     async fn environment_manager_includes_local_for_default_provider_without_url() {
-        let manager = EnvironmentManager::create_for_tests(
-            /*exec_server_url*/ None,
-            Some(test_runtime_paths()),
-        )
-        .await;
+        let manager = EnvironmentManager::create_for_tests(/*exec_server_url*/ None).await;
 
         let environment = manager.default_environment().expect("default environment");
         assert_eq!(manager.default_environment_id(), Some(LOCAL_ENVIRONMENT_ID));
@@ -1602,38 +1469,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn environment_manager_carries_local_runtime_paths() {
-        let runtime_paths = test_runtime_paths();
-        let manager = EnvironmentManager::create_for_tests(
-            /*exec_server_url*/ None,
-            Some(runtime_paths.clone()),
-        )
-        .await;
-
-        let environment = manager.try_local_environment().expect("local environment");
-
-        assert_eq!(environment.local_runtime_paths(), Some(&runtime_paths));
-        let manager = EnvironmentManager::create_for_tests(
-            /*exec_server_url*/ None,
-            Some(
-                environment
-                    .local_runtime_paths()
-                    .expect("local runtime paths")
-                    .clone(),
-            ),
-        )
-        .await;
-        let environment = manager.try_local_environment().expect("local environment");
-        assert_eq!(environment.local_runtime_paths(), Some(&runtime_paths));
-    }
-
-    #[tokio::test]
     async fn environment_manager_omits_default_provider_local_lookup_when_default_disabled() {
-        let manager = EnvironmentManager::create_for_tests(
-            Some("none".to_string()),
-            Some(test_runtime_paths()),
-        )
-        .await;
+        let manager = EnvironmentManager::create_for_tests(Some("none".to_string())).await;
 
         assert!(manager.default_environment().is_none());
         assert_eq!(manager.default_environment_id(), None);
@@ -1651,12 +1488,8 @@ mod tests {
         };
         snapshot.include_local = false;
         snapshot.default = EnvironmentDefault::Disabled;
-        let manager = EnvironmentManager::from_snapshot(
-            snapshot,
-            /*local_runtime_paths*/ None,
-            legacy_http_client_factory(),
-        )
-        .expect("environment manager");
+        let manager = EnvironmentManager::from_snapshot(snapshot, legacy_http_client_factory())
+            .expect("environment manager");
 
         assert!(manager.default_environment().is_none());
         assert_eq!(manager.default_environment_id(), None);
@@ -1735,7 +1568,6 @@ mod tests {
                 },
                 initialize_timeout: Duration::from_secs(1),
             },
-            /*local_runtime_paths*/ None,
             legacy_http_client_factory(),
             ScopedSkillsConfig::default(),
         );
@@ -1768,7 +1600,6 @@ mod tests {
                 default: EnvironmentDefault::Disabled,
                 include_local: false,
             },
-            /*local_runtime_paths*/ None,
             legacy_http_client_factory(),
         )
         .expect("environment manager");
@@ -1803,7 +1634,6 @@ mod tests {
                 default: EnvironmentDefault::Disabled,
                 include_local: false,
             },
-            /*local_runtime_paths*/ None,
             legacy_http_client_factory(),
         )
         .expect("environment manager");
@@ -1954,93 +1784,10 @@ mod tests {
                 tty: false,
                 pipe_stdin: false,
                 arg0: None,
-                sandbox: None,
-                enforce_managed_network: false,
-                managed_network: None,
-                network_proxy: None,
             })
             .await
             .expect("start process");
 
         assert_eq!(response.process.process_id().as_str(), "default-env-proc");
-    }
-
-    #[tokio::test]
-    async fn local_environment_passes_runtime_paths_to_exec_backend() {
-        let environment = Environment::local(test_runtime_paths(), legacy_http_client_factory());
-        #[cfg(unix)]
-        let uri = "file://server/share/checkout";
-        #[cfg(windows)]
-        let uri = "file:///usr/local/checkout";
-        let sandbox_cwd = PathUri::parse(uri).expect("non-native sandbox cwd URI");
-        let source = sandbox_cwd
-            .to_abs_path()
-            .expect_err("sandbox cwd should not be native to this host");
-        let sandbox = crate::FileSystemSandboxContext::from_permission_profile(
-            codex_protocol::models::PermissionProfile::workspace_write(),
-            sandbox_cwd.clone(),
-        );
-
-        let result = environment
-            .get_exec_backend()
-            .start(crate::ExecParams {
-                metadata: Default::default(),
-                process_id: ProcessId::from("local-sandbox-proc"),
-                argv: vec!["true".to_string()],
-                cwd: PathUri::from_host_native_path(
-                    std::env::current_dir().expect("read current dir"),
-                )
-                .expect("cwd URI"),
-                shell_snapshot: None,
-                env_policy: None,
-                env: Default::default(),
-                tty: false,
-                pipe_stdin: false,
-                arg0: None,
-                sandbox: Some(sandbox),
-                enforce_managed_network: false,
-                managed_network: None,
-                network_proxy: None,
-            })
-            .await;
-        let Err(err) = result else {
-            panic!("sandbox cwd should be rejected after resolving runtime paths");
-        };
-
-        assert_eq!(
-            err.to_string(),
-            format!(
-                "exec-server rejected request (-32602): sandbox cwd URI `{sandbox_cwd}` is not valid on this exec-server host: {source}"
-            )
-        );
-    }
-
-    #[tokio::test]
-    async fn test_environment_rejects_sandboxed_filesystem_without_runtime_paths() {
-        let environment = Environment::default_for_tests();
-        let path = codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(
-            std::env::current_exe().expect("current exe").as_path(),
-        )
-        .expect("absolute current exe");
-        let path = codex_utils_path_uri::PathUri::from_abs_path(&path);
-        let sandbox = crate::FileSystemSandboxContext::from_permission_profile(
-            codex_protocol::models::PermissionProfile::from_runtime_permissions(
-                &codex_protocol::permissions::FileSystemSandboxPolicy::restricted(Vec::new()),
-                codex_protocol::permissions::NetworkSandboxPolicy::Restricted,
-            ),
-            PathUri::from_host_native_path(std::env::current_dir().expect("read current dir"))
-                .expect("cwd URI"),
-        );
-
-        let err = environment
-            .get_filesystem()
-            .read_file(&path, Default::default(), Some(&sandbox))
-            .await
-            .expect_err("sandboxed read should require runtime paths");
-
-        assert_eq!(
-            err.to_string(),
-            "sandboxed filesystem operations require configured runtime paths"
-        );
     }
 }

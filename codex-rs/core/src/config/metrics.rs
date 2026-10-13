@@ -21,6 +21,4 @@ pub(crate) fn emit_session_start_metrics(config: &Config, telemetry: &SessionTel
             );
         }
     }
-    #[cfg(windows)]
-    crate::windows_system_config::emit_namespace_squatting_probe();
 }

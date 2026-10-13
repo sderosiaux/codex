@@ -1,6 +1,4 @@
-use codex_protocol::exec_output::ExecToolCallOutput;
 use codex_utils_path_uri::PathUri;
-use std::num::NonZeroUsize;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -12,8 +10,6 @@ pub(crate) enum UnifiedExecError {
     // The model is trained on `session_id`, but internally we track a `process_id`.
     #[error("Unknown process id {process_id}")]
     UnknownProcessId { process_id: i32 },
-    #[error("stdin approval failed: {0:?}")]
-    StdinApproval(crate::tools::sandboxing::ToolError),
     #[error("failed to write to stdin")]
     WriteToStdin,
     #[error(
@@ -22,13 +18,6 @@ pub(crate) enum UnifiedExecError {
     StdinClosed,
     #[error("missing command line for unified exec request")]
     MissingCommandLine,
-    #[error("Command denied by sandbox: {message}")]
-    SandboxDenied {
-        message: String,
-        output: ExecToolCallOutput,
-        original_token_count: Option<usize>,
-        output_omitted_bytes: Option<NonZeroUsize>,
-    },
     #[error("{path} is not valid on {}", std::env::consts::OS)]
     ForeignPath { path: PathUri },
 }
@@ -40,32 +29,5 @@ impl UnifiedExecError {
 
     pub(crate) fn process_failed(message: String) -> Self {
         Self::ProcessFailed { message }
-    }
-
-    pub(crate) fn sandbox_denied(message: String, output: ExecToolCallOutput) -> Self {
-        Self::SandboxDenied {
-            message,
-            output,
-            original_token_count: None,
-            output_omitted_bytes: None,
-        }
-    }
-
-    pub(crate) fn with_output_collection_metadata(
-        self,
-        original_token_count: usize,
-        output_omitted_bytes: Option<NonZeroUsize>,
-    ) -> Self {
-        match self {
-            Self::SandboxDenied {
-                message, output, ..
-            } => Self::SandboxDenied {
-                message,
-                output,
-                original_token_count: Some(original_token_count),
-                output_omitted_bytes,
-            },
-            other => other,
-        }
     }
 }

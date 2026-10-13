@@ -1,14 +1,9 @@
 //! Configured inputs retained independently of future thread settings.
 
-use crate::config::Constrained;
-use crate::config::ConstraintError;
-use crate::config::ConstraintResult;
-use codex_config::ConfigRequirements;
 use codex_features::Features;
 use codex_models_manager::ModelsManagerConfig;
 use codex_models_manager::manager::ModelsManager;
 use codex_otel::SessionTelemetry;
-use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary;
@@ -16,7 +11,6 @@ use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort;
-use codex_protocol::protocol::AskForApproval;
 use std::sync::Arc;
 
 /// Model and execution settings selected for an individual model step within
@@ -30,8 +24,6 @@ pub(crate) struct StepSettings {
     /// resolution filters the effective tier against the pinned model.
     pub(crate) service_tier: Option<String>,
     pub(crate) personality: Option<Personality>,
-    pub(crate) approval_policy: Constrained<AskForApproval>,
-    pub(crate) approvals_reviewer: ApprovalsReviewer,
 }
 
 /// Immutable configured choices, pinned model metadata, and effective request values.
@@ -48,9 +40,6 @@ pub(crate) struct ResolvedStepSettings {
     pub(crate) reasoning_summary: ReasoningSummary,
     /// Tier sent on requests, filtered by feature and model support.
     pub(crate) service_tier: Option<String>,
-    /// MCP historically follows refreshed thread defaults. Preserve that behavior
-    /// for older clients until this turn receives an explicit live reviewer update.
-    pub(crate) mcp_approvals_reviewer_override: Option<ApprovalsReviewer>,
 }
 
 impl ResolvedStepSettings {
@@ -70,7 +59,6 @@ impl ResolvedStepSettings {
             model_info,
             reasoning_summary,
             service_tier,
-            mcp_approvals_reviewer_override: None,
         }
     }
 
@@ -94,14 +82,6 @@ impl ResolvedStepSettings {
         collaboration_mode
     }
 
-    pub(crate) fn approval_policy(&self) -> AskForApproval {
-        self.selected.approval_policy.value()
-    }
-
-    pub(crate) fn approvals_reviewer(&self) -> ApprovalsReviewer {
-        self.selected.approvals_reviewer
-    }
-
     /// Retained inputs for constructing a snapshot against different model metadata.
     pub(super) fn selected(&self) -> &StepSettings {
         &self.selected
@@ -111,56 +91,23 @@ impl ResolvedStepSettings {
         &self.selected.collaboration_mode
     }
 
-    pub(crate) fn personality(&self) -> Option<Personality> {
-        self.selected.personality
-    }
-
-    pub(super) fn constrained_approval_policy(&self) -> &Constrained<AskForApproval> {
-        &self.selected.approval_policy
-    }
-
     /// Applies sparse edits to the retained selection, preserving pinned metadata
     /// unless the model changes, then resolves request values.
     pub(super) async fn apply_update(
         &self,
         update: &StepSettingsUpdate,
-        constraints: &StepSettingsConstraints<'_>,
         models_manager: &dyn ModelsManager,
         overrides: &ModelInfoOverrides,
         features: &Features,
-    ) -> ConstraintResult<Self> {
-        let selected = self.selected.apply(update, constraints)?;
+    ) -> Self {
+        let selected = self.selected.apply(update);
         let model_info =
             if selected.collaboration_mode.model() == self.selected.collaboration_mode.model() {
                 Arc::clone(&self.model_info)
             } else {
                 Arc::new(selected.resolve_model_info(models_manager, overrides).await)
             };
-        let mut next = Self::new(Arc::new(selected), model_info, features);
-        next.mcp_approvals_reviewer_override = update
-            .approvals_reviewer
-            .or(self.mcp_approvals_reviewer_override);
-        Ok(next)
-    }
-
-    /// Rechecks the retained selection against current managed constraints.
-    pub(super) fn revalidate(
-        &self,
-        constraints: &StepSettingsConstraints<'_>,
-    ) -> ConstraintResult<()> {
-        // TODO: Revisit the split with StepSettings::validate, which does not
-        // check inherited approval values against the supplied managed allow-lists.
-        // Sharing these checks would also make ordinary settings updates stricter
-        // after a requirements refresh.
-        self.selected.validate(constraints)?;
-        constraints
-            .requirements
-            .approval_policy
-            .can_set(&self.approval_policy())?;
-        constraints
-            .requirements
-            .approvals_reviewer
-            .can_set(&self.approvals_reviewer())
+        Self::new(Arc::new(selected), model_info, features)
     }
 
     pub(super) fn telemetry(&self, base: &SessionTelemetry) -> SessionTelemetry {
@@ -223,17 +170,6 @@ pub(crate) struct StepSettingsUpdate {
     pub(crate) reasoning_summary: Option<ReasoningSummary>,
     pub(crate) service_tier: Option<Option<String>>,
     pub(crate) personality: Option<Personality>,
-    pub(crate) approval_policy: Option<AskForApproval>,
-    pub(crate) approvals_reviewer: Option<ApprovalsReviewer>,
-}
-
-/// Constraints used when applying and validating a candidate settings version.
-/// Each caller supplies the permissions of the target environment selection.
-pub(crate) struct StepSettingsConstraints<'a> {
-    pub(crate) requirements: &'a ConfigRequirements,
-    pub(crate) guardian_approval_enabled: bool,
-    pub(crate) trusted_guardian_reviewer: bool,
-    pub(crate) has_full_disk_write_access: bool,
 }
 
 impl StepSettings {
@@ -249,13 +185,8 @@ impl StepSettings {
             .await
     }
 
-    /// Applies edits and validates the result against the supplied constraints.
-    /// Callers must supply the constraints of the proposed target environment.
-    pub(crate) fn apply(
-        &self,
-        update: &StepSettingsUpdate,
-        constraints: &StepSettingsConstraints<'_>,
-    ) -> ConstraintResult<Self> {
+    /// Applies sparse edits to these settings.
+    pub(crate) fn apply(&self, update: &StepSettingsUpdate) -> Self {
         let mut next = self.clone();
         next.collaboration_mode = update.collaboration_mode.clone().unwrap_or_else(|| {
             self.collaboration_mode.with_updates(
@@ -281,60 +212,7 @@ impl StepSettings {
         if let Some(personality) = update.personality {
             next.personality = Some(personality);
         }
-        if let Some(approval_policy) = update.approval_policy {
-            next.approval_policy.set(approval_policy)?;
-        }
-        if let Some(approvals_reviewer) = update.approvals_reviewer {
-            constraints
-                .requirements
-                .approvals_reviewer
-                .can_set(&approvals_reviewer)?;
-            next.approvals_reviewer = approvals_reviewer;
-        }
-        if !constraints.trusted_guardian_reviewer
-            && self.collaboration_mode.model() != next.collaboration_mode.model()
-            && constraints
-                .requirements
-                .auto_review_required_for_model(next.collaboration_mode.model())
-            && update.approvals_reviewer.is_none()
-        {
-            constraints
-                .requirements
-                .approvals_reviewer
-                .can_set(&ApprovalsReviewer::AutoReview)?;
-            next.approvals_reviewer = ApprovalsReviewer::AutoReview;
-        }
-        next.validate(constraints)?;
-        Ok(next)
-    }
-
-    /// Checks directly constructed settings or rechecks changed constraints.
-    pub(super) fn validate(
-        &self,
-        constraints: &StepSettingsConstraints<'_>,
-    ) -> ConstraintResult<()> {
-        if constraints.trusted_guardian_reviewer {
-            return Ok(());
-        }
-
-        let model = self.collaboration_mode.model();
-        if !constraints
-            .requirements
-            .auto_review_required_for_model(model)
-        {
-            return Ok(());
-        }
-
-        if self.approvals_reviewer == ApprovalsReviewer::AutoReview
-            && !constraints.has_full_disk_write_access
-            && constraints.guardian_approval_enabled
-        {
-            return Ok(());
-        }
-
-        Err(ConstraintError::AutoReviewRequired {
-            model: model.to_string(),
-        })
+        next
     }
 }
 

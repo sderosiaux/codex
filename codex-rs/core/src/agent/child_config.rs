@@ -82,7 +82,7 @@ pub(crate) async fn prepare_agent_spawn_config(
         }
     }
     apply_spawn_agent_service_tier(session, &mut config).await?;
-    apply_spawn_agent_runtime_overrides(&mut config, turn)?;
+    apply_spawn_agent_cwd(&mut config, turn);
 
     // Remember an applied configured default so cold reload reapplies its restrictions.
     let role_name = options
@@ -104,7 +104,7 @@ pub(crate) async fn prepare_agent_spawn_config(
 ///
 /// The returned config starts from the parent's effective config and then refreshes the
 /// model selection and reasoning settings captured for the invoking step, plus the turn's
-/// runtime approval policy, sandbox, and cwd. Role-specific overrides are layered
+/// runtime cwd. Role-specific overrides are layered
 /// after this step; skipping this helper and cloning stale config state directly can send the child
 /// agent out with the wrong provider or runtime policy.
 pub(crate) fn build_agent_spawn_config(
@@ -159,7 +159,7 @@ fn build_agent_shared_config(turn: &TurnContext) -> Result<Config, String> {
     {
         config.developer_instructions = Some(developer_instructions);
     }
-    apply_spawn_agent_runtime_overrides(&mut config, turn)?;
+    apply_spawn_agent_cwd(&mut config, turn);
 
     Ok(config)
 }
@@ -172,33 +172,11 @@ fn reject_full_fork_agent_type_override(agent_type: Option<&str>) -> Result<(), 
     Ok(())
 }
 
-/// Copies runtime-only turn state onto a child config before it is handed to `AgentControl`.
-///
-/// These values are chosen by the live turn rather than persisted config, so leaving them stale can
-/// make a child agent disagree with its parent about approval policy, cwd, or sandboxing.
-fn apply_spawn_agent_runtime_overrides(
-    config: &mut Config,
-    turn: &TurnContext,
-) -> Result<(), String> {
-    config
-        .permissions
-        .approval_policy
-        .set(turn.approval_policy())
-        .map_err(|err| format!("approval_policy is invalid: {err}"))?;
-    config.approvals_reviewer = turn.config.approvals_reviewer;
+/// Copies the live turn's cwd onto a child config; persisted config can be stale.
+fn apply_spawn_agent_cwd(config: &mut Config, turn: &TurnContext) {
     #[allow(deprecated)]
     let turn_cwd = turn.cwd.clone();
     config.cwd = turn_cwd;
-    config
-        .permissions
-        .set_permission_profile_from_session_snapshot(
-            turn.config
-                .permissions
-                .permission_profile_state()
-                .snapshot(),
-        )
-        .map_err(|err| format!("permission_profile is invalid: {err}"))?;
-    Ok(())
 }
 
 async fn apply_requested_spawn_agent_model_overrides(

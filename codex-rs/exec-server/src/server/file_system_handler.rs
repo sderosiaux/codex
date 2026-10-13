@@ -8,7 +8,6 @@ use crate::CapabilityRootsDiscoverParams;
 use crate::CapabilityRootsDiscoverResponse;
 use crate::CopyOptions;
 use crate::CreateDirectoryOptions;
-use crate::ExecServerRuntimeOptions;
 use crate::ExecutorFileSystem;
 use crate::GetMetadataOptions;
 use crate::ReadFileOptions;
@@ -61,9 +60,9 @@ pub(crate) struct FileSystemHandler {
 }
 
 impl FileSystemHandler {
-    pub(crate) fn new(runtime_paths: ExecServerRuntimeOptions) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
-            file_system: LocalFileSystem::with_runtime_paths(runtime_paths),
+            file_system: LocalFileSystem::new(),
             file_handles: FileHandleManager::default(),
         }
     }
@@ -76,44 +75,6 @@ impl FileSystemHandler {
         &self,
         params: CapabilityRootsDiscoverParams,
     ) -> Result<CapabilityRootsDiscoverResponse, JSONRPCErrorError> {
-        let sandbox = params
-            .roots
-            .first()
-            .and_then(|root| root.sandbox.as_ref())
-            .filter(|sandbox| {
-                sandbox
-                    .validate_file_system_paths_for_current_host()
-                    .is_ok()
-                    && sandbox.should_read_from_sandbox()
-                    && (!cfg!(target_os = "windows") || sandbox.windows_sandbox_is_requested())
-                    && params
-                        .roots
-                        .iter()
-                        .all(|root| root.sandbox.as_ref() == Some(*sandbox))
-            })
-            .cloned();
-
-        if let Some(sandbox) = sandbox {
-            let mut batched_params = params.clone();
-            for root in &mut batched_params.roots {
-                root.sandbox = None;
-            }
-            let result = match self.file_system.sandboxed() {
-                Ok(file_system) => {
-                    file_system
-                        .discover_capability_roots(batched_params, &sandbox)
-                        .await
-                }
-                Err(error) => Err(error),
-            };
-            match result {
-                Ok(response) => return Ok(response),
-                Err(error) => {
-                    tracing::warn!(%error, "batched capability discovery failed; retrying roots separately");
-                }
-            }
-        }
-
         crate::discover_capability_roots(&self.file_system, params)
             .await
             .map_err(|error| invalid_request(error.to_string()))
@@ -128,8 +89,7 @@ impl FileSystemHandler {
             .file_handles
             .open(
                 params.handle_id,
-                self.file_system
-                    .open_file(&params.path, params.mode, params.sandbox.as_ref()),
+                self.file_system.open_file(&params.path, params.mode),
             )
             .await
             .map_err(map_fs_error)?;
@@ -184,7 +144,6 @@ impl FileSystemHandler {
                 ReadFileOptions {
                     follow_symlinks: params.follow_symlinks.unwrap_or(true),
                 },
-                params.sandbox.as_ref(),
             )
             .await
             .map_err(map_fs_error)?;
@@ -209,7 +168,6 @@ impl FileSystemHandler {
                 WriteFileOptions {
                     follow_symlinks: params.follow_symlinks.unwrap_or(true),
                 },
-                params.sandbox.as_ref(),
             )
             .await
             .map_err(map_fs_error)?;
@@ -228,7 +186,6 @@ impl FileSystemHandler {
                     recursive,
                     follow_symlinks: params.follow_symlinks.unwrap_or(true),
                 },
-                params.sandbox.as_ref(),
             )
             .await
             .map_err(map_fs_error)?;
@@ -246,7 +203,6 @@ impl FileSystemHandler {
                 GetMetadataOptions {
                     follow_symlinks: params.follow_symlinks.unwrap_or(true),
                 },
-                params.sandbox.as_ref(),
             )
             .await
             .map_err(map_fs_error)?;
@@ -266,7 +222,7 @@ impl FileSystemHandler {
     ) -> Result<FsCanonicalizeResponse, JSONRPCErrorError> {
         let path = self
             .file_system
-            .canonicalize(&params.path, params.sandbox.as_ref())
+            .canonicalize(&params.path)
             .await
             .map_err(map_fs_error)?;
         Ok(FsCanonicalizeResponse { path })
@@ -278,7 +234,7 @@ impl FileSystemHandler {
     ) -> Result<FsReadDirectoryResponse, JSONRPCErrorError> {
         let entries = self
             .file_system
-            .read_directory(&params.path, params.sandbox.as_ref())
+            .read_directory(&params.path)
             .await
             .map_err(map_fs_error)?;
         let entry_count = entries.len();
@@ -303,7 +259,7 @@ impl FileSystemHandler {
         params: FsWalkParams,
     ) -> Result<FsWalkResponse, JSONRPCErrorError> {
         self.file_system
-            .walk(&params.path, params.options, params.sandbox.as_ref())
+            .walk(&params.path, params.options)
             .await
             .map_err(map_fs_error)
     }
@@ -322,7 +278,6 @@ impl FileSystemHandler {
                     force,
                     follow_symlinks: params.follow_symlinks.unwrap_or(true),
                 },
-                params.sandbox.as_ref(),
             )
             .await
             .map_err(map_fs_error)?;
@@ -340,7 +295,6 @@ impl FileSystemHandler {
                 CopyOptions {
                     recursive: params.recursive,
                 },
-                params.sandbox.as_ref(),
             )
             .await
             .map_err(map_fs_error)?;
@@ -369,81 +323,49 @@ fn map_fs_error(err: io::Error) -> JSONRPCErrorError {
 
 #[cfg(test)]
 mod tests {
-    use codex_protocol::protocol::NetworkAccess;
-    use codex_protocol::protocol::SandboxPolicy;
     use codex_utils_path_uri::PathUri;
     use pretty_assertions::assert_eq;
 
     use super::*;
-    use crate::FileSystemSandboxContext;
     use crate::protocol::FsReadFileParams;
     use crate::protocol::FsWriteFileParams;
 
     #[tokio::test]
-    async fn no_platform_sandbox_policies_do_not_require_configured_sandbox_helper() {
+    async fn write_canonicalize_and_read_round_trip() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
-        let runtime_paths = ExecServerRuntimeOptions::new(
-            std::env::current_exe().expect("current exe"),
-            /*codex_linux_sandbox_exe*/ None,
-        )
-        .expect("runtime paths");
-        let handler = FileSystemHandler::new(runtime_paths);
-        let sandbox_cwd = PathUri::from_host_native_path(temp_dir.path()).expect("tempdir URI");
-        let sandbox_context = |sandbox_policy| {
-            FileSystemSandboxContext::from_legacy_sandbox_policy(
-                sandbox_policy,
-                sandbox_cwd.clone(),
+        let handler = FileSystemHandler::new();
+        let path =
+            PathUri::from_host_native_path(temp_dir.path().join("note.txt")).expect("path URI");
+
+        handler
+            .write_file(FsWriteFileParams {
+                path: path.clone(),
+                follow_symlinks: None,
+                data_base64: STANDARD.encode("ok"),
+            })
+            .await
+            .expect("write file");
+
+        let canonicalized = handler
+            .canonicalize(FsCanonicalizeParams { path: path.clone() })
+            .await
+            .expect("canonicalize file");
+        assert_eq!(
+            canonicalized.path,
+            PathUri::from_host_native_path(
+                std::fs::canonicalize(temp_dir.path().join("note.txt")).expect("canonical path"),
             )
-            .expect("sandbox context")
-        };
+            .expect("canonical path URI"),
+        );
 
-        for (file_name, sandbox_policy) in [
-            ("danger.txt", SandboxPolicy::DangerFullAccess),
-            (
-                "external.txt",
-                SandboxPolicy::ExternalSandbox {
-                    network_access: NetworkAccess::Restricted,
-                },
-            ),
-        ] {
-            let path =
-                PathUri::from_host_native_path(temp_dir.path().join(file_name)).expect("path URI");
+        let response = handler
+            .read_file(FsReadFileParams {
+                path,
+                follow_symlinks: None,
+            })
+            .await
+            .expect("read file");
 
-            handler
-                .write_file(FsWriteFileParams {
-                    path: path.clone(),
-                    follow_symlinks: None,
-                    data_base64: STANDARD.encode("ok"),
-                    sandbox: Some(sandbox_context(sandbox_policy.clone())),
-                })
-                .await
-                .expect("write file");
-
-            let canonicalized = handler
-                .canonicalize(FsCanonicalizeParams {
-                    path: path.clone(),
-                    sandbox: Some(sandbox_context(sandbox_policy.clone())),
-                })
-                .await
-                .expect("canonicalize file");
-            assert_eq!(
-                canonicalized.path,
-                PathUri::from_host_native_path(
-                    std::fs::canonicalize(temp_dir.path().join(file_name)).expect("canonical path"),
-                )
-                .expect("canonical path URI"),
-            );
-
-            let response = handler
-                .read_file(FsReadFileParams {
-                    path,
-                    follow_symlinks: None,
-                    sandbox: Some(sandbox_context(sandbox_policy)),
-                })
-                .await
-                .expect("read file");
-
-            assert_eq!(response.data_base64, STANDARD.encode("ok"));
-        }
+        assert_eq!(response.data_base64, STANDARD.encode("ok"));
     }
 }

@@ -2,7 +2,6 @@
 //! One scheduled task owns the prepared client session until the next regular
 //! turn consumes it; shutdown and turn cancellation use the same handoff.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
@@ -23,7 +22,6 @@ use crate::session::INITIAL_SUBMIT_ID;
 use crate::session::RequestEffortUsage;
 use crate::session::session::Session;
 use crate::session::turn::build_prompt;
-use codex_features::Feature;
 use codex_otel::STARTUP_PREWARM_AGE_AT_FIRST_TURN_METRIC;
 use codex_otel::STARTUP_PREWARM_DURATION_METRIC;
 use codex_otel::SessionTelemetry;
@@ -230,17 +228,6 @@ impl Session {
             state.startup_prewarm = None;
         }
 
-        if self.features().enabled(Feature::CodeModePrewarm)
-            && self.services.code_mode_service.is_available()
-        {
-            let session = Arc::clone(self);
-            tokio::spawn(async move {
-                if session.services.code_mode_service.session().await.is_err() {
-                    warn!("code-mode host startup prewarm failed");
-                }
-            });
-        }
-
         if !self.services.model_client.responses_websocket_enabled() {
             // Without websocket prewarm, resolve auth once so Agent Identity bootstrap can
             // register or engage this session's bearer fallback before the first user request.
@@ -407,7 +394,7 @@ async fn schedule_startup_prewarm_inner(
             session
                 .services
                 .executed_tool_calls
-                .attach_to_prompt(&mut history, &mut HashMap::new());
+                .attach_to_prompt(&mut history);
             history
         }
     };

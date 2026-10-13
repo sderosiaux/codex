@@ -28,7 +28,7 @@ fn canonical_uri(path: &Path) -> PathUri {
 
 async fn discover(root: &Path) -> SkillDiscovery {
     discover_skills(
-        &FileSystemEnvironmentAccessor::unrestricted(&LOCAL_FS),
+        &FileSystemEnvironmentAccessor::new(&LOCAL_FS),
         &canonical_uri(root),
         SkillDiscoveryOptions {
             directory_symlinks: DirectorySymlinkPolicy::Follow,

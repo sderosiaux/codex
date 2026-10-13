@@ -5,64 +5,6 @@ use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-/// EXPERIMENTAL - list available apps/connectors.
-pub struct AppsListParams {
-    /// Opaque pagination cursor returned by a previous call.
-    #[ts(optional = nullable)]
-    pub cursor: Option<String>,
-    /// Optional page size; defaults to a reasonable server-side value.
-    #[ts(optional = nullable)]
-    pub limit: Option<u32>,
-    /// Optional thread id used to evaluate app feature gating from that thread's config.
-    #[ts(optional = nullable)]
-    pub thread_id: Option<String>,
-    /// When true, bypass app caches and fetch the latest data from sources.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub force_refetch: bool,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-/// Read the committed installed connector runtime snapshot.
-pub struct AppsInstalledParams {
-    /// Optional loaded thread id used to evaluate effective app configuration.
-    #[ts(optional = nullable)]
-    pub thread_id: Option<String>,
-    /// When true and Apps are permitted, refresh and publish the hosted connector runtime tool
-    /// snapshot first.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub force_refresh: bool,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-/// Installed connector runtime state.
-pub struct InstalledApp {
-    pub id: String,
-    /// Best-effort name carried by the runtime tool catalog. Canonical app metadata remains owned
-    /// by `app/read`.
-    pub runtime_name: Option<String>,
-    /// Effective enabled state after applying global, workspace, local, and managed configuration
-    /// at read time.
-    pub enabled: bool,
-    /// Whether the connector is enabled and has a non-synthetic, model-visible tool allowed by
-    /// effective MCP and app/tool policy in the committed runtime snapshot.
-    pub callable: bool,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-/// The installed connectors in one committed runtime snapshot.
-pub struct AppsInstalledResponse {
-    pub apps: Vec<InstalledApp>,
-}
-
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
@@ -172,22 +114,6 @@ fn non_empty_category(category: Option<&str>) -> Option<String> {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
-/// EXPERIMENTAL - read metadata for specific apps/connectors.
-pub struct AppsReadParams {
-    /// App ids to read. The server accepts at most 100 ids and deduplicates repeated ids while
-    /// preserving their first-request order.
-    pub app_ids: Vec<String>,
-    /// Optional loaded thread id used to evaluate effective app configuration.
-    #[ts(optional = nullable)]
-    pub thread_id: Option<String>,
-    /// When true, include display-only public tool summaries in the returned metadata.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub include_tools: bool,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
 /// EXPERIMENTAL - metadata returned by app/read.
 pub struct AppToolSummary {
     pub name: String,
@@ -220,15 +146,6 @@ pub struct ConnectorMetadata {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
-/// EXPERIMENTAL - app/read response.
-pub struct AppsReadResponse {
-    pub apps: Vec<ConnectorMetadata>,
-    pub missing_app_ids: Vec<String>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
 /// EXPERIMENTAL - app metadata summary for plugin responses.
 pub struct AppSummary {
     pub id: String,
@@ -249,23 +166,4 @@ impl From<AppInfo> for AppSummary {
             category,
         }
     }
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-/// EXPERIMENTAL - app list response.
-pub struct AppsListResponse {
-    pub data: Vec<AppInfo>,
-    /// Opaque cursor to pass to the next call to continue after the last item.
-    /// If None, there are no more items to return.
-    pub next_cursor: Option<String>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-/// EXPERIMENTAL - notification emitted when the app list changes.
-pub struct AppListUpdatedNotification {
-    pub data: Vec<AppInfo>,
 }

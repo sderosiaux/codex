@@ -10,8 +10,6 @@ use self::git::git_remote_revision;
 use crate::PluginGitMode;
 use crate::installed_marketplaces::marketplace_install_root;
 use crate::marketplace::validate_marketplace_root;
-use crate::marketplace_add::MarketplaceSource;
-use crate::marketplace_policy::MarketplacePolicy;
 use crate::marketplace_policy::validate_marketplace_name_for_add;
 use codex_config::ConfigLayerStack;
 use codex_config::types::MarketplaceConfig;
@@ -117,28 +115,21 @@ pub(crate) fn upgrade_configured_git_marketplaces_with_mode(
     selected_marketplaces.sort_unstable();
     selected_marketplaces.dedup();
     let mut upgraded_roots = Vec::new();
-    let policy = MarketplacePolicy::from_requirements(config_layer_stack.requirements());
     for marketplace in marketplaces {
-        let normalized_source =
-            match validate_marketplace_name_for_add(/*expected_name*/ None, &marketplace.name)
-                .and_then(|()| {
-                    policy.validate_git_source(&marketplace.source, marketplace.ref_name.clone())
-                }) {
-                Ok(normalized_source) => normalized_source,
-                Err(message) => {
-                    errors.push(ConfiguredMarketplaceUpgradeError {
-                        marketplace_name: marketplace.name,
-                        message,
-                    });
-                    continue;
-                }
-            };
+        if let Err(message) =
+            validate_marketplace_name_for_add(/*expected_name*/ None, &marketplace.name)
+        {
+            errors.push(ConfiguredMarketplaceUpgradeError {
+                marketplace_name: marketplace.name,
+                message,
+            });
+            continue;
+        }
         match upgrade_configured_git_marketplace(
             codex_home,
             &install_root,
             &marketplace,
             reload_config,
-            normalized_source.as_ref(),
             mode,
         ) {
             Ok(Some(upgraded_root)) => upgraded_roots.push(upgraded_root),
@@ -227,17 +218,10 @@ fn upgrade_configured_git_marketplace(
     install_root: &Path,
     marketplace: &ConfiguredGitMarketplace,
     reload_config: &ConfigLayerReload,
-    normalized_source: Option<&MarketplaceSource>,
     mode: PluginGitMode,
 ) -> Result<Option<AbsolutePathBuf>, String> {
     validate_plugin_segment(&marketplace.name, "marketplace name")?;
-    let (source, ref_name) = match normalized_source {
-        Some(MarketplaceSource::Git { url, ref_name }) => (url.as_str(), ref_name.as_deref()),
-        Some(MarketplaceSource::Local { .. }) => {
-            return Err("validated Git marketplace source resolved to a local path".to_string());
-        }
-        None => (marketplace.source.as_str(), marketplace.ref_name.as_deref()),
-    };
+    let (source, ref_name) = (marketplace.source.as_str(), marketplace.ref_name.as_deref());
     let remote_revision = git_remote_revision(
         codex_home,
         source,

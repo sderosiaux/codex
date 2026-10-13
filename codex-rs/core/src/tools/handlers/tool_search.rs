@@ -1,6 +1,4 @@
 use crate::function_tool::FunctionCallError;
-use crate::tools::code_mode::prepare_code_mode_tool_definitions;
-use crate::tools::context::ToolCallSource;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
 use crate::tools::context::ToolSearchOutput;
@@ -10,15 +8,12 @@ use crate::tools::handlers::tool_search_spec::create_tool_search_tool;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
 use crate::tools::registry::ToolRegistry;
-use crate::tools::router::ToolRouter;
 use bm25::Embedder;
 use bm25::EmbedderBuilder;
 use bm25::Language;
 use bm25::Scorer;
-use codex_features::Feature;
 use codex_prompts::ResolvedModelMessages;
 use codex_tools::IndirectNamespacePrefixes;
-use codex_tools::JsonToolOutput;
 use codex_tools::LoadableToolSpec;
 use codex_tools::TOOL_SEARCH_DEFAULT_LIMIT;
 use codex_tools::TOOL_SEARCH_TOOL_NAME;
@@ -27,18 +22,10 @@ use codex_tools::ToolSearchEntry;
 use codex_tools::ToolSearchInfo;
 use codex_tools::ToolSpec;
 use codex_tools::coalesce_loadable_tool_specs;
-use serde::Serialize;
-use std::borrow::Cow;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::Weak;
 use tracing::instrument;
-
-#[derive(Serialize)]
-struct CodeModeSearchResult {
-    name: String,
-    description: String,
-}
 
 pub struct ToolSearchHandler {
     search_infos: Vec<ToolSearchInfo>,
@@ -213,15 +200,12 @@ impl ToolSearchHandler {
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
         let ToolInvocation {
             payload,
-            source,
             step_context,
             ..
         } = invocation;
-        let nested = matches!(source, ToolCallSource::CodeMode { .. });
 
         let args = match payload {
             ToolPayload::ToolSearch { arguments } => arguments,
-            ToolPayload::Function { arguments } if nested => super::parse_arguments(&arguments)?,
             _ => {
                 return Err(FunctionCallError::Fatal(format!(
                     "{TOOL_SEARCH_TOOL_NAME} handler received unsupported payload"
@@ -250,28 +234,6 @@ impl ToolSearchHandler {
         )
         .map_err(|error| FunctionCallError::Fatal(error.to_string()))?;
 
-        if nested {
-            let tools = self.search_code_mode(
-                query,
-                limit,
-                &step_context.tool_router,
-                step_context
-                    .turn
-                    .config
-                    .code_mode
-                    .tool_input_schema_max_bytes,
-                step_context
-                    .turn
-                    .config
-                    .features
-                    .enabled(Feature::CodeModeToolDescriptionFirst),
-                &indirect_prefixes,
-            );
-            return Ok(boxed_tool_output(JsonToolOutput::new(serde_json::json!({
-                "tools": tools,
-            }))));
-        }
-
         if self.search_infos.is_empty() {
             return Ok(boxed_tool_output(ToolSearchOutput { tools: Vec::new() }));
         }
@@ -286,59 +248,6 @@ impl ToolSearchHandler {
 impl CoreToolRuntime for ToolSearchHandler {}
 
 impl ToolSearchHandler {
-    fn search_code_mode(
-        &self,
-        query: &str,
-        limit: usize,
-        router: &ToolRouter,
-        code_mode_input_schema_max_bytes: Option<usize>,
-        tool_description_first: bool,
-        indirect_prefixes: &IndirectNamespacePrefixes<'_>,
-    ) -> Vec<CodeModeSearchResult> {
-        let mut tools = Vec::new();
-        // Apply the exact step's nested-tool policy before limiting ranked results.
-        for entry in self.search_entries(query) {
-            for candidate_name in entry.tool_names() {
-                let candidate_name = candidate_name.with_default_namespace();
-                let name = codex_code_mode::normalize_code_mode_identifier(
-                    &codex_tools::code_mode_name_for_tool_name(&candidate_name),
-                );
-                let Some(tool_name) =
-                    router
-                        .code_mode_tool_names()
-                        .get(&name)
-                        .filter(|tool_name| {
-                            (*tool_name).clone().with_default_namespace() == candidate_name
-                        })
-                else {
-                    continue;
-                };
-                let Some(tool) = router.registered_tool(tool_name) else {
-                    continue;
-                };
-                let definitions = prepare_code_mode_tool_definitions(
-                    tool.cached_runtime().map(Arc::as_ref),
-                    || Cow::Owned(Arc::unwrap_or_clone(tool.spec())),
-                    code_mode_input_schema_max_bytes,
-                    tool_description_first,
-                );
-                let Some(definition) = definitions.iter().find(|definition| {
-                    definition.tool_name.clone().with_default_namespace() == candidate_name
-                }) else {
-                    continue;
-                };
-                let mut description = definition.description.clone();
-                indirect_prefixes
-                    .apply_code_mode_description(&definition.tool_name, &mut description);
-                tools.push(CodeModeSearchResult { name, description });
-                if tools.len() == limit {
-                    return tools;
-                }
-            }
-        }
-        tools
-    }
-
     fn search(&self, query: &str, limit: usize) -> Vec<LoadableToolSpec> {
         coalesce_loadable_tool_specs(
             self.search_entries(query)

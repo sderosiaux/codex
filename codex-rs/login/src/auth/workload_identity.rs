@@ -161,8 +161,7 @@ fn resolve_config(
         assertion_file,
         environment: auth_environment,
         federation_rule_id,
-        http_client_factory: auth_route_config
-            .authentication_factory(auth_environment.token_url()?.as_str()),
+        http_client_factory: auth_route_config.http_client_factory().clone(),
         token_url: auth_environment.token_url()?,
         workload_identity_context,
     }))
@@ -467,12 +466,6 @@ impl ExternalAuth for WorkloadIdentityExternalAuth {
     }
 
     fn classify_error(&self, error: std::io::Error) -> RefreshTokenError {
-        if let Some(WorkloadIdentityError::Policy(denied)) = error
-            .get_ref()
-            .and_then(|source| source.downcast_ref::<WorkloadIdentityError>())
-        {
-            return RefreshTokenError::Policy(*denied);
-        }
         if error
             .get_ref()
             .and_then(|source| source.downcast_ref::<WorkloadIdentityError>())

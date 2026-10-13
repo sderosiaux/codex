@@ -1,28 +1,22 @@
 use super::input_queue::InputQueue;
 use super::mcp_refresh::McpRefresh;
-use super::retained_context::CodeModeMessageTasks;
 use super::step_context::StepContext;
 use super::step_settings::ModelInfoOverrides;
 use super::step_settings::StepSettings;
-use super::step_settings::StepSettingsConstraints;
 use super::step_settings::StepSettingsUpdate;
 use super::*;
 use crate::agent::api::AgentControl;
 use crate::agents_md_manager::AgentsMdManager;
 use crate::agents_md_manager::SessionInstructions;
-use crate::config::ConstraintError;
 use crate::environment_selection::ThreadEnvironments;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::hook_mcp_executor::CoreHookMcpExecutor;
-use crate::mcp_tool_call::McpToolApprovalContext;
 use crate::responses_metadata::CodexResponsesMetadata;
 use crate::responses_metadata::CodexResponsesRequestKind;
 use crate::responses_metadata::CompactionTurnMetadata;
 use crate::shell_snapshot::ShellSnapshot;
-use crate::shell_snapshot::SnapshotCredentialBrokerState;
 use crate::state::ActiveTurn;
 use crate::turn_metadata::ExecutionMetadata;
-use codex_analytics::ThreadProductUpdate;
 use codex_attachment_store::AttachmentStore;
 use codex_extension_api::ExtensionDataInit;
 use codex_http_client::ClientRouteClass;
@@ -34,9 +28,6 @@ use codex_protocol::SessionId;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
 use codex_protocol::config_types::ShellEnvironmentPolicy;
 use codex_protocol::mcp::ClientMcpExtensions;
-use codex_protocol::models::ProfileWorkspaceRoot;
-use codex_protocol::permissions::FileSystemPath;
-use codex_protocol::permissions::FileSystemSpecialPath;
 use codex_protocol::protocol::EnvironmentConfig;
 use codex_protocol::protocol::HookCompletedEvent;
 use codex_protocol::protocol::MultiAgentVersion;
@@ -44,15 +35,11 @@ use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnEnvironmentRequests;
 use codex_protocol::protocol::TurnEnvironmentSelections;
-use codex_sandboxing::SandboxType;
 use codex_skills::SkillError;
 use codex_utils_git_discovery::GitRootDiscovery;
 use codex_utils_path::replace_path_and_deduplicate;
 use std::sync::OnceLock;
 use tokio::sync::Semaphore;
-
-type McpToolApprovalMetadataMap =
-    HashMap<(String, String), std::sync::Weak<McpToolApprovalContext>>;
 
 /// Context for an initialized model agent
 ///
@@ -66,29 +53,18 @@ pub(crate) struct Session {
     /// Orders accepted settings commits and their persisted events with compaction checkpoints.
     /// Keep this separate from `state` so storage I/O does not block runtime state access.
     pub(super) thread_settings_persistence: Semaphore,
-    pub(super) code_mode_message_tasks: CodeModeMessageTasks,
-    /// Serializes rebuild/apply cycles for the running proxy; each cycle
-    /// rebuilds from the current SessionState while holding this lock.
-    pub(super) managed_network_proxy_refresh_lock: Semaphore,
     /// The set of enabled features should be invariant for the lifetime of the
     /// session.
-    pub(super) features: ManagedFeatures,
+    pub(super) features: Features,
     pub(super) isolation: codex_extension_api::SessionIsolation,
     pub(crate) tool_policy: Arc<codex_extension_api::ToolPolicy>,
-    pub(crate) windows_sandbox_proxy_settings_mode:
-        codex_sandboxing::WindowsSandboxProxySettingsMode,
     pub(super) multi_agent_version: OnceLock<MultiAgentVersion>,
     /// Owns invalidation and serializes refreshes without blocking captured calls.
     pub(super) mcp_refresh: McpRefresh,
-    /// Non-owning lookup for approval data retained by running MCP invocations.
-    pub(crate) mcp_tool_approval_metadata: std::sync::Mutex<McpToolApprovalMetadataMap>,
-    pub(super) mcp_elicitation_reviewer_handle: OnceLock<codex_mcp::ElicitationReviewerHandle>,
     pub(super) mcp_elicitation_lifecycle_handle: OnceLock<codex_mcp::ElicitationLifecycle>,
     pub(super) mcp_prewarm_tx: async_channel::Sender<()>,
     pub(super) mcp_prewarm_shutdown: CancellationToken,
     pub(super) mcp_prewarm_task: std::sync::Mutex<Option<JoinHandle<()>>>,
-    pub(crate) conversation: Arc<RealtimeConversationManager>,
-    pub(crate) realtime_history: Option<Mutex<crate::realtime_history::RealtimeHistoryState>>,
     pub(crate) active_turn: Mutex<Option<ActiveTurn>>,
     pub(crate) async_hook_results: async_channel::Receiver<HookCompletedEvent>,
     pub(crate) input_queue: InputQueue,
@@ -120,17 +96,8 @@ pub(crate) struct SessionConfiguration {
     /// Base instructions for the session.
     pub(super) base_instructions: String,
 
-    /// Permission profile state for the session. Keep the constrained profile,
-    /// active profile id, and profile-defined workspace roots in sync by using
-    /// the methods below instead of mutating the fields independently.
-    pub(super) permission_profile_state: PermissionProfileState,
     pub(super) allow_login_shell: bool,
     pub(super) shell_environment_policy: ShellEnvironmentPolicy,
-    // TODO(anp): Reconcile these legacy thread defaults with TurnEnvironment::sandbox_context;
-    // internal sandbox decisions should use the selected environment's configuration.
-    pub(super) windows_sandbox_level: WindowsSandboxLevel,
-    pub(super) windows_sandbox_type: SandboxType,
-    pub(super) use_legacy_landlock: bool,
 
     /// Legacy thread cwd used when a turn does not select an environment.
     pub(super) legacy_fallback_cwd: AbsolutePathBuf,
@@ -149,8 +116,6 @@ pub(crate) struct SessionConfiguration {
     pub(super) metrics_service_name: Option<String>,
     pub(super) app_server_client_name: Option<String>,
     pub(super) app_server_client_version: Option<String>,
-    /// Guardian reviewer identity is trusted only when established during an in-memory spawn.
-    pub(super) trusted_guardian_reviewer: bool,
     /// Source of the session (cli, vscode, exec, mcp, ...)
     pub(super) session_source: SessionSource,
     /// Persisted thread history contract selected when this thread was created.
@@ -172,99 +137,13 @@ impl SessionConfiguration {
         &self.legacy_fallback_cwd
     }
 
-    pub(crate) fn codex_home(&self) -> &AbsolutePathBuf {
-        &self.codex_home
-    }
-
     pub(super) fn inferred_environment_config(&self) -> EnvironmentConfig {
         EnvironmentConfig {
             allow_login_shell: self.allow_login_shell,
             workspace_roots: Vec::new(),
-            permission_profile: self.permission_profile_state.snapshot(),
             shell_environment_policy: self.shell_environment_policy.clone(),
-            windows_sandbox_level: self.windows_sandbox_level,
-            windows_sandbox_type: self
-                .original_config_do_not_use
-                .windows_sandbox_type_from_config(),
-            use_legacy_landlock: self.use_legacy_landlock,
-            exec_policy: None,
-            mcp_policy: None,
-            network_policy: None,
             selected_capability_roots: Vec::new(),
         }
-    }
-
-    pub(super) fn permission_profile(&self) -> PermissionProfile {
-        self.permission_profile_state.permission_profile().clone()
-    }
-
-    fn materialized_permission_profile(
-        &self,
-        environments: &[TurnEnvironmentSelection],
-    ) -> PermissionProfile {
-        let workspace_roots = ThreadEnvironments::primary_workspace_roots_for(environments);
-        self.permission_profile()
-            .materialize_project_roots_with_workspace_roots(&workspace_roots)
-    }
-
-    fn effective_permission_profile(
-        &self,
-        environments: &[TurnEnvironmentSelection],
-    ) -> PermissionProfile {
-        ThreadEnvironments::primary_config_for(environments)
-            .map(|config| {
-                config
-                    .permission_profile
-                    .permission_profile()
-                    .clone()
-                    .materialize_project_roots_with_path_uris(&config.workspace_roots)
-            })
-            .unwrap_or_else(|| self.materialized_permission_profile(environments))
-    }
-
-    pub(super) fn active_permission_profile(&self) -> Option<ActivePermissionProfile> {
-        self.permission_profile_state.active_permission_profile()
-    }
-
-    pub(super) fn apply_permission_profile_to_permissions(
-        &self,
-        permissions: &mut crate::config::Permissions,
-    ) {
-        permissions.set_permission_profile_state(self.permission_profile_state.clone());
-    }
-
-    #[cfg(test)]
-    pub(super) fn set_permission_profile_for_tests(
-        &mut self,
-        permission_profile: PermissionProfile,
-    ) -> ConstraintResult<()> {
-        self.permission_profile_state
-            .set_legacy_permission_profile(permission_profile)
-    }
-
-    pub(super) fn sandbox_policy(
-        &self,
-        environments: &[TurnEnvironmentSelection],
-    ) -> SandboxPolicy {
-        let permission_profile = self.materialized_permission_profile(environments);
-        codex_sandboxing::compatibility_sandbox_policy_for_permission_profile(
-            &permission_profile,
-            self.cwd(),
-        )
-    }
-
-    pub(super) fn file_system_sandbox_policy(
-        &self,
-        environments: &[TurnEnvironmentSelection],
-    ) -> FileSystemSandboxPolicy {
-        self.materialized_permission_profile(environments)
-            .file_system_sandbox_policy()
-    }
-
-    pub(super) fn network_sandbox_policy(&self) -> NetworkSandboxPolicy {
-        self.permission_profile_state
-            .permission_profile()
-            .network_sandbox_policy()
     }
 
     pub(super) fn thread_config_snapshot(
@@ -273,30 +152,15 @@ impl SessionConfiguration {
     ) -> ThreadConfigSnapshot {
         let workspace_roots =
             ThreadEnvironments::primary_workspace_roots_for(&environment_selections);
-        let permission_profile = ThreadEnvironments::primary_config_for(&environment_selections)
-            .map(|config| config.permission_profile.clone())
-            .unwrap_or_else(|| self.permission_profile_state.snapshot());
         ThreadConfigSnapshot {
             model: self.step_settings.collaboration_mode.model().to_string(),
             model_provider_id: self.original_config_do_not_use.model_provider_id.clone(),
             service_tier: self.step_settings.service_tier.clone(),
-            approval_policy: self.step_settings.approval_policy.value(),
-            approvals_reviewer: self.step_settings.approvals_reviewer,
-            permission_profile: self.effective_permission_profile(&environment_selections),
-            full_access: codex_protocol::protocol::has_full_access(
-                self.step_settings.approval_policy.value(),
-                &self.permission_profile(),
-                environment_selections
-                    .iter()
-                    .map(|environment| &environment.config),
-            ),
-            active_permission_profile: permission_profile.active_permission_profile(),
             environments: TurnEnvironmentSelections::new(
                 self.legacy_fallback_cwd.clone(),
                 environment_selections,
             ),
             workspace_roots,
-            profile_workspace_roots: permission_profile.profile_workspace_roots().to_vec(),
             ephemeral: self.original_config_do_not_use.ephemeral,
             reasoning_effort: self.step_settings.collaboration_mode.reasoning_effort(),
             reasoning_summary: self.step_settings.reasoning_summary,
@@ -314,18 +178,11 @@ impl SessionConfiguration {
     }
 
     /// Captures thread-owned settings for persistence and resume.
-    pub(super) fn thread_settings_snapshot(
-        &self,
-        environment_selections: &[TurnEnvironmentSelection],
-    ) -> ThreadSettingsSnapshot {
+    pub(super) fn thread_settings_snapshot(&self) -> ThreadSettingsSnapshot {
         ThreadSettingsSnapshot {
             model: self.step_settings.collaboration_mode.model().to_string(),
             model_provider_id: self.original_config_do_not_use.model_provider_id.clone(),
             service_tier: self.step_settings.service_tier.clone(),
-            approval_policy: self.step_settings.approval_policy.value(),
-            approvals_reviewer: self.step_settings.approvals_reviewer,
-            permission_profile: self.materialized_permission_profile(environment_selections),
-            active_permission_profile: self.active_permission_profile(),
             cwd: self.legacy_fallback_cwd.clone(),
             runtime_workspace_roots: Some(self.runtime_workspace_roots.clone()),
             reasoning_effort: self.step_settings.collaboration_mode.reasoning_effort(),
@@ -350,16 +207,6 @@ impl SessionConfiguration {
                     .collect(),
             )),
             runtime_workspace_roots: Some(self.runtime_workspace_roots.clone()),
-            profile_workspace_roots: Some(
-                self.permission_profile_state
-                    .profile_workspace_roots()
-                    .to_vec(),
-            ),
-            approval_policy: Some(self.step_settings.approval_policy.value()),
-            approvals_reviewer: Some(self.step_settings.approvals_reviewer),
-            permission_profile: Some(self.permission_profile()),
-            active_permission_profile: self.active_permission_profile(),
-            windows_sandbox_level: Some(self.windows_sandbox_level),
             summary: self.step_settings.reasoning_summary,
             service_tier: Some(self.step_settings.service_tier.clone()),
             collaboration_mode: Some(self.step_settings.collaboration_mode.clone()),
@@ -370,65 +217,21 @@ impl SessionConfiguration {
         }
     }
 
-    pub(super) fn validate(
-        &self,
-        environments: &[TurnEnvironmentSelection],
-    ) -> ConstraintResult<()> {
-        self.step_settings
-            .validate(&self.step_settings_constraints(environments))?;
+    pub(super) fn validate(&self, environments: &[TurnEnvironmentSelection]) -> CodexResult<()> {
         super::environment::validate_environment_configs(environments)
-    }
-
-    pub(super) fn step_settings_constraints(
-        &self,
-        environments: &[TurnEnvironmentSelection],
-    ) -> StepSettingsConstraints<'_> {
-        let permission_profile = self.effective_permission_profile(environments);
-        StepSettingsConstraints {
-            requirements: self
-                .original_config_do_not_use
-                .config_layer_stack
-                .requirements(),
-            guardian_approval_enabled: self
-                .original_config_do_not_use
-                .features
-                .enabled(Feature::GuardianApproval),
-            trusted_guardian_reviewer: self.trusted_guardian_reviewer,
-            has_full_disk_write_access: permission_profile
-                .file_system_sandbox_policy()
-                .has_full_disk_write_access(),
-        }
     }
 
     pub(super) fn apply(
         &self,
         updates: &SessionSettingsUpdate,
         current_environments: &[TurnEnvironmentSelection],
-    ) -> ConstraintResult<Self> {
+    ) -> CodexResult<Self> {
         let mut next_configuration = self.clone();
         if let Some(turn_extension_init) = &updates.turn_extension_init {
             next_configuration.turn_extension_init = turn_extension_init.clone();
         }
         if let Some(disabled_plugin_ids) = &updates.disabled_plugin_ids {
             next_configuration.disabled_plugin_ids = disabled_plugin_ids.clone();
-        }
-        let current_file_system_sandbox_policy =
-            self.file_system_sandbox_policy(current_environments);
-        let file_system_policy_has_rebindable_project_root_write =
-            current_file_system_sandbox_policy
-                .entries
-                .iter()
-                .any(|entry| {
-                    entry.access.can_write()
-                        && matches!(
-                            &entry.path,
-                            FileSystemPath::Special {
-                                value: FileSystemSpecialPath::ProjectRoots { subpath: None },
-                            }
-                        )
-                });
-        if let Some(windows_sandbox_level) = updates.windows_sandbox_level {
-            next_configuration.windows_sandbox_level = windows_sandbox_level;
         }
 
         let current_cwd = self.cwd().clone();
@@ -446,98 +249,6 @@ impl SessionConfiguration {
                 next_configuration.legacy_fallback_cwd.clone(),
             );
         }
-
-        if let Some(permission_profile) = updates.permission_profile.clone() {
-            let active_permission_profile =
-                updates.active_permission_profile.clone().or_else(|| {
-                    if permission_profile == self.permission_profile() {
-                        self.active_permission_profile()
-                    } else {
-                        None
-                    }
-                });
-            next_configuration.set_permission_profile_projection(
-                permission_profile,
-                active_permission_profile,
-                updates.profile_workspace_roots.clone().unwrap_or_default(),
-                Some(&current_file_system_sandbox_policy),
-            )?;
-            if let Some(active_permission_profile) = next_configuration.active_permission_profile()
-            {
-                let mut config = (*next_configuration.original_config_do_not_use).clone();
-                let permission_profile = next_configuration.permission_profile();
-                config.permissions.network = config
-                    .network_proxy_spec_for_active_permission_profile(
-                        &active_permission_profile,
-                        &permission_profile,
-                    )
-                    .map_err(|err| ConstraintError::InvalidValue {
-                        field_name: "default_permissions",
-                        candidate: active_permission_profile.id.clone(),
-                        allowed: format!(
-                            "configured permission profile with valid network policy ({err})"
-                        ),
-                        requirement_source: codex_config::RequirementSource::Unknown,
-                    })?;
-                config
-                    .permissions
-                    .set_permission_profile_from_session_snapshot(
-                        PermissionProfileSnapshot::active(
-                            permission_profile,
-                            active_permission_profile,
-                        ),
-                    )?;
-                next_configuration.original_config_do_not_use = Arc::new(config);
-            }
-        } else if let Some(sandbox_policy) = updates.sandbox_policy.clone() {
-            let file_system_sandbox_policy =
-                FileSystemSandboxPolicy::from_legacy_sandbox_policy_preserving_deny_entries(
-                    &sandbox_policy,
-                    next_configuration.cwd(),
-                    &current_file_system_sandbox_policy,
-                );
-            let network_sandbox_policy = NetworkSandboxPolicy::from(&sandbox_policy);
-            next_configuration
-                .permission_profile_state
-                .set_legacy_permission_profile(
-                    PermissionProfile::from_runtime_permissions_with_enforcement(
-                        SandboxEnforcement::from_legacy_sandbox_policy(&sandbox_policy),
-                        &file_system_sandbox_policy,
-                        network_sandbox_policy,
-                    ),
-                )?;
-        } else if cwd_changed && file_system_policy_has_rebindable_project_root_write {
-            // Compatibility projection can resolve filesystem paths. Only compute it
-            // when a cwd-bound legacy policy might need rebinding.
-            let current_sandbox_policy = self.sandbox_policy(current_environments);
-            if current_file_system_sandbox_policy.is_semantically_equivalent_to(
-                &FileSystemSandboxPolicy::from_legacy_sandbox_policy_preserving_deny_entries(
-                    &current_sandbox_policy,
-                    self.cwd(),
-                    &current_file_system_sandbox_policy,
-                ),
-                self.cwd(),
-            ) {
-                // Preserve richer split policies across cwd-only updates; only
-                // rederive when the session is already using a structurally
-                // cwd-bound legacy bridge.
-                let file_system_sandbox_policy =
-                    FileSystemSandboxPolicy::from_legacy_sandbox_policy_preserving_deny_entries(
-                        &current_sandbox_policy,
-                        next_configuration.cwd(),
-                        &current_file_system_sandbox_policy,
-                    );
-                next_configuration
-                    .permission_profile_state
-                    .set_legacy_permission_profile(
-                        PermissionProfile::from_runtime_permissions_with_enforcement(
-                            SandboxEnforcement::from_legacy_sandbox_policy(&current_sandbox_policy),
-                            &file_system_sandbox_policy,
-                            self.network_sandbox_policy(),
-                        ),
-                    )?;
-            }
-        }
         if let Some(app_server_client_name) = updates.app_server_client_name.clone() {
             next_configuration.app_server_client_name = Some(app_server_client_name);
         }
@@ -551,49 +262,9 @@ impl SessionConfiguration {
                 environments.environments.as_slice()
             });
         super::environment::validate_environment_configs(next_environments)?;
-        // Apply step settings last: the proposed permissions and environment
-        // selections must be complete before deriving their validation constraints.
-        next_configuration.step_settings = Arc::new(self.step_settings.apply(
-            &updates.step_settings,
-            &next_configuration.step_settings_constraints(next_environments),
-        )?);
+        next_configuration.step_settings =
+            Arc::new(self.step_settings.apply(&updates.step_settings));
         Ok(next_configuration)
-    }
-
-    fn set_permission_profile_projection(
-        &mut self,
-        permission_profile: PermissionProfile,
-        active_permission_profile: Option<ActivePermissionProfile>,
-        profile_workspace_roots: Vec<ProfileWorkspaceRoot>,
-        preserve_deny_reads_from: Option<&FileSystemSandboxPolicy>,
-    ) -> ConstraintResult<()> {
-        let enforcement = permission_profile.enforcement();
-        let (mut file_system_sandbox_policy, network_sandbox_policy) =
-            permission_profile.to_runtime_permissions();
-        if let Some(existing_file_system_policy) = preserve_deny_reads_from {
-            file_system_sandbox_policy
-                .preserve_deny_read_restrictions_from(existing_file_system_policy);
-        }
-        let effective_permission_profile =
-            PermissionProfile::from_runtime_permissions_with_enforcement(
-                enforcement,
-                &file_system_sandbox_policy,
-                network_sandbox_policy,
-            );
-
-        let permission_snapshot = match active_permission_profile {
-            Some(active_permission_profile) => {
-                PermissionProfileSnapshot::active_with_profile_workspace_roots(
-                    effective_permission_profile,
-                    active_permission_profile,
-                    profile_workspace_roots,
-                )
-            }
-            None => PermissionProfileSnapshot::legacy(effective_permission_profile),
-        };
-
-        self.permission_profile_state
-            .set_permission_profile_snapshot(permission_snapshot)
     }
 }
 
@@ -610,20 +281,10 @@ pub(crate) struct SessionSettingsUpdate {
     pub(crate) turn_extension_init: Option<ExtensionDataInit>,
     pub(crate) environments: Option<TurnEnvironmentSelections>,
     pub(crate) runtime_workspace_roots: Option<Vec<AbsolutePathBuf>>,
-    pub(crate) profile_workspace_roots: Option<Vec<ProfileWorkspaceRoot>>,
-    pub(crate) sandbox_policy: Option<SandboxPolicy>,
-    pub(crate) permission_profile: Option<PermissionProfile>,
-    pub(crate) active_permission_profile: Option<ActivePermissionProfile>,
-    pub(crate) windows_sandbox_level: Option<WindowsSandboxLevel>,
     pub(crate) service_tier_for_turn: Option<String>,
     pub(crate) app_server_client_name: Option<String>,
     pub(crate) app_server_client_version: Option<String>,
     pub(crate) disabled_plugin_ids: Option<Vec<String>>,
-}
-
-pub(crate) struct AppServerClientMetadata {
-    pub(crate) client_name: Option<String>,
-    pub(crate) client_version: Option<String>,
 }
 
 async fn warm_plugins_and_skills_for_session_init(
@@ -632,12 +293,7 @@ async fn warm_plugins_and_skills_for_session_init(
     skills_service: Arc<HostSkillsService>,
     turn_environments: &TurnEnvironmentSnapshot,
     extensions: &codex_extension_api::ExtensionRegistry<Config>,
-    session_source: &SessionSource,
 ) -> Vec<SkillError> {
-    // Guardian does not consume skills, including the legacy empty-registry catalog.
-    if crate::guardian::is_basic_session_source(session_source) {
-        return Vec::new();
-    }
     let plugins_input = config.plugins_config_input();
     let plugin_outcome = plugins_manager.plugins_for_config(&plugins_input).await;
     if config.features.enabled(Feature::SkipHostSkillDiscovery)
@@ -745,7 +401,6 @@ impl Session {
             window_number: Some(window_number),
             context_window_id: Some(context_window_id),
             mcp_attribution: Some(self.services.executed_tool_calls.mcp_attribution_snapshot()),
-            analytics_enabled: Some(self.services.analytics_events_client.is_enabled()),
             history_ingest_requested: turn_context
                 .config
                 .token_budget
@@ -772,7 +427,6 @@ impl Session {
         models_manager: SharedModelsManager,
         git_root_discovery: Arc<GitRootDiscovery>,
         model_info: ModelInfo,
-        exec_policy: Arc<ExecPolicyManager>,
         tx_event: Sender<Event>,
         agent_status: watch::Sender<AgentStatus>,
         mut initial_history: InitialHistory,
@@ -782,7 +436,6 @@ impl Session {
         skills_service: Arc<HostSkillsService>,
         plugins_manager: Arc<PluginsManager>,
         mcp_manager: Arc<McpManager>,
-        code_mode_session_provider: Arc<dyn codex_code_mode::CodeModeSessionProvider>,
         extensions: Arc<codex_extension_api::ExtensionRegistry<crate::config::Config>>,
         mut thread_extension_init: ExtensionDataInit,
         client_mcp_extensions: ClientMcpExtensions,
@@ -790,15 +443,12 @@ impl Session {
         reserved_thread_id: Option<ThreadId>,
         environment_manager: Arc<EnvironmentManager>,
         inherited_environments: Option<TurnEnvironmentSnapshot>,
-        analytics_events_client: Option<AnalyticsEventsClient>,
         image_store: Arc<dyn AttachmentStore>,
         thread_store: Arc<dyn ThreadStore>,
-        parent_rollout_thread_trace: ThreadTraceContext,
         attestation_provider: Option<Arc<dyn AttestationProvider>>,
         external_time_provider: Option<Arc<dyn TimeProvider>>,
         multi_agent_version: Option<MultiAgentVersion>,
         git_enrichment_policy: GitEnrichmentPolicy,
-        windows_sandbox_proxy_settings_mode: codex_sandboxing::WindowsSandboxProxySettingsMode,
     ) -> anyhow::Result<Arc<Self>> {
         debug!(
             "Configuring session: model={}; provider={:?}",
@@ -867,7 +517,7 @@ impl Session {
             ThreadHistoryMode::Paginated
         ) && matches!(
             session_configuration.thread_source.as_ref(),
-            Some(ThreadSource::Subagent | ThreadSource::GuardianReview)
+            Some(ThreadSource::Subagent)
         );
         if let InitialHistory::Forked(items) = &mut initial_history {
             Self::assign_missing_rollout_response_item_ids(items);
@@ -1001,20 +651,12 @@ impl Session {
         thread_extension_init.insert(model_info);
         let tool_policy = thread_extension_init
             .get::<codex_extension_api::ToolPolicy>()
-            .unwrap_or_else(|| {
-                // Older reviewer rollouts predate the explicit startup policy.
-                if crate::guardian::is_basic_session_source(&session_configuration.session_source) {
-                    Arc::new(codex_guardian_reviewer::reviewer_tool_policy())
-                } else {
-                    Arc::default()
-                }
-            });
+            .unwrap_or_default();
         let mcp_thread_init = thread_extension_init.clone();
         let thread_extension_data = codex_extension_api::ExtensionData::new_with_init(
             thread_id.to_string(),
             thread_extension_init,
         );
-        thread_extension_data.insert(crate::context::GuardianReviewEvidence::default());
         // Kick off independent async setup tasks in parallel to reduce startup latency.
         //
         // - initialize thread persistence with new or resumed session info
@@ -1226,49 +868,6 @@ impl Session {
             } else {
                 None
             };
-            let trace_agent_path = session_configuration
-                .session_source
-                .get_agent_path()
-                .unwrap_or_else(codex_protocol::AgentPath::root);
-            let trace_task_name =
-                (!trace_agent_path.is_root()).then(|| trace_agent_path.name().to_string());
-            let trace_metadata = ThreadStartedTraceMetadata {
-                thread_id: thread_id.to_string(),
-                agent_path: trace_agent_path.to_string(),
-                task_name: trace_task_name,
-                nickname: session_configuration.session_source.get_nickname(),
-                agent_role: session_configuration.session_source.get_agent_role(),
-                session_source: session_configuration.session_source.clone(),
-                cwd: session_configuration.cwd().to_path_buf(),
-                rollout_path: rollout_path.clone(),
-                model: session_configuration
-                    .step_settings
-                    .collaboration_mode
-                    .model()
-                    .to_string(),
-                provider_name: config.model_provider_id.clone(),
-                approval_policy: session_configuration
-                    .step_settings
-                    .approval_policy
-                    .value()
-                    .to_string(),
-                sandbox_policy: format!(
-                    "{:?}",
-                    session_configuration.sandbox_policy(environment_selections)
-                ),
-            };
-            let rollout_thread_trace = if matches!(
-                session_configuration.session_source,
-                SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
-            ) {
-                // Spawned child threads are part of their root rollout tree. If the
-                // parent had no trace bundle, do not create an orphan child bundle
-                // that looks like an independent rollout.
-                parent_rollout_thread_trace.start_child_thread_trace_or_disabled(trace_metadata)
-            } else {
-                ThreadTraceContext::start_root_or_disabled(trace_metadata)
-            };
-
             let mut post_session_configured_events = Vec::<Event>::new();
 
             for usage in config.features.legacy_feature_usages() {
@@ -1338,17 +937,6 @@ impl Session {
             if let Some(service_name) = session_configuration.metrics_service_name.as_deref() {
                 session_telemetry = session_telemetry.with_metrics_service_name(service_name);
             }
-            let network_proxy_audit_metadata = NetworkProxyAuditMetadata {
-                conversation_id: Some(thread_id.to_string()),
-                app_version: Some(env!("CARGO_PKG_VERSION").to_string()),
-                user_account_id: account_id,
-                auth_mode: auth_mode.map(|mode| mode.to_string()),
-                originator: Some(originator),
-                user_email: account_email,
-                terminal_type: Some(terminal_type),
-                model: Some(session_model.clone()),
-                slug: Some(session_model),
-            };
             crate::config::emit_session_start_metrics(config.as_ref(), &session_telemetry);
             let is_worktree = session_configuration
                 .cwd()
@@ -1391,10 +979,6 @@ impl Session {
                     .unwrap_or(ReasoningSummaryConfig::Auto),
                 config.model_context_window,
                 config.model_auto_compact_token_limit,
-                config.permissions.approval_policy.value(),
-                config
-                    .permissions
-                    .legacy_sandbox_policy(session_configuration.cwd().as_path()),
                 mcp_server_names.iter().map(String::as_str).collect(),
             );
 
@@ -1402,51 +986,16 @@ impl Session {
                 .user_shell_override
                 .clone()
                 .unwrap_or_else(shell::default_user_shell);
-            let credential_broker_available = (config.features.enabled(Feature::NetworkProxy)
-                || config.features.enabled(Feature::CredentialMasking))
-                && config
-                    .config_layer_stack
-                    .requirements()
-                    .network
-                    .as_ref()
-                    .is_none_or(|network| network.value.enabled != Some(false));
-            let credential_broker_configured = credential_broker_available
-                && (config.features.enabled(Feature::CredentialMasking)
-                    || effective_config
-                        .get("features")
-                        .and_then(|features| features.get("network_proxy"))
-                        .and_then(|network_proxy| network_proxy.get("credential_broker"))
-                        .and_then(TomlValue::as_bool)
-                        .unwrap_or(false));
-            let credential_broker_active = credential_broker_configured
-                && config
-                    .permissions
-                    .network
-                    .as_ref()
-                    .is_some_and(crate::config::NetworkProxySpec::credential_broker_enabled);
             let prefer_executor_shell_snapshots = config.features.enabled(Feature::ShellSnapshotV2)
-                && config.features.enabled(Feature::ShellTool)
-                && config.features.enabled(Feature::UnifiedExec);
-            let use_executor_shell_snapshots =
-                prefer_executor_shell_snapshots && !credential_broker_active;
+                && config.features.enabled(Feature::ShellTool);
             let shell_snapshot = if config.features.enabled(Feature::ShellSnapshot)
-                && (!use_executor_shell_snapshots || credential_broker_available)
+                && !prefer_executor_shell_snapshots
             {
-                let snapshot_credential_broker = credential_broker_available.then(|| {
-                    let state = if credential_broker_active {
-                        SnapshotCredentialBrokerState::Starting
-                    } else {
-                        SnapshotCredentialBrokerState::Inactive
-                    };
-                    watch::channel(state).0
-                });
                 ShellSnapshot::new(
                     config.codex_home.clone(),
                     thread_id,
                     session_telemetry.clone(),
                     state_db_ctx.clone(),
-                    snapshot_credential_broker,
-                    prefer_executor_shell_snapshots,
                 )
             } else {
                 ShellSnapshot::disabled()
@@ -1455,10 +1004,7 @@ impl Session {
             let turn_environments = Arc::new(ThreadEnvironments::new(
                 environment_manager,
                 default_shell.clone(),
-                ThreadEnvironmentDefaults::new(
-                    session_configuration.inferred_environment_config(),
-                    session_configuration.windows_sandbox_type,
-                ),
+                ThreadEnvironmentDefaults::new(session_configuration.inferred_environment_config()),
                 shell_snapshot,
                 inherited_environments.clone(),
                 config.features.enabled(Feature::DeferredExecutor),
@@ -1473,7 +1019,6 @@ impl Session {
                 Arc::clone(&skills_service),
                 &resolved_environments,
                 extensions.as_ref(),
-                &session_configuration.session_source,
             )
             .instrument(info_span!(
                 "session_init.plugin_skill_warmup",
@@ -1516,10 +1061,7 @@ impl Session {
             let mut state = SessionState::new_with_auto_compact_window_ids(
                 session_configuration.clone(),
                 initial_auto_compact_window_ids,
-                ContextManager::for_session(
-                    &session_configuration.session_source,
-                    &config.features,
-                ),
+                ContextManager::for_session(&session_configuration.session_source),
             );
             state.base_instructions_provenance = base_instructions_provenance.clone();
             // Restore a provided effort baseline before startup prewarm can establish a new one.
@@ -1527,77 +1069,6 @@ impl Session {
                 state.reasoning_effort_pin = pin.as_ref().clone();
             }
             state.active_disabled_plugin_ids = session_configuration.disabled_plugin_ids.clone();
-            let managed_network_requirements_configured = config
-                .config_layer_stack
-                .requirements_toml()
-                .network
-                .is_some();
-            let managed_network_requirements_enabled =
-                config.managed_network_requirements_enabled();
-            let network_approval = Arc::new(NetworkApprovalService::default());
-            // The managed proxy can call back into core for allowlist-miss decisions.
-            let network_policy_decider_session = if managed_network_requirements_configured {
-                config
-                    .permissions
-                    .network
-                    .as_ref()
-                    .map(|_| Arc::new(RwLock::new(std::sync::Weak::<Session>::new())))
-            } else {
-                None
-            };
-            let blocked_request_observer = config
-                .permissions
-                .network
-                .as_ref()
-                .map(|_| build_blocked_request_observer(Arc::clone(&network_approval)));
-            let network_policy_decider =
-                network_policy_decider_session
-                    .as_ref()
-                    .map(|network_policy_decider_session| {
-                        build_network_policy_decider(
-                            Arc::clone(&network_approval),
-                            Arc::clone(network_policy_decider_session),
-                        )
-                    });
-            let (network_proxy, session_network_proxy) = if let Some(spec) = config
-                .permissions
-                .network
-                .as_ref()
-                .filter(|spec| spec.enabled())
-            {
-                let current_exec_policy = exec_policy.current();
-                let (network_proxy, session_network_proxy) = Self::start_managed_network_proxy(
-                    spec,
-                    current_exec_policy.as_ref(),
-                    config.permissions.permission_profile(),
-                    config.effective_local_windows_sandbox_type(),
-                    network_policy_decider.as_ref().map(Arc::clone),
-                    blocked_request_observer.as_ref().map(Arc::clone),
-                    managed_network_requirements_configured,
-                    network_proxy_audit_metadata.clone(),
-                )
-                .instrument(info_span!(
-                    "session_init.network_proxy",
-                    otel.name = "session_init.network_proxy",
-                    session_init.managed_network_requirements_enabled =
-                        managed_network_requirements_enabled,
-                ))
-                .await?;
-                (Some(network_proxy), Some(session_network_proxy))
-            } else {
-                (None, None)
-            };
-            if let Some(network_proxy) = network_proxy.as_ref()
-                && config
-                    .permissions
-                    .network
-                    .as_ref()
-                    .is_some_and(crate::config::NetworkProxySpec::credential_broker_enabled)
-            {
-                turn_environments.set_snapshot_credential_broker(
-                    SnapshotCredentialBrokerState::Ready(network_proxy.proxy()),
-                );
-            }
 
             // Hooks and extensions share one stable thread-owned MCP runtime handle.
             let mcp_runtime = Arc::new(McpRuntime::empty(
@@ -1617,7 +1088,7 @@ impl Session {
                     runtime: Arc::clone(&mcp_runtime),
                     thread_id,
                 }),
-            )?;
+            );
             for warning in hooks.startup_warnings() {
                 post_session_configured_events.push(Event {
                     id: INITIAL_SUBMIT_ID.to_owned(),
@@ -1627,27 +1098,6 @@ impl Session {
                 });
             }
 
-            let analytics_events_client = if config.analytics_enabled == Some(false) {
-                if let Some(client) = &analytics_events_client {
-                    client.update_thread_product_sku(thread_id, ThreadProductUpdate::Clear);
-                }
-                AnalyticsEventsClient::disabled()
-            } else {
-                analytics_events_client.unwrap_or_else(|| {
-                    AnalyticsEventsClient::new(
-                        Arc::clone(&auth_manager),
-                        config.chatgpt_base_url.trim_end_matches('/').to_string(),
-                        config.analytics_enabled,
-                    )
-                })
-            };
-            analytics_events_client.update_thread_product_sku(
-                thread_id,
-                match &config.apps_mcp_product_sku {
-                    Some(product) => ThreadProductUpdate::Set(product.clone()),
-                    None => ThreadProductUpdate::Clear,
-                },
-            );
             for item in initial_history.get_rollout_items() {
                 match item {
                     RolloutItem::Compacted(compacted) => {
@@ -1662,15 +1112,12 @@ impl Session {
                     | RolloutItem::InterAgentCommunicationMetadata { .. }
                     | RolloutItem::TurnContext(_)
                     | RolloutItem::WorldState(_)
-                    | RolloutItem::RealtimeItem(_)
                     | RolloutItem::TokenUsageRecord(_)
-                    | RolloutItem::RetainedContext(_)
-                    | RolloutItem::SecurityRiskScore(_) => {}
+                    | RolloutItem::RetainedContext(_) => {}
                 }
             }
             let session_extension_data =
                 codex_extension_api::ExtensionData::new(session_id.to_string());
-            session_extension_data.insert(analytics_events_client.clone());
             session_extension_data.insert(session_telemetry.clone());
             let mcp_resource_client = Arc::new(McpResourceClient::new(Arc::clone(&mcp_runtime)));
             let extension_metrics =
@@ -1714,12 +1161,9 @@ impl Session {
                     config.background_terminal_max_timeout,
                 ),
                 elicitations: crate::elicitation::ElicitationService::new(),
-                analytics_events_client,
                 hooks: arc_swap::ArcSwap::from_pointee(hooks),
-                rollout_thread_trace,
                 user_shell: Arc::new(default_shell),
                 show_raw_agent_reasoning: config.show_raw_agent_reasoning,
-                exec_policy,
                 auth_manager: Arc::clone(&auth_manager),
                 openai_file_upload_client_pool: RouteAwareClientPool::new_without_request_logging(
                     config.http_client_factory(),
@@ -1729,8 +1173,6 @@ impl Session {
                 session_telemetry,
                 models_manager: Arc::clone(&models_manager),
                 git_root_discovery,
-                tool_approvals: Mutex::new(ApprovalStore::default()),
-                granted_permissions_by_environment_id: Arc::default(),
                 runtime_handle: tokio::runtime::Handle::current(),
                 skills_service,
                 agents_md_manager,
@@ -1745,10 +1187,6 @@ impl Session {
                 client_mcp_extensions,
                 local_agent_runtime,
                 agent_control,
-                network_proxy: arc_swap::ArcSwapOption::from(network_proxy.map(Arc::new)),
-                network_proxy_audit_metadata,
-                managed_network_requirements_configured,
-                network_approval: Arc::clone(&network_approval),
                 state_db: state_db_ctx.clone(),
                 live_thread: live_thread.clone(),
                 image_store,
@@ -1782,28 +1220,17 @@ impl Session {
                     workspace_routing.as_ref().clone(),
                     extensions.model_request_contributors().to_vec(),
                 )
-                .with_executed_tool_calls(executed_tool_calls.clone())
                 .with_restored_history(matches!(
                     &initial_history,
                     InitialHistory::Resumed(_) | InitialHistory::Forked(_)
                 ))
                 .with_session_context(
-                    crate::guardian::prompt_cache_key_override_for_review_session(
-                        &session_configuration.session_source,
-                        session_configuration.parent_thread_id,
-                    )
-                    .or(fork_cache_key),
+                    fork_cache_key,
                     tx_event.clone(),
                     codex_responses_headers,
                     crate::cyber_access_program::ApiKeyCyberAccessPrograms::from_config(&config),
                 ),
-                executed_tool_calls: executed_tool_calls.clone(),
-                code_mode_service: crate::tools::code_mode::CodeModeService::new(
-                    thread_id,
-                    Arc::clone(&code_mode_session_provider),
-                    &config.code_mode,
-                    executed_tool_calls,
-                ),
+                executed_tool_calls,
                 tool_search_handler_cache: Default::default(),
                 turn_environments: Arc::clone(&turn_environments),
             };
@@ -1815,25 +1242,15 @@ impl Session {
                 agent_status,
                 state: Mutex::new(state),
                 thread_settings_persistence: Semaphore::new(/*permits*/ 1),
-                code_mode_message_tasks: CodeModeMessageTasks::default(),
-                managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
                 features: config.features.clone(),
                 isolation,
                 tool_policy,
-                windows_sandbox_proxy_settings_mode,
                 multi_agent_version,
                 mcp_refresh: McpRefresh::new(),
-                mcp_tool_approval_metadata: Default::default(),
-                mcp_elicitation_reviewer_handle: OnceLock::new(),
                 mcp_elicitation_lifecycle_handle: OnceLock::new(),
                 mcp_prewarm_tx,
                 mcp_prewarm_shutdown: CancellationToken::new(),
                 mcp_prewarm_task: std::sync::Mutex::new(None),
-                conversation: Arc::new(RealtimeConversationManager::new()),
-                realtime_history: (session_configuration.history_mode
-                    == ThreadHistoryMode::Paginated
-                    && services.live_thread.is_some())
-                .then(|| Mutex::new(Default::default())),
                 active_turn: Mutex::new(None),
                 async_hook_results,
                 input_queue: InputQueue::with_controller(
@@ -1849,10 +1266,6 @@ impl Session {
             });
             if let Some(startup) = &startup {
                 startup.set_session(Arc::clone(&sess));
-            }
-            if let Some(network_policy_decider_session) = network_policy_decider_session {
-                let mut guard = network_policy_decider_session.write().await;
-                *guard = Arc::downgrade(&sess);
             }
             // Dispatch the SessionConfiguredEvent first and then report any errors.
             let thread_config =
@@ -1870,15 +1283,6 @@ impl Session {
                     model: thread_config.model,
                     model_provider_id: thread_config.model_provider_id,
                     service_tier: thread_config.service_tier,
-                    approval_policy: thread_config.approval_policy,
-                    approvals_reviewer: thread_config.approvals_reviewer,
-                    network_proxy: session_network_proxy.filter(|_| {
-                        Self::managed_network_proxy_active_for_permission_profile(
-                            &thread_config.permission_profile,
-                        )
-                    }),
-                    permission_profile: thread_config.permission_profile,
-                    active_permission_profile: thread_config.active_permission_profile,
                     reasoning_effort: thread_config.reasoning_effort,
                     rollout_path,
                 }),

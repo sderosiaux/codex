@@ -1,35 +1,20 @@
-//! Unified Exec: interactive process execution orchestrated with approvals + sandboxing.
+//! Unified Exec: interactive process execution.
 //!
 //! Responsibilities
 //! - Manages interactive processes (create, reuse, buffer output with caps).
 //! - Supports completion-only calls that terminate on timeout or cancellation.
-//! - Uses the shared ToolOrchestrator to handle approval, sandbox selection, and
-//!   retry semantics in a single, descriptive flow.
-//! - Spawns the PTY from a sandbox-transformed `ExecRequest`; on sandbox denial,
-//!   retries without sandbox when policy allows (no re‑prompt thanks to caching).
-//! - Uses the shared `is_likely_sandbox_denied` heuristic to keep denial messages
-//!   consistent with other exec paths.
+//! - Spawns the PTY (or exec-server process) directly from an `ExecRequest`.
 //!
-//! Flow at a glance (open process)
-//! 1) Build a small request `{ command, cwd }`.
-//! 2) Orchestrator: approval (bypass/cache/prompt) → select sandbox → run.
-//! 3) Runtime: transform `SandboxTransformRequest` -> `ExecRequest` -> spawn PTY.
-//! 4) If denial, orchestrator retries with `SandboxType::None`.
-//! 5) Process handle is returned with streaming output + metadata.
-//!
-//! This keeps policy logic and user interaction centralized while the PTY/process
-//! concerns remain isolated here. The implementation is split between:
+//! The implementation is split between:
 //! - `process.rs`: PTY process lifecycle + output buffering.
 //! - `process_state.rs`: shared exit/failure state for local and remote processes.
-//! - `process_manager.rs`: orchestration (approvals, sandboxing, reuse) and request handling.
+//! - `process_manager.rs`: launch, reuse, and request handling.
 
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::Weak;
 
-use codex_network_proxy::NetworkProxy;
-use codex_protocol::models::AdditionalPermissionProfile;
 use codex_utils_output_truncation::TruncationPolicy;
 use codex_utils_path_uri::PathUri;
 use rand::Rng;
@@ -37,24 +22,19 @@ use rand::rng;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-use crate::sandboxing::SandboxPermissions;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
 use crate::session::turn_context::TurnEnvironment;
 use crate::shell::ShellInvocation;
-use crate::tools::network_approval::DeferredNetworkApproval;
-use codex_core_plugins::PluginMetricsSidecar;
 
 mod async_watcher;
 mod errors;
 mod head_tail_buffer;
-mod oneshot;
 mod process;
 mod process_manager;
 mod process_state;
 mod shell_snapshot;
-mod stdin_approval;
 
 pub(crate) fn set_deterministic_process_ids_for_tests(enabled: bool) {
     process_manager::set_deterministic_process_ids_for_tests(enabled);
@@ -62,8 +42,6 @@ pub(crate) fn set_deterministic_process_ids_for_tests(enabled: bool) {
 
 pub(crate) use errors::UnifiedExecError;
 pub(crate) use process::UnifiedExecProcess;
-pub(crate) use stdin_approval::TerminalPermissions;
-pub(crate) use stdin_approval::TerminalSandboxSource;
 
 pub(crate) const MIN_YIELD_TIME_MS: u64 = 250;
 pub(crate) const WINDOWS_INITIAL_EXEC_YIELD_TIME_FLOOR_MS: u64 = 10_000;
@@ -73,7 +51,6 @@ pub(crate) const MAX_YIELD_TIME_MS: u64 = 30_000;
 pub(crate) const DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS: u64 = 300_000;
 pub(crate) const DEFAULT_MAX_OUTPUT_TOKENS: usize = 10_000;
 pub(crate) const UNIFIED_EXEC_OUTPUT_MAX_BYTES: usize = 1024 * 1024; // 1 MiB
-pub(crate) const UNIFIED_EXEC_OUTPUT_MAX_TOKENS: usize = UNIFIED_EXEC_OUTPUT_MAX_BYTES / 4;
 pub(crate) const MAX_UNIFIED_EXEC_PROCESSES: usize = 64;
 
 const MAX_TRACE_ID_BYTES: usize = 256;
@@ -114,15 +91,8 @@ pub(crate) struct ExecCommandRequest {
     pub yield_time_ms: u64,
     pub max_output_tokens: Option<usize>,
     pub cwd: PathUri,
-    pub sandbox_cwd: PathUri,
     pub turn_environment: TurnEnvironment,
-    pub network: Option<NetworkProxy>,
     pub tty: bool,
-    pub sandbox_permissions: SandboxPermissions,
-    pub additional_permissions: Option<AdditionalPermissionProfile>,
-    pub additional_permissions_preapproved: bool,
-    pub justification: Option<String>,
-    pub prefix_rule: Option<Vec<String>>,
 }
 
 #[derive(Debug)]
@@ -184,29 +154,14 @@ impl Default for UnifiedExecProcessManager {
 
 struct ProcessEntry {
     process: Arc<UnifiedExecProcess>,
-    plugin_metrics_sidecar: Option<SharedPluginMetricsSidecar>,
     call_id: String,
     process_id: i32,
     cwd: PathUri,
     initial_exec_command_active: Arc<std::sync::atomic::AtomicBool>,
     hook_command: String,
     tty: bool,
-    environment_id: String,
-    permissions: TerminalPermissions,
-    network_approval: Option<DeferredNetworkApproval>,
     session: Weak<Session>,
     last_used: tokio::time::Instant,
-}
-
-type SharedPluginMetricsSidecar = Arc<std::sync::Mutex<Option<PluginMetricsSidecar>>>;
-
-fn take_plugin_metrics_sidecar(
-    sidecar: &SharedPluginMetricsSidecar,
-) -> Option<PluginMetricsSidecar> {
-    sidecar
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .take()
 }
 
 pub(crate) fn clamp_yield_time(yield_time_ms: u64) -> u64 {

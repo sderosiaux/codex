@@ -49,26 +49,6 @@ static TEST_MODEL_PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
     presets
 });
 
-/// Inspect the same resolved environment configurations used to construct sampling steps.
-pub async fn environment_windows_sandbox_types(
-    thread: &crate::CodexThread,
-) -> Vec<(String, codex_sandboxing::SandboxType)> {
-    thread
-        .session
-        .services
-        .turn_environments
-        .snapshot()
-        .await
-        .turn_environments()
-        .map(|environment| {
-            (
-                environment.selection.environment_id.clone(),
-                environment.config().windows_sandbox_type,
-            )
-        })
-        .collect()
-}
-
 /// Reattaches request-only observations to a completed turn's history for capture assertions.
 /// Tests inspect this separately from the destination-filtered HTTP/WS request.
 pub async fn history_with_tool_call_metadata(
@@ -80,7 +60,7 @@ pub async fn history_with_tool_call_metadata(
         .session
         .services
         .executed_tool_calls
-        .attach_to_prompt(&mut items, &mut Default::default());
+        .attach_to_prompt(&mut items);
     items
 }
 
@@ -120,14 +100,6 @@ pub fn auth_manager_from_auth(auth: CodexAuth) -> Arc<AuthManager> {
 
 pub fn auth_manager_from_auth_with_home(auth: CodexAuth, codex_home: PathBuf) -> Arc<AuthManager> {
     AuthManager::from_auth_for_testing_with_home(auth, codex_home)
-}
-
-pub fn with_code_mode_host_program(
-    thread_manager: ThreadManager,
-    host_program: PathBuf,
-    config: &crate::config::Config,
-) -> ThreadManager {
-    thread_manager.with_code_mode_host_program_for_tests(host_program, config)
 }
 
 pub fn thread_manager_with_models_provider(

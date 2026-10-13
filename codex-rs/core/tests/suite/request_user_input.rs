@@ -8,8 +8,6 @@ use codex_features::Feature;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
-use codex_protocol::models::PermissionProfile;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ThreadSettingsOverrides;
@@ -29,7 +27,6 @@ use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::test_codex;
-use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_match;
 use pretty_assertions::assert_eq;
@@ -87,10 +84,7 @@ async fn request_user_input_round_trip_for_mode(mode: ModeKind) -> anyhow::Resul
     } = builder
         .with_config(move |config| {
             if mode == ModeKind::Default {
-                config
-                    .features
-                    .enable(Feature::DefaultModeRequestUserInput)
-                    .expect("test config should allow feature update");
+                config.features.enable(Feature::DefaultModeRequestUserInput);
             }
         })
         .build(&server)
@@ -128,9 +122,6 @@ async fn request_user_input_round_trip_for_mode(mode: ModeKind) -> anyhow::Resul
     ]);
     let second_mock = responses::mount_sse_once(&server, second_response).await;
 
-    let (sandbox_policy, permission_profile) =
-        turn_permission_fields(PermissionProfile::Disabled, cwd.path());
-
     codex
         .start_or_steer_turn(
             TurnInputRequest::user_input(vec![UserInput::Text {
@@ -139,9 +130,6 @@ async fn request_user_input_round_trip_for_mode(mode: ModeKind) -> anyhow::Resul
             }])
             .with_thread_settings(ThreadSettingsOverrides {
                 environments: Some(local_requests(cwd.abs())),
-                approval_policy: Some(AskForApproval::Never),
-                sandbox_policy: Some(sandbox_policy),
-                permission_profile,
                 collaboration_mode: Some(CollaborationMode {
                     mode,
                     settings: Settings {
@@ -271,8 +259,6 @@ async fn request_user_input_interrupt_emits_deferred_token_count() -> anyhow::Re
     ]);
     responses::mount_sse_once(&server, response).await;
 
-    let (sandbox_policy, permission_profile) =
-        turn_permission_fields(PermissionProfile::Disabled, cwd.path());
     codex
         .start_or_steer_turn(
             TurnInputRequest::user_input(vec![UserInput::Text {
@@ -281,9 +267,6 @@ async fn request_user_input_interrupt_emits_deferred_token_count() -> anyhow::Re
             }])
             .with_thread_settings(ThreadSettingsOverrides {
                 environments: Some(local_requests(cwd.abs())),
-                approval_policy: Some(AskForApproval::Never),
-                sandbox_policy: Some(sandbox_policy),
-                permission_profile,
                 collaboration_mode: Some(CollaborationMode {
                     mode: ModeKind::Plan,
                     settings: Settings {
@@ -371,8 +354,6 @@ where
 
     let session_model = session_configured.model.clone();
     let collaboration_mode = build_mode(session_model.clone());
-    let (sandbox_policy, permission_profile) =
-        turn_permission_fields(PermissionProfile::Disabled, cwd.path());
 
     codex
         .start_or_steer_turn(
@@ -382,9 +363,6 @@ where
             }])
             .with_thread_settings(ThreadSettingsOverrides {
                 environments: Some(local_requests(cwd.abs())),
-                approval_policy: Some(AskForApproval::Never),
-                sandbox_policy: Some(sandbox_policy),
-                permission_profile,
                 collaboration_mode: Some(collaboration_mode),
                 ..Default::default()
             }),

@@ -1,13 +1,34 @@
 //! Partial answers retain their phase in live events and subsequent model requests.
 
-use super::super::guardian_retained_context::ForkTestLifecycle;
 use super::*;
+use codex_extension_api::ToolLifecycleContributor;
+use codex_extension_api::ToolLifecycleFuture;
+use codex_extension_api::ToolStartInput;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::protocol::ThreadHistoryMode;
 use core_test_support::ThreadIdle;
 use core_test_support::responses;
 use pretty_assertions::assert_eq;
 use test_case::test_case;
+use tokio::sync::Notify;
+
+/// Holds the forked child at its `child-pause` call so its completion stays out of the parent.
+#[derive(Default)]
+struct ForkTestLifecycle {
+    entered: Notify,
+    release: Notify,
+}
+
+impl ToolLifecycleContributor for ForkTestLifecycle {
+    fn on_tool_start<'a>(&'a self, input: ToolStartInput<'a>) -> ToolLifecycleFuture<'a> {
+        Box::pin(async move {
+            if input.call_id == "child-pause" {
+                self.entered.notify_one();
+                self.release.notified().await;
+            }
+        })
+    }
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn partial_answers_preserve_phase_across_sampling_continuation() -> Result<()> {
@@ -109,14 +130,12 @@ async fn partial_answers_preserve_phase_across_sampling_continuation() -> Result
     Ok(())
 }
 
-#[test_case(false, false, ThreadHistoryMode::Legacy; "filtered")]
-#[test_case(true, false, ThreadHistoryMode::Legacy; "preserved legacy")]
-#[test_case(true, false, ThreadHistoryMode::Paginated; "preserved paginated")]
-#[test_case(true, true, ThreadHistoryMode::Paginated; "preserved code mode")]
+#[test_case(false, ThreadHistoryMode::Legacy; "filtered")]
+#[test_case(true, ThreadHistoryMode::Legacy; "preserved legacy")]
+#[test_case(true, ThreadHistoryMode::Paginated; "preserved paginated")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn partial_answers_survive_forked_child_requests(
     preserve_fork_prefix: bool,
-    code_mode: bool,
     history_mode: ThreadHistoryMode,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
@@ -142,10 +161,7 @@ async fn partial_answers_survive_forked_child_requests(
                 ev_completed("results"),
             ]),
             sse(vec![
-                if code_mode {
-                    ev_custom_tool_call("spawn-worker", "exec",
-                        r#"text(await tools.collaboration__spawn_agent({task_name: "worker", message: "Check both inherited results.", fork_turns: "all"}));"#)
-                } else { ev_function_call_with_namespace(
+                ev_function_call_with_namespace(
                     "spawn-worker",
                     "collaboration",
                     "spawn_agent",
@@ -155,7 +171,7 @@ async fn partial_answers_survive_forked_child_requests(
                         "fork_turns": "all",
                     })
                     .to_string(),
-                ) },
+                ),
                 ev_completed("spawn"),
             ]),
         ],
@@ -176,17 +192,6 @@ async fn partial_answers_survive_forked_child_requests(
         .with_config(move |config| {
             configure_scenario_catalog(config);
             config.multi_agent_v2.preserve_fork_prefix = preserve_fork_prefix;
-            config.multi_agent_v2.non_code_mode_only = !code_mode;
-            if code_mode {
-                config
-                    .features
-                    .enable(Feature::CodeMode)
-                    .expect("enable Code Mode");
-                config
-                    .features
-                    .enable(Feature::MultiAgentV2DynamicTools)
-                    .expect("enable agent tools in Code Mode");
-            }
             if preserve_fork_prefix {
                 config.update_plan_enabled = true;
                 config.multi_agent_v2.root_agent_usage_hint_text =
@@ -197,14 +202,8 @@ async fn partial_answers_survive_forked_child_requests(
                 config.multi_agent_v2.subagent_developer_instructions =
                     Some("Check both results independently.".into());
             }
-            config
-                .features
-                .enable(Feature::Collab)
-                .expect("enable agents");
-            config
-                .features
-                .enable(Feature::MultiAgentV2)
-                .expect("enable agent paths");
+            config.features.enable(Feature::Collab);
+            config.features.enable(Feature::MultiAgentV2);
         })
         .build_with_auto_env(&server)
         .await?;
@@ -307,27 +306,14 @@ async fn partial_answers_survive_forked_child_requests(
             requests[1].body_json()["instructions"]
         );
         assert!(child_requests[0].body_contains_text("Check both results independently."));
-        if code_mode {
-            assert_eq!(
-                child_requests[0].custom_tool_call_output_content_and_success("spawn-worker"),
-                Some((Some("aborted".into()), None))
-            );
-            assert!(
-                requests[2]
-                    .custom_tool_call_output("spawn-worker")
-                    .to_string()
-                    .contains("/root/worker")
-            );
-        } else {
-            insta::assert_snapshot!(
-                "preserved_answer_fork",
-                context_snapshot::format_request_history_snapshot(
-                    "A worker inherits the parent prefix unchanged and receives its own instructions. Requests are grouped by parent, then child.",
-                    &requests,
-                    &ContextSnapshotOptions::default().rewrite_known_segments()
-                )
-            );
-        }
+        insta::assert_snapshot!(
+            "preserved_answer_fork",
+            context_snapshot::format_request_history_snapshot(
+                "A worker inherits the parent prefix unchanged and receives its own instructions. Requests are grouped by parent, then child.",
+                &requests,
+                &ContextSnapshotOptions::default().rewrite_known_segments()
+            )
+        );
     } else {
         insta::assert_snapshot!(
             "partial_answer_fork",

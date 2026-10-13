@@ -2,8 +2,6 @@ use std::time::Instant;
 
 use codex_api::AuthError;
 use codex_api::AuthProvider;
-use codex_http_client::NetworkPolicy;
-use codex_http_client::NetworkPolicyDenied;
 use codex_http_client::Request;
 use codex_websocket_client::WebSocketConnection;
 use codex_websocket_client::WebSocketConnector;
@@ -45,26 +43,6 @@ struct DirectRegistrationResponse {
 }
 
 impl EnvironmentRegistryClient {
-    async fn register_direct_environment_when_available(
-        &self,
-        environment_id: &str,
-        policy: &NetworkPolicy,
-    ) -> Result<DirectRegistrationResponse, ExecServerError> {
-        let destination = super::endpoint_url(
-            &self.base_url,
-            &format!("/cloud/environment/{environment_id}/direct/register"),
-        );
-        let mut retry_attempt = 0;
-        loop {
-            match self.register_direct_environment(environment_id).await {
-                Err(error) if is_policy_recoverable(&error, policy, &destination) => {}
-                result => return result,
-            }
-            sleep(registry_recovery_retry_delay(environment_id, retry_attempt)).await;
-            retry_attempt = retry_attempt.saturating_add(1);
-        }
-    }
-
     #[tracing::instrument(
         name = "codex.exec_server.remote.register",
         skip_all,
@@ -144,10 +122,7 @@ pub(super) async fn run_direct_environment(
     require_tls_or_loopback(&config.base_url, "https")?;
     let mut retry_attempt = 0;
     let mut registration = client
-        .register_direct_environment_when_available(
-            &config.environment_id,
-            config.http_client_factory.network_policy(),
-        )
+        .register_direct_environment(&config.environment_id)
         .await?;
 
     loop {
@@ -180,12 +155,7 @@ pub(super) async fn run_direct_environment(
                 config.telemetry.remote_reconnect("disconnected");
             }
             Err(error)
-                if (is_retryable_recovery_error(&error)
-                    || is_policy_recoverable(
-                        &error,
-                        config.http_client_factory.network_policy(),
-                        &registration.url,
-                    ))
+                if is_retryable_recovery_error(&error)
                     && !matches!(
                         &error,
                         ExecServerError::WebSocketConnect {
@@ -210,10 +180,7 @@ pub(super) async fn run_direct_environment(
                     } if response.status() == StatusCode::CONFLICT
                 ) {
                     registration = client
-                        .register_direct_environment_when_available(
-                            &config.environment_id,
-                            config.http_client_factory.network_policy(),
-                        )
+                        .register_direct_environment(&config.environment_id)
                         .await?;
                 }
                 warn!("direct exec-server connection failed; retrying");
@@ -228,24 +195,6 @@ pub(super) async fn run_direct_environment(
         ))
         .await;
         retry_attempt = retry_attempt.saturating_add(1);
-    }
-}
-
-fn is_policy_recoverable(
-    error: &ExecServerError,
-    policy: &NetworkPolicy,
-    destination: &str,
-) -> bool {
-    match error.application_network_policy_denial() {
-        Some(NetworkPolicyDenied::Unavailable) => true,
-        Some(NetworkPolicyDenied::Revoked) => url::Url::parse(destination).is_ok_and(|url| {
-            matches!(
-                policy.acquire(&url),
-                Ok(_) | Err(NetworkPolicyDenied::Unavailable)
-            )
-        }),
-        Some(NetworkPolicyDenied::Destination | NetworkPolicyDenied::UnsupportedTransport)
-        | None => false,
     }
 }
 

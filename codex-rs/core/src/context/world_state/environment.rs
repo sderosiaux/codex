@@ -4,7 +4,6 @@ use super::WorldStateSection;
 use super::WorldStateUpdate;
 use crate::context::ContextualUserFragment;
 use crate::context::environment_context::FileSystemContext;
-use crate::context::environment_context::NetworkContext;
 use crate::context::environment_context::push_xml_escaped_text;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::environment_selection::TurnEnvironmentState;
@@ -34,7 +33,6 @@ pub(crate) struct EnvironmentsState {
     shell_version: Option<String>,
     current_date: Option<String>,
     timezone: Option<String>,
-    network: Option<NetworkContext>,
     filesystem: Option<FileSystemContext>,
     subagents: Option<String>,
 }
@@ -65,12 +63,8 @@ impl EnvironmentsState {
                 .timezone
                 .clone()
                 .filter(|_| turn_context.config.include_environment_context_time),
-            network: network_from_turn_context(turn_context),
-            filesystem: environments.primary().map(|environment| {
-                FileSystemContext::from_permission_profile(
-                    environment.permission_profile(),
-                    environment.workspace_roots(),
-                )
+            filesystem: environments.primary().and_then(|environment| {
+                FileSystemContext::from_workspace_roots(environment.workspace_roots())
             }),
             subagents: None,
         }
@@ -99,7 +93,6 @@ impl EnvironmentsState {
             current_date: self.current_date.clone(),
             current_date_removed: false,
             timezone: self.timezone.clone(),
-            network: self.network.clone(),
             filesystem: self.filesystem.clone(),
             subagents: self.subagents.clone(),
         }
@@ -134,7 +127,6 @@ impl WorldStateSection for EnvironmentsState {
             shell_version: self.shell_version.clone(),
             current_date: self.current_date.clone(),
             timezone: self.timezone.clone(),
-            network: self.network.as_ref().map(NetworkContext::render),
             filesystem: self.filesystem.as_ref().map(FileSystemContext::render),
             subagents: self.subagents.clone(),
         };
@@ -148,7 +140,6 @@ impl WorldStateSection for EnvironmentsState {
         let turn_context_values_changed = current.shell_version != previous.shell_version
             || current.current_date != previous.current_date
             || current.timezone != previous.timezone
-            || current.network != previous.network
             || current.filesystem != previous.filesystem;
         let multiple_environments = self.environments.len() > 1;
         let previous_multiple_environments = previous.environments.len() > 1;
@@ -188,7 +179,6 @@ impl WorldStateSection for EnvironmentsState {
                 current_date_removed: self.current_date.is_none()
                     && previous.current_date.is_some(),
                 timezone: self.timezone.clone(),
-                network: self.network.clone(),
                 filesystem: self.filesystem.clone(),
                 subagents: self.subagents.clone(),
             }) as Box<dyn ContextualUserFragment>
@@ -231,7 +221,6 @@ struct RenderedEnvironments {
     current_date: Option<String>,
     current_date_removed: bool,
     timezone: Option<String>,
-    network: Option<NetworkContext>,
     filesystem: Option<FileSystemContext>,
     subagents: Option<String>,
 }
@@ -304,11 +293,6 @@ impl ContextualUserFragment for RenderedEnvironments {
             push_optional_element(&mut rendered, "current_date", self.current_date.as_deref());
         }
         push_optional_element(&mut rendered, "timezone", self.timezone.as_deref());
-        if let Some(network) = &self.network {
-            rendered.push_str("  ");
-            rendered.push_str(&network.render());
-            rendered.push('\n');
-        }
         if let Some(filesystem) = &self.filesystem {
             rendered.push_str("  ");
             rendered.push_str(&filesystem.render());
@@ -383,7 +367,6 @@ pub(crate) struct EnvironmentsSnapshot {
     shell_version: Option<String>,
     current_date: Option<String>,
     timezone: Option<String>,
-    network: Option<String>,
     filesystem: Option<String>,
     subagents: Option<String>,
 }
@@ -532,28 +515,6 @@ fn environment_context_markers() -> (&'static str, &'static str) {
         codex_protocol::protocol::ENVIRONMENT_CONTEXT_OPEN_TAG,
         codex_protocol::protocol::ENVIRONMENT_CONTEXT_CLOSE_TAG,
     )
-}
-
-fn network_from_turn_context(turn_context: &TurnContext) -> Option<NetworkContext> {
-    let network = turn_context
-        .config
-        .config_layer_stack
-        .requirements()
-        .network
-        .as_ref()?;
-
-    Some(NetworkContext::new(
-        network
-            .domains
-            .as_ref()
-            .and_then(codex_config::NetworkDomainPermissionsToml::allowed_domains)
-            .unwrap_or_default(),
-        network
-            .domains
-            .as_ref()
-            .and_then(codex_config::NetworkDomainPermissionsToml::denied_domains)
-            .unwrap_or_default(),
-    ))
 }
 
 #[cfg(test)]

@@ -13,7 +13,6 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
-use crate::ExecServerRuntimeOptions;
 use crate::client::http_client::PendingRouteAwareHttpBodyStream;
 use crate::client::http_client::RouteAwareHttpClient;
 use crate::client::http_client::RouteAwareHttpRequestRunner;
@@ -85,7 +84,6 @@ pub(crate) struct ExecServerHandler {
     background_task_shutdown: CancellationToken,
     background_tasks: TaskTracker,
     file_system: FileSystemHandler,
-    runtime_paths: ExecServerRuntimeOptions,
     http_client: RouteAwareHttpClient,
     initialize_requested: AtomicBool,
     initialized: AtomicBool,
@@ -95,7 +93,6 @@ impl ExecServerHandler {
     pub(crate) fn new(
         session_registry: Arc<SessionRegistry>,
         notifications: RpcNotificationSender,
-        runtime_paths: ExecServerRuntimeOptions,
         http_client_factory: HttpClientFactory,
     ) -> Self {
         Self {
@@ -106,8 +103,7 @@ impl ExecServerHandler {
             active_body_stream_ids: Mutex::new(HashSet::new()),
             background_task_shutdown: CancellationToken::new(),
             background_tasks: TaskTracker::new(),
-            file_system: FileSystemHandler::new(runtime_paths.clone()),
-            runtime_paths,
+            file_system: FileSystemHandler::new(),
             http_client: RouteAwareHttpClient::new(http_client_factory),
             initialize_requested: AtomicBool::new(false),
             initialized: AtomicBool::new(false),
@@ -141,11 +137,7 @@ impl ExecServerHandler {
 
         let session = match self
             .session_registry
-            .attach(
-                params.resume_session_id.clone(),
-                self.notifications.clone(),
-                self.runtime_paths.clone(),
-            )
+            .attach(params.resume_session_id.clone(), self.notifications.clone())
             .await
         {
             Ok(session) => session,
@@ -209,16 +201,12 @@ impl ExecServerHandler {
         params: EnvironmentConfigReadParams,
     ) -> Result<EnvironmentConfigReadResponse, JSONRPCErrorError> {
         self.require_initialized_for("environment config")?;
-        read_environment_config(
-            crate::LOCAL_FS.as_ref(),
-            params,
-            self.runtime_paths.prefer_mxc,
-        )
-        .await
-        .map_err(|error| match error {
-            ReadEnvironmentConfigError::InvalidParams(message) => invalid_params(message),
-            ReadEnvironmentConfigError::Internal(message) => internal_error(message),
-        })
+        read_environment_config(crate::LOCAL_FS.as_ref(), params)
+            .await
+            .map_err(|error| match error {
+                ReadEnvironmentConfigError::InvalidParams(message) => invalid_params(message),
+                ReadEnvironmentConfigError::Internal(message) => internal_error(message),
+            })
     }
 
     pub(crate) fn environment_status(&self) -> Result<EnvironmentStatus, JSONRPCErrorError> {

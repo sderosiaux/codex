@@ -12,7 +12,7 @@ pub(crate) async fn collect_agent_role_files(
     let mut dirs = vec![dir.clone()];
     while let Some(dir) = dirs.pop() {
         let dir_uri = PathUri::from_abs_path(&dir);
-        let entries = match fs.read_directory(&dir_uri, /*sandbox*/ None).await {
+        let entries = match fs.read_directory(&dir_uri).await {
             Ok(entries) => entries,
             Err(err) if err.kind() == ErrorKind::NotFound => continue,
             Err(err) => return Err(err),

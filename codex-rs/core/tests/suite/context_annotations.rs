@@ -9,10 +9,6 @@ use codex_protocol::openai_models::InputModality;
 use codex_protocol::protocol::AdditionalContextEntry;
 use codex_protocol::protocol::AdditionalContextKind;
 use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::GuardianAssessmentAction;
-use codex_protocol::protocol::GuardianAssessmentEvent;
-use codex_protocol::protocol::GuardianAssessmentStatus;
-use codex_protocol::protocol::Op;
 use codex_protocol::user_input::UserInput;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_response_created;
@@ -22,7 +18,6 @@ use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
-use pretty_assertions::assert_eq;
 use std::collections::BTreeMap;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -64,46 +59,11 @@ async fn first_request_item_types_roles_and_content_annotations() -> Result<()> 
                 Feature::MultiAgentV2,
                 Feature::TokenBudget,
             ] {
-                config
-                    .features
-                    .enable(feature)
-                    .expect("test config should allow feature update");
+                config.features.enable(feature);
             }
         })
         .build_with_auto_env(&server)
         .await?;
-
-    test.codex
-        .submit(Op::ApproveGuardianDeniedAction {
-            event: GuardianAssessmentEvent {
-                review_reason: None,
-                model_context: None,
-                id: "guardian-review".to_string(),
-                target_item_id: None,
-                plugin_id: None,
-                script_path: None,
-                turn_id: "guardian-turn".to_string(),
-                started_at_ms: 0,
-                completed_at_ms: Some(1),
-                status: GuardianAssessmentStatus::Denied,
-                risk_level: None,
-                user_authorization: None,
-                rationale: None,
-                decision_source: None,
-                action: GuardianAssessmentAction::McpToolCall {
-                    server: "example".to_string(),
-                    tool_name: "write".to_string(),
-                    connector_id: None,
-                    connector_name: None,
-                    tool_title: None,
-                },
-            },
-        })
-        .await?;
-    wait_for_event(&test.codex, |event| {
-        matches!(event, EventMsg::RawResponseItem(_))
-    })
-    .await;
 
     test.codex
         .start_or_steer_turn(
@@ -146,53 +106,6 @@ async fn first_request_item_types_roles_and_content_annotations() -> Result<()> 
     .await;
 
     let request = response.single_request();
-    assert!(request.has_content_kinds(&["guardian.approved_action"]));
-    let mut guardian_item = request
-        .input()
-        .into_iter()
-        .nth(1)
-        .expect("guardian approval should follow the base instructions");
-    guardian_item
-        .as_object_mut()
-        .expect("guardian approval should be an object")
-        .remove("id");
-    let guardian_metadata = guardian_item["internal_chat_message_metadata_passthrough"]
-        .as_object_mut()
-        .expect("guardian approval should have passthrough metadata");
-    guardian_metadata.remove("turn_id");
-    guardian_metadata.remove("create_time");
-    let approved_action = serde_json::to_string_pretty(&serde_json::json!({
-        "action": {
-            "type": "mcp_tool_call",
-            "server": "example",
-            "tool_name": "write",
-            "connector_id": null,
-            "connector_name": null,
-            "tool_title": null,
-        },
-        "outcome": "allowed",
-    }))?;
-    assert_eq!(
-        guardian_item,
-        serde_json::json!({
-            "type": "message",
-            "role": "developer",
-            "content": [{
-                "type": "input_text",
-                "text": format!(
-                    "The user has manually approved a specific action that was previously `Rejected`.\n\n\
-                     Treat this as approval to perform that exact action in the same context in which it was originally requested.\n\
-                     Do not assume this also authorizes similar operations with different payloads.\n\n\
-                     Approved action:\n\
-                     {approved_action}"
-                ),
-            }],
-            "internal_chat_message_metadata_passthrough": {
-                "content_item_kinds": ["guardian.approved_action"],
-            },
-        })
-    );
-
     let items = request
         .input()
         .into_iter()
@@ -207,8 +120,7 @@ async fn first_request_item_types_roles_and_content_annotations() -> Result<()> 
         .join("\n");
     insta::assert_snapshot!(items, @r#"
     message developer ["model.base_instructions"]
-    message developer ["guardian.approved_action"]
-    message developer ["generic.developer_instructions","token_budget.context_window_guidance","permissions.instructions","environments.instructions"]
+    message developer ["generic.developer_instructions","token_budget.context_window_guidance","environments.instructions"]
     message developer ["token_budget.context_window"]
     message developer ["multi_agent.usage_hint"]
     message developer ["multi_agent.mode_instructions"]
@@ -236,10 +148,7 @@ async fn content_item_kinds_are_omitted_when_feature_disabled() -> Result<()> {
     let test = test_codex()
         .with_config(|config| {
             config.developer_instructions = Some("Keep other metadata intact.".into());
-            config
-                .features
-                .disable(Feature::ContentItemKinds)
-                .expect("test config should allow ContentItemKinds override");
+            config.features.disable(Feature::ContentItemKinds);
         })
         .build_with_auto_env(&server)
         .await?;

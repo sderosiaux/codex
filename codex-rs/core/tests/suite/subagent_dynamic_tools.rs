@@ -105,12 +105,9 @@ async fn fresh_v2_subagent_can_call_parent_dynamic_tool_when_enabled() -> Result
                 Feature::MultiAgentV2,
                 Feature::MultiAgentV2DynamicTools,
             ] {
-                config.features.enable(feature).expect("enable multi-agent");
+                config.features.enable(feature);
             }
-            config
-                .features
-                .disable(Feature::EnableRequestCompression)
-                .expect("disable request compression for mock matching");
+            config.features.disable(Feature::EnableRequestCompression);
         })
         .build_with_auto_env(&server)
         .await?;

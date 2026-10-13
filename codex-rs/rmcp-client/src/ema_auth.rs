@@ -111,7 +111,6 @@ async fn discover_ema_authorization_metadata(
 ) -> Result<(EmaAuthorizationMetadata, String)> {
     let expected_issuer = request.expected_issuer;
     let EmaResource {
-        server_url: server,
         resource,
         authorization_servers: issuers,
         client,
@@ -125,7 +124,7 @@ async fn discover_ema_authorization_metadata(
             }
             Err(_) => continue,
         };
-        if let Err(error) = validate_ema_metadata_issuer(&server, &issuer_url) {
+        if let Err(error) = validate_ema_metadata_issuer(&issuer_url) {
             if expected_issuer.is_some() {
                 return Err(error);
             }

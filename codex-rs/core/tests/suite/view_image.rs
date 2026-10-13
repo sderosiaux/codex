@@ -14,7 +14,6 @@ use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::Settings;
-use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ModelInfo;
@@ -23,12 +22,6 @@ use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::openai_models::TruncationPolicyConfig;
-use codex_protocol::permissions::FileSystemAccessMode;
-use codex_protocol::permissions::FileSystemPath;
-use codex_protocol::permissions::FileSystemSandboxEntry;
-use codex_protocol::permissions::FileSystemSandboxPolicy;
-use codex_protocol::permissions::NetworkSandboxPolicy;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EnvironmentConfigState;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ThreadSettingsOverrides;
@@ -51,7 +44,6 @@ use core_test_support::skip_if_no_remote_env;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::local;
 use core_test_support::test_codex::test_codex;
-use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::test_target_os;
 use core_test_support::wait_for_event_with_timeout;
 use image::DynamicImage;
@@ -85,13 +77,8 @@ enum ImageBudgetPolicy {
     UnifiedResponsesLiteWithoutOriginalSupport,
 }
 
-fn disabled_user_turn(test: &TestCodex, items: Vec<UserInput>, model: String) -> TurnInputRequest {
-    let (sandbox_policy, permission_profile) =
-        turn_permission_fields(PermissionProfile::Disabled, test.config.cwd.as_path());
+fn model_user_turn(items: Vec<UserInput>, model: String) -> TurnInputRequest {
     TurnInputRequest::user_input(items).with_thread_settings(ThreadSettingsOverrides {
-        approval_policy: Some(AskForApproval::Never),
-        sandbox_policy: Some(sandbox_policy),
-        permission_profile,
         collaboration_mode: Some(CollaborationMode {
             mode: ModeKind::Default,
             settings: Settings {
@@ -170,7 +157,6 @@ async fn create_workspace_directory(test: &TestCodex, rel_path: &str) -> anyhow:
                 recursive: true,
                 follow_symlinks: true,
             },
-            /*sandbox*/ None,
         )
         .await?;
     Ok(abs_path_uri)
@@ -190,17 +176,11 @@ async fn write_workspace_file(
                     recursive: true,
                     follow_symlinks: true,
                 },
-                /*sandbox*/ None,
             )
             .await?;
     }
     test.fs()
-        .write_file(
-            &abs_path_uri,
-            contents,
-            Default::default(),
-            /*sandbox*/ None,
-        )
+        .write_file(&abs_path_uri, contents, Default::default())
         .await?;
     Ok(abs_path_uri.to_path_buf())
 }
@@ -262,8 +242,7 @@ async fn assert_user_turn_local_image_resizes_to(
     let session_model = session_configured.model.clone();
 
     codex
-        .start_or_steer_turn(disabled_user_turn(
-            &test,
+        .start_or_steer_turn(model_user_turn(
             vec![UserInput::LocalImage {
                 path: abs_path.clone(),
                 detail: None,
@@ -462,8 +441,7 @@ async fn view_image_tool_attaches_local_image() -> anyhow::Result<()> {
     let session_model = session_configured.model.clone();
 
     codex
-        .start_or_steer_turn(disabled_user_turn(
-            &test,
+        .start_or_steer_turn(model_user_turn(
             vec![UserInput::Text {
                 text: "please add the screenshot".into(),
                 text_elements: Vec::new(),
@@ -649,85 +627,6 @@ async fn view_image_routes_to_selected_local_environment() -> anyhow::Result<()>
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn view_image_tool_applies_local_sandbox_read_denies() -> anyhow::Result<()> {
-    skip_if_no_network!(Ok(()));
-
-    let server = start_mock_server().await;
-    let mut builder = test_codex();
-    let test = builder.build(&server).await?;
-    let rel_path = "denied.png";
-    let denied_path = test.config.cwd.join(rel_path);
-    write_workspace_file(
-        &test,
-        rel_path,
-        png_bytes(/*width*/ 1, /*height*/ 1, [0, 255, 0, 255])?,
-    )
-    .await?;
-    let call_id = "call-view-image-outside-cwd";
-    let response_mock = mount_sse_sequence(
-        &server,
-        vec![
-            sse(vec![
-                ev_response_created("resp-1"),
-                ev_function_call(
-                    call_id,
-                    "view_image",
-                    &json!({ "path": rel_path }).to_string(),
-                ),
-                ev_completed("resp-1"),
-            ]),
-            sse(vec![
-                ev_response_created("resp-2"),
-                ev_assistant_message("msg-1", "done"),
-                ev_completed("resp-2"),
-            ]),
-        ],
-    )
-    .await;
-
-    let mut file_system_sandbox_policy = FileSystemSandboxPolicy::default();
-    file_system_sandbox_policy
-        .entries
-        .push(FileSystemSandboxEntry {
-            path: FileSystemPath::Path {
-                path: denied_path.clone().into(),
-            },
-            access: FileSystemAccessMode::Deny,
-            missing_path_behavior: None,
-        });
-    let permission_profile = PermissionProfile::from_runtime_permissions(
-        &file_system_sandbox_policy,
-        NetworkSandboxPolicy::Restricted,
-    );
-
-    test.submit_turn_with_permission_profile("attach the denied image", permission_profile)
-        .await?;
-
-    let request = response_mock
-        .last_request()
-        .context("missing request containing sandboxed view_image output")?;
-    assert!(
-        request.inputs_of_type("input_image").is_empty(),
-        "sandboxed local view_image should not attach denied images"
-    );
-    let output_text = request
-        .function_call_output_content_and_success(call_id)
-        .and_then(|(content, _)| content)
-        .context("sandboxed view_image error text present")?;
-    let denied_path_display =
-        PathUri::from_host_native_path(&denied_path)?.inferred_native_path_string();
-    let expected_locate_prefix = format!("unable to locate image at `{denied_path_display}`:");
-    let expected_read_prefix = format!("unable to read image at `{denied_path_display}`:");
-    assert!(
-        output_text.starts_with(&expected_locate_prefix)
-            || output_text.starts_with(&expected_read_prefix),
-        "expected error to start with `{expected_locate_prefix}` or `{expected_read_prefix}` but got `{output_text}`"
-    );
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn view_image_routes_to_selected_remote_environment() -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
     skip_if_no_remote_env!(Ok(()));
@@ -742,12 +641,7 @@ async fn view_image_routes_to_selected_remote_environment() -> anyhow::Result<()
     let image_path_uri = remote_cwd_uri.join("remote.png")?;
     let png = png_bytes(/*width*/ 1, /*height*/ 1, [0, 255, 0, 255])?;
     test.fs()
-        .write_file(
-            &image_path_uri,
-            png,
-            Default::default(),
-            /*sandbox*/ None,
-        )
+        .write_file(&image_path_uri, png, Default::default())
         .await?;
     let absolute_image_path = image_path_uri.inferred_native_path_string();
     let remote_selection = TurnEnvironmentSelection {
@@ -832,7 +726,6 @@ async fn view_image_routes_to_selected_remote_environment() -> anyhow::Result<()
                 force: true,
                 follow_symlinks: true,
             },
-            /*sandbox*/ None,
         )
         .await?;
 
@@ -884,8 +777,7 @@ async fn view_image_tool_can_preserve_original_resolution_when_requested_on_gpt5
     let session_model = session_configured.model.clone();
 
     codex
-        .start_or_steer_turn(disabled_user_turn(
-            &test,
+        .start_or_steer_turn(model_user_turn(
             vec![UserInput::Text {
                 text: "please add the original screenshot".into(),
                 text_elements: Vec::new(),
@@ -1049,8 +941,7 @@ async fn view_image_tool_errors_clearly_for_unsupported_detail_values() -> anyho
     let session_model = session_configured.model.clone();
 
     codex
-        .start_or_steer_turn(disabled_user_turn(
-            &test,
+        .start_or_steer_turn(model_user_turn(
             vec![UserInput::Text {
                 text: "please attach the image at low detail".into(),
                 text_elements: Vec::new(),
@@ -1129,8 +1020,7 @@ async fn view_image_tool_treats_null_detail_as_omitted() -> anyhow::Result<()> {
     let session_model = session_configured.model.clone();
 
     codex
-        .start_or_steer_turn(disabled_user_turn(
-            &test,
+        .start_or_steer_turn(model_user_turn(
             vec![UserInput::Text {
                 text: "please attach the image with a null detail".into(),
                 text_elements: Vec::new(),
@@ -1238,8 +1128,7 @@ async fn assert_view_image_tool_resizes_without_original_support(
     let session_model = session_configured.model.clone();
 
     codex
-        .start_or_steer_turn(disabled_user_turn(
-            &test,
+        .start_or_steer_turn(model_user_turn(
             vec![UserInput::Text {
                 text: "please add the screenshot".into(),
                 text_elements: Vec::new(),
@@ -1332,8 +1221,7 @@ async fn view_image_tool_does_not_force_original_resolution_with_capability_only
     let session_model = session_configured.model.clone();
 
     codex
-        .start_or_steer_turn(disabled_user_turn(
-            &test,
+        .start_or_steer_turn(model_user_turn(
             vec![UserInput::Text {
                 text: "please add the screenshot".into(),
                 text_elements: Vec::new(),
@@ -1414,8 +1302,7 @@ async fn view_image_tool_errors_when_path_is_directory() -> anyhow::Result<()> {
     let session_model = session_configured.model.clone();
 
     codex
-        .start_or_steer_turn(disabled_user_turn(
-            &test,
+        .start_or_steer_turn(model_user_turn(
             vec![UserInput::Text {
                 text: "please attach the folder".into(),
                 text_elements: Vec::new(),
@@ -1486,8 +1373,7 @@ async fn view_image_tool_rejects_invalid_image_before_tool_output() -> anyhow::R
     .await;
 
     codex
-        .start_or_steer_turn(disabled_user_turn(
-            &test,
+        .start_or_steer_turn(model_user_turn(
             vec![UserInput::Text {
                 text: "please inspect the image".into(),
                 text_elements: Vec::new(),
@@ -1558,8 +1444,7 @@ async fn view_image_tool_errors_when_file_missing() -> anyhow::Result<()> {
     let session_model = session_configured.model.clone();
 
     codex
-        .start_or_steer_turn(disabled_user_turn(
-            &test,
+        .start_or_steer_turn(model_user_turn(
             vec![UserInput::Text {
                 text: "please attach the missing image".into(),
                 text_elements: Vec::new(),
@@ -1626,12 +1511,8 @@ async fn view_image_tool_returns_unsupported_message_for_text_only_model() -> an
         supports_experimental_context: false,
         use_responses_lite: false,
         supports_reasoning_effort_updates: false,
-        guardian: None,
-        node_repl_auto_review_required: false,
         node_repl_disabled: false,
-        auto_review_model_override: None,
         model_specialty: None,
-        tool_mode: None,
         multi_agent_version: None,
         multi_agent_reasoning_effort: None,
         priority: 1,
@@ -1702,8 +1583,7 @@ async fn view_image_tool_returns_unsupported_message_for_text_only_model() -> an
     let mock = responses::mount_sse_once(&server, second_response).await;
 
     codex
-        .start_or_steer_turn(disabled_user_turn(
-            &test,
+        .start_or_steer_turn(model_user_turn(
             vec![UserInput::Text {
                 text: "please attach the image".into(),
                 text_elements: Vec::new(),

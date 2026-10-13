@@ -4,7 +4,6 @@ use codex_extension_api::CommandStartInput;
 use codex_extension_api::McpToolContext;
 use codex_extension_api::McpToolResultInput;
 use codex_extension_api::ToolCallOutcome;
-use codex_extension_api::ToolCallSource as ExtensionToolCallSource;
 use codex_extension_api::ToolFinishInput;
 use codex_extension_api::ToolStartInput;
 use codex_file_system::ExecutorFileSystem;
@@ -12,10 +11,8 @@ use codex_protocol::mcp::CallToolResult;
 use codex_tools::ToolName;
 use codex_utils_path_uri::PathUri;
 
-use crate::guardian::tool_permission_context;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
-use crate::tools::context::ToolCallSource;
 use crate::tools::context::ToolInvocation;
 
 pub(crate) async fn notify_tool_start(
@@ -33,10 +30,7 @@ pub(crate) async fn notify_tool_start(
     let thread_store = &invocation.session.services.thread_extension_data;
     let conversation_history = invocation.session.conversation_history_snapshot().await;
     let root_turn_id = invocation.turn.turn_metadata_state.root_turn_id();
-    let originating_item_id = invocation
-        .originating_call()
-        .await
-        .and_then(|origin| origin.item_id);
+    let originating_item_id = invocation.originating_call().await.item_id;
 
     for contributor in contributors {
         contributor
@@ -50,10 +44,8 @@ pub(crate) async fn notify_tool_start(
                 originating_item_id: originating_item_id.as_ref(),
                 tool_name: &invocation.tool_name,
                 mcp_tool,
-                permissions: Box::pin(async { tool_permission_context(invocation).await.ok() }),
                 payload: &invocation.payload,
                 conversation_history: Arc::clone(&conversation_history),
-                source: extension_tool_call_source(invocation.source.clone()),
             })
             .await;
     }
@@ -113,7 +105,6 @@ pub(crate) async fn notify_tool_finish(invocation: &ToolInvocation, outcome: Too
         invocation.turn.as_ref(),
         invocation.call_id.as_str(),
         &invocation.tool_name,
-        invocation.source.clone(),
         outcome,
     )
     .await;
@@ -124,17 +115,8 @@ pub(crate) async fn notify_tool_aborted(
     turn: &TurnContext,
     call_id: &str,
     tool_name: &ToolName,
-    source: ToolCallSource,
 ) {
-    notify_tool_finish_parts(
-        session,
-        turn,
-        call_id,
-        tool_name,
-        source,
-        ToolCallOutcome::Aborted,
-    )
-    .await;
+    notify_tool_finish_parts(session, turn, call_id, tool_name, ToolCallOutcome::Aborted).await;
 }
 
 async fn notify_tool_finish_parts(
@@ -142,7 +124,6 @@ async fn notify_tool_finish_parts(
     turn: &TurnContext,
     call_id: &str,
     tool_name: &ToolName,
-    source: ToolCallSource,
     outcome: ToolCallOutcome,
 ) {
     for contributor in session.services.extensions.tool_lifecycle_contributors() {
@@ -154,24 +135,8 @@ async fn notify_tool_finish_parts(
                 turn_id: turn.sub_id.as_str(),
                 call_id,
                 tool_name,
-                source: extension_tool_call_source(source.clone()),
                 outcome,
             })
             .await;
-    }
-}
-
-pub(crate) fn extension_tool_call_source(source: ToolCallSource) -> ExtensionToolCallSource {
-    match source {
-        ToolCallSource::Direct | ToolCallSource::DirectPlaintextMessage => {
-            ExtensionToolCallSource::Direct
-        }
-        ToolCallSource::CodeMode {
-            cell_id,
-            runtime_tool_call_id,
-        } => ExtensionToolCallSource::CodeMode {
-            cell_id,
-            runtime_tool_call_id,
-        },
     }
 }

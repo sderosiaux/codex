@@ -4,8 +4,6 @@ use super::*;
 use crate::context::world_state::test_support::FragmentSectionTestExt as _;
 use anyhow::Result;
 use codex_exec_server::LOCAL_ENVIRONMENT_ID;
-use codex_protocol::models::PermissionProfile;
-use codex_protocol::permissions::NetworkSandboxPolicy;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 
@@ -62,29 +60,16 @@ fn snapshots() -> Result<()> {
     let before_turn_context_changes = EnvironmentsState {
         current_date: Some("2026-06-19".to_string()),
         timezone: Some("UTC".to_string()),
-        network: Some(NetworkContext::new(
-            vec!["old.example.com".to_string()],
-            vec![],
-        )),
-        filesystem: Some(FileSystemContext::from_permission_profile(
-            &PermissionProfile::Disabled,
-            &[],
-        )),
+        filesystem: FileSystemContext::from_workspace_roots(&[PathUri::parse("file:///repo")?]),
         ..environments.clone()
     };
     let after_turn_context_changes = EnvironmentsState {
         current_date: Some("2026-06-20".to_string()),
         timezone: Some("America/Los_Angeles".to_string()),
-        network: Some(NetworkContext::new(
-            vec!["new.example.com".to_string()],
-            vec!["blocked.example.com".to_string()],
-        )),
-        filesystem: Some(FileSystemContext::from_permission_profile(
-            &PermissionProfile::External {
-                network: NetworkSandboxPolicy::Restricted,
-            },
-            &[],
-        )),
+        filesystem: FileSystemContext::from_workspace_roots(&[
+            PathUri::parse("file:///repo")?,
+            PathUri::parse("file:///other")?,
+        ]),
         ..environments
     };
     let foreign_windows = EnvironmentsState {
@@ -94,10 +79,9 @@ fn snapshots() -> Result<()> {
         )]
         .into_iter()
         .collect(),
-        filesystem: Some(FileSystemContext::from_permission_profile(
-            &PermissionProfile::Disabled,
-            &[],
-        )),
+        filesystem: FileSystemContext::from_workspace_roots(&[PathUri::parse(
+            "file:///D:/workspace",
+        )?]),
         ..Default::default()
     };
     let unknown_shell = EnvironmentsState {

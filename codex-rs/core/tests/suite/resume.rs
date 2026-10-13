@@ -3,7 +3,6 @@ use codex_config::types::Personality;
 use codex_core::TurnInputRequest;
 use codex_history::InitialHistory;
 use codex_history::ResumedHistory;
-use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ThreadHistoryMode;
@@ -89,38 +88,6 @@ async fn local_thread_history_mode_survives_restart(
     assert!(request.body_contains_text("Remember this task"));
     assert!(request.body_contains_text("Remembered answer"));
     resumed.thread.shutdown_and_wait().await?;
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn resume_restores_windows_sandbox_override() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-
-    let server = start_mock_server().await;
-    let mut builder = test_codex();
-    let initial = builder.build(&server).await?;
-    core_test_support::submit_thread_settings(
-        &initial.codex,
-        ThreadSettingsOverrides {
-            windows_sandbox_level: Some(WindowsSandboxLevel::Elevated),
-            ..Default::default()
-        },
-    )
-    .await?;
-    initial.codex.ensure_rollout_materialized().await;
-    let settings = initial.codex.restorable_thread_settings().await;
-
-    let resumed = builder.restart(&server, &initial).await?;
-    resumed.codex.restore_thread_settings(settings).await?;
-
-    assert_eq!(
-        resumed
-            .codex
-            .restorable_thread_settings()
-            .await
-            .windows_sandbox_level,
-        Some(WindowsSandboxLevel::Elevated)
-    );
     Ok(())
 }
 

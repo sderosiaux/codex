@@ -149,8 +149,4 @@ impl ToolExecutor<ToolInvocation> for RequestUserInputAsyncHandler {
     }
 }
 
-impl CoreToolRuntime for RequestUserInputAsyncHandler {
-    fn is_builtin_control_tool(&self) -> bool {
-        true
-    }
-}
+impl CoreToolRuntime for RequestUserInputAsyncHandler {}

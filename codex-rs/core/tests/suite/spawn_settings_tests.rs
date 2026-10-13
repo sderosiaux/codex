@@ -90,11 +90,10 @@ async fn spawn_reports_effective_settings_after_child_runtime_is_removed() -> Re
         .with_model(INHERITED_MODEL)
         .with_extensions(Arc::new(extensions.build()))
         .with_config(|config| {
-            config.features.enable(Feature::Collab).expect("enable collab");
+            config.features.enable(Feature::Collab);
             config
                 .features
-                .disable(Feature::MultiAgentV2)
-                .expect("use V1 spawn");
+                .disable(Feature::MultiAgentV2);
             let role_path = config.codex_home.join("custom-role.toml");
             fs::write(
                 &role_path,

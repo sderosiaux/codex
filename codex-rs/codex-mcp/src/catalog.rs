@@ -8,8 +8,6 @@ use codex_config::McpServerConfig;
 use codex_config::McpServerDisabledReason;
 use codex_config::McpServerIdpOAuthConfig;
 use codex_config::McpServerTransportConfig;
-use codex_config::RequirementSource;
-use codex_protocol::mcp_policy::EnvironmentMcpPolicy;
 use codex_utils_path_uri::PathUri;
 
 use crate::CODEX_APPS_MCP_SERVER_NAME;
@@ -291,11 +289,9 @@ impl McpServerRegistration {
 
 /// The authority available for MCP servers running in one environment.
 #[derive(Clone, Copy, Debug)]
-pub enum McpEnvironmentAuthority<'a> {
-    /// The selected environment adds no restrictions to the controller policy.
+pub enum McpEnvironmentAuthority {
+    /// The selected environment can run every registered server.
     Unrestricted,
-    /// The owner supplied the final restrictions for this environment.
-    Restricted(&'a EnvironmentMcpPolicy),
     /// An explicitly selected plugin can use its executor without attaching that executor.
     SelectedPluginsOnly,
     /// The attachment is pending or failed, so its owner policy is not available.
@@ -403,15 +399,15 @@ impl McpCatalogBuilder {
     }
 
     /// Applies environment authority before resolving immutable server registrations.
-    pub fn build_with_environment_authority<'a>(
+    pub fn build_with_environment_authority(
         mut self,
-        mut authority_for_environment: impl FnMut(&str) -> McpEnvironmentAuthority<'a>,
+        mut authority_for_environment: impl FnMut(&str) -> McpEnvironmentAuthority,
     ) -> ResolvedMcpCatalog {
         for action in &mut self.actions {
             let CatalogAction::Register(registration) = action else {
                 continue;
             };
-            // Controller-owned Apps and existing managed denials are not attachment-owned.
+            // Controller-owned Apps and already-disabled servers are not attachment-owned.
             if !registration.config.enabled
                 || registration
                     .source
@@ -426,48 +422,11 @@ impl McpCatalogBuilder {
                     matches!(&registration.source, McpServerSource::SelectedPlugin(_))
                 }
                 McpEnvironmentAuthority::Unavailable => false,
-                McpEnvironmentAuthority::Restricted(policy) => match &registration.source {
-                    McpServerSource::Config
-                    | McpServerSource::Compatibility { .. }
-                    | McpServerSource::Extension { .. } => {
-                        policy.servers.as_ref().is_none_or(|requirements| {
-                            requirements
-                                .get(&registration.name)
-                                .is_some_and(|requirement| {
-                                    registration.config.matches_requirement(requirement)
-                                })
-                        })
-                    }
-                    McpServerSource::Plugin(attribution)
-                    | McpServerSource::SelectedPlugin(attribution) => {
-                        // Empty server policy denies every plugin; otherwise use package policy.
-                        !policy.servers.as_ref().is_some_and(BTreeMap::is_empty)
-                            && policy
-                                .plugins
-                                .as_ref()
-                                .filter(|plugins| {
-                                    plugins.values().any(|plugin| plugin.mcp_servers.is_some())
-                                })
-                                .is_none_or(|plugins| {
-                                    plugins
-                                        .get(attribution.plugin_id())
-                                        .and_then(|plugin| plugin.mcp_servers.as_ref())
-                                        .and_then(|requirements| {
-                                            requirements.get(&registration.name)
-                                        })
-                                        .is_some_and(|requirement| {
-                                            registration.config.matches_requirement(requirement)
-                                        })
-                                })
-                    }
-                },
             };
 
             if !allowed {
                 registration.config.enabled = false;
-                registration.config.disabled_reason = Some(McpServerDisabledReason::Requirements {
-                    source: RequirementSource::Unknown,
-                });
+                registration.config.disabled_reason = Some(McpServerDisabledReason::Unknown);
             }
         }
         self.build()

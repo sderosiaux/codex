@@ -4,19 +4,19 @@ use std::time::Duration;
 
 use codex_async_utils::CancelErr;
 use codex_async_utils::OrCancelExt;
-use codex_network_proxy::PROXY_ACTIVE_ENV_KEY;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use tokio_util::sync::CancellationToken;
 use tracing::error;
 use uuid::Uuid;
 
 use crate::exec::ExecCapturePolicy;
+use crate::exec::ExecOptions;
+use crate::exec::ExecRequest;
 use crate::exec::StdoutStream;
 use crate::exec::execute_exec_request;
 use crate::exec_env::create_env;
 use crate::exec_env::inject_apply_patch_env;
 use crate::exec_env::inject_session_env;
-use crate::sandboxing::ExecRequest;
 use crate::session::TurnInput;
 use crate::session::turn_context::TurnContext;
 use crate::shell::Shell;
@@ -25,7 +25,6 @@ use crate::tools::runtimes::RuntimePathPrepends;
 #[cfg(unix)]
 use crate::tools::runtimes::apply_package_path_prepend;
 use crate::tools::runtimes::maybe_wrap_shell_lc_with_snapshot;
-use crate::tools::runtimes::strip_managed_proxy_env;
 use crate::user_shell_command::user_shell_command_record_item;
 use codex_protocol::exec_output::ExecToolCallOutput;
 use codex_protocol::exec_output::StreamOutput;
@@ -35,14 +34,12 @@ use codex_protocol::items::TurnItem;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExecCommandSource;
-use codex_sandboxing::SandboxType;
 use codex_shell_command::parse_command::parse_command;
 use codex_thread_store::PersistContext;
 
 use super::SessionTask;
 use super::SessionTaskResult;
 use crate::session::session::Session;
-use codex_protocol::models::PermissionProfile;
 
 const USER_SHELL_TIMEOUT_MS: u64 = 60 * 60 * 1000; // 1 hour
 
@@ -157,22 +154,13 @@ pub(crate) async fn execute_user_shell_command(
         return;
     };
     let shell_snapshot = turn_environment
-        .shell_snapshot(
-            &cwd,
-            &display_command,
-            environment_shell,
-            &turn_context.config,
-            /*sandbox*/ None,
-        )
+        .shell_snapshot(&cwd, &display_command, &turn_context.config)
         .await;
     let shell_snapshot_location = shell_snapshot.as_ref().map(|snapshot| snapshot.path());
     let shell_environment_policy = turn_environment.shell_environment_policy();
     let mut exec_env_map = create_env(shell_environment_policy, Some(session.thread_id));
     inject_session_env(&mut exec_env_map, session.session_id());
     inject_apply_patch_env(&mut exec_env_map);
-    if exec_env_map.contains_key(PROXY_ACTIVE_ENV_KEY) {
-        strip_managed_proxy_env(&mut exec_env_map);
-    }
     let exec_command = prepare_user_shell_exec_command(
         &display_command,
         environment_shell,
@@ -190,7 +178,6 @@ pub(crate) async fn execute_user_shell_command(
             turn_context.as_ref(),
             &TurnItem::CommandExecution(CommandExecutionItem {
                 model_context: None,
-                sandbox_type: None,
                 id: call_id.clone(),
                 plugin_id: None,
                 script_path: None,
@@ -208,31 +195,15 @@ pub(crate) async fn execute_user_shell_command(
         )
         .await;
 
-    let permission_profile = PermissionProfile::Disabled;
-    let exec_env = ExecRequest {
-        command: exec_command.clone(),
-        cwd: cwd.clone().into(),
-        env: exec_env_map,
-        exec_server_env_config: None,
-        exec_server_shell_snapshot: None,
-        // `/shell` is the explicit full-access escape hatch, so it must not
-        // inherit a managed proxy from the surrounding session or turn.
-        network: None,
-        network_environment_id: None,
-        expiration: timeout_ms.unwrap_or(USER_SHELL_TIMEOUT_MS).into(),
-        capture_policy: ExecCapturePolicy::ShellTool,
-        sandbox: SandboxType::None,
-        windows_sandbox_policy_cwd: cwd.clone().into(),
-        windows_sandbox_workspace_roots: Vec::new(),
-        windows_sandbox_level: turn_context.windows_sandbox_level,
-        permission_profile,
-        windows_sandbox_filesystem_overrides: None,
-        arg0: None,
-        exec_server_sandbox: None,
-        exec_server_enforce_managed_network: false,
-        exec_server_managed_network: None,
-        exec_server_network_proxy: None,
-    };
+    let exec_env = ExecRequest::new(
+        exec_command.clone(),
+        cwd.clone(),
+        exec_env_map,
+        ExecOptions {
+            expiration: timeout_ms.unwrap_or(USER_SHELL_TIMEOUT_MS).into(),
+            capture_policy: ExecCapturePolicy::ShellTool,
+        },
+    );
 
     let stdout_stream = Some(StdoutStream {
         sub_id: turn_context.sub_id.clone(),
@@ -268,7 +239,6 @@ pub(crate) async fn execute_user_shell_command(
                     turn_context.as_ref(),
                     TurnItem::CommandExecution(CommandExecutionItem {
                         model_context: None,
-                        sandbox_type: None,
                         id: call_id,
                         plugin_id: None,
                         script_path: None,
@@ -292,7 +262,6 @@ pub(crate) async fn execute_user_shell_command(
                     turn_context.as_ref(),
                     TurnItem::CommandExecution(CommandExecutionItem {
                         model_context: None,
-                        sandbox_type: Some(SandboxType::None),
                         id: call_id.clone(),
                         plugin_id: None,
                         script_path: None,
@@ -333,7 +302,6 @@ pub(crate) async fn execute_user_shell_command(
                     turn_context.as_ref(),
                     TurnItem::CommandExecution(CommandExecutionItem {
                         model_context: None,
-                        sandbox_type: None,
                         id: call_id,
                         plugin_id: None,
                         script_path: None,

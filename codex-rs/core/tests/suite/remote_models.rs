@@ -11,7 +11,6 @@ use codex_models_manager::manager::SharedModelsManager;
 use codex_models_manager::model_info::BASE_INSTRUCTIONS;
 use codex_prompts::render_model_instructions;
 use codex_protocol::config_types::ReasoningSummary;
-use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelMessages;
@@ -22,7 +21,6 @@ use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::openai_models::TruncationPolicyConfig;
 use codex_protocol::openai_models::default_input_modalities;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExecCommandSource;
 use codex_protocol::protocol::ThreadSettingsOverrides;
@@ -44,7 +42,6 @@ use core_test_support::skip_if_sandbox;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::local_requests;
 use core_test_support::test_codex::test_codex;
-use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_match;
 use pretty_assertions::assert_eq;
@@ -584,12 +581,8 @@ async fn remote_models_remote_model_uses_unified_exec() -> Result<()> {
         supports_experimental_context: false,
         use_responses_lite: false,
         supports_reasoning_effort_updates: false,
-        guardian: None,
-        node_repl_auto_review_required: false,
         node_repl_disabled: false,
-        auto_review_model_override: None,
         model_specialty: None,
-        tool_mode: None,
         multi_agent_version: None,
         multi_agent_reasoning_effort: None,
         priority: 1,
@@ -683,8 +676,6 @@ async fn remote_models_remote_model_uses_unified_exec() -> Result<()> {
     let response_mock = mount_sse_sequence(&server, responses).await;
 
     let cwd_path = cwd.abs();
-    let (sandbox_policy, permission_profile) =
-        turn_permission_fields(PermissionProfile::Disabled, cwd_path.as_path());
     codex
         .start_or_steer_turn(
             TurnInputRequest::user_input(vec![UserInput::Text {
@@ -693,9 +684,6 @@ async fn remote_models_remote_model_uses_unified_exec() -> Result<()> {
             }])
             .with_thread_settings(ThreadSettingsOverrides {
                 environments: Some(local_requests(cwd_path)),
-                approval_policy: Some(AskForApproval::Never),
-                sandbox_policy: Some(sandbox_policy),
-                permission_profile,
                 summary: Some(ReasoningSummary::Auto),
                 ..Default::default()
             }),
@@ -859,12 +847,8 @@ async fn remote_models_apply_legacy_instructions(auth: CodexAuth) -> Result<()> 
         supports_experimental_context: false,
         use_responses_lite: false,
         supports_reasoning_effort_updates: false,
-        guardian: None,
-        node_repl_auto_review_required: false,
         node_repl_disabled: false,
-        auto_review_model_override: None,
         model_specialty: None,
-        tool_mode: None,
         multi_agent_version: None,
         multi_agent_reasoning_effort: None,
         priority: 1,
@@ -928,10 +912,7 @@ async fn remote_models_apply_legacy_instructions(auth: CodexAuth) -> Result<()> 
     .await;
 
     let mut builder = test_codex().with_auth(auth).with_config(|config| {
-        config
-            .features
-            .enable(Feature::ApiKeyModelDiscovery)
-            .expect("enable API-key model discovery");
+        config.features.enable(Feature::ApiKeyModelDiscovery);
         config.model_provider.model_catalog_url = config
             .model_provider
             .base_url
@@ -953,8 +934,6 @@ async fn remote_models_apply_legacy_instructions(auth: CodexAuth) -> Result<()> 
     wait_for_model_available(&models_manager, model).await;
 
     let cwd_path = cwd.abs();
-    let (sandbox_policy, permission_profile) =
-        turn_permission_fields(PermissionProfile::Disabled, cwd_path.as_path());
     codex
         .start_or_steer_turn(
             TurnInputRequest::user_input(vec![UserInput::Text {
@@ -963,9 +942,6 @@ async fn remote_models_apply_legacy_instructions(auth: CodexAuth) -> Result<()> 
             }])
             .with_thread_settings(ThreadSettingsOverrides {
                 environments: Some(local_requests(cwd_path.clone())),
-                approval_policy: Some(AskForApproval::Never),
-                sandbox_policy: Some(sandbox_policy),
-                permission_profile,
                 summary: Some(ReasoningSummary::Auto),
                 ..Default::default()
             }),
@@ -983,8 +959,6 @@ async fn remote_models_apply_legacy_instructions(auth: CodexAuth) -> Result<()> 
     )
     .await?;
 
-    let (sandbox_policy, permission_profile) =
-        turn_permission_fields(PermissionProfile::Disabled, cwd_path.as_path());
     codex
         .start_or_steer_turn(
             TurnInputRequest::user_input(vec![UserInput::Text {
@@ -993,9 +967,6 @@ async fn remote_models_apply_legacy_instructions(auth: CodexAuth) -> Result<()> 
             }])
             .with_thread_settings(ThreadSettingsOverrides {
                 environments: Some(local_requests(cwd_path)),
-                approval_policy: Some(AskForApproval::Never),
-                sandbox_policy: Some(sandbox_policy),
-                permission_profile,
                 summary: Some(ReasoningSummary::Auto),
                 ..Default::default()
             }),
@@ -1448,12 +1419,8 @@ fn test_remote_model_with_policy(
         supports_experimental_context: false,
         use_responses_lite: false,
         supports_reasoning_effort_updates: false,
-        guardian: None,
-        node_repl_auto_review_required: false,
         node_repl_disabled: false,
-        auto_review_model_override: None,
         model_specialty: None,
-        tool_mode: None,
         multi_agent_version: None,
         multi_agent_reasoning_effort: None,
         priority,
@@ -1508,10 +1475,7 @@ async fn empty_model_catalog_requires_explicit_model(configured_model: Option<&s
         .with_config(move |config| {
             config.model = model;
             config.model_provider.model_catalog_url = Some(catalog_url.into());
-            config
-                .features
-                .enable(Feature::ApiKeyModelDiscovery)
-                .expect("enable API-key discovery");
+            config.features.enable(Feature::ApiKeyModelDiscovery);
         })
         .build_with_auto_env(&server)
         .await;
@@ -1565,10 +1529,7 @@ async fn model_catalog_url_supplies_conversation_model_and_instructions() -> Res
         .with_config(move |config| {
             config.model_provider.name = "Gateway".to_string();
             config.model_provider.model_catalog_url = Some(catalog_url.into());
-            config
-                .features
-                .enable(Feature::ApiKeyModelDiscovery)
-                .expect("enable API-key discovery");
+            config.features.enable(Feature::ApiKeyModelDiscovery);
             config.model_verbosity = Some(codex_protocol::config_types::Verbosity::High);
         })
         .build_with_auto_env(&server)

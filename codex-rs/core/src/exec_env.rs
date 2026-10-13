@@ -4,7 +4,6 @@ use codex_protocol::ThreadId;
 #[cfg(test)]
 use codex_protocol::config_types::EnvironmentVariablePattern;
 use codex_protocol::config_types::ShellEnvironmentPolicy;
-use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::shell_environment;
 use std::collections::HashMap;
 
@@ -14,10 +13,6 @@ pub use codex_protocol::shell_environment::CODEX_TOOL_CALL_ID_ENV_VAR;
 pub(crate) use codex_protocol::shell_environment::set_tool_call_id_env_var;
 
 pub(crate) const CODEX_VERSION_ENV_VAR: &str = "CODEX_VERSION";
-
-/// Informational name of the active permission profile. Child processes can
-/// overwrite this value, so it must not be treated as proof of enforcement.
-pub const CODEX_PERMISSION_PROFILE_ENV_VAR: &str = "CODEX_PERMISSION_PROFILE";
 
 /// Construct an environment map based on the rules in the specified policy. The
 /// resulting map can be passed directly to `Command::envs()` after calling
@@ -47,27 +42,6 @@ pub(crate) fn inject_session_env(env: &mut HashMap<String, String>, session_id: 
         CODEX_VERSION_ENV_VAR.to_string(),
         env!("CARGO_PKG_VERSION").to_string(),
     );
-}
-
-/// Injects the selected named permission profile into a shell tool's environment.
-///
-/// This is applied after the shell environment policy so the runtime-selected
-/// profile wins over inherited or configured values.
-pub(crate) fn inject_permission_profile_env(
-    env: &mut HashMap<String, String>,
-    active_permission_profile: Option<&ActivePermissionProfile>,
-) {
-    if cfg!(windows) {
-        env.retain(|key, _| !key.eq_ignore_ascii_case(CODEX_PERMISSION_PROFILE_ENV_VAR));
-    } else {
-        env.remove(CODEX_PERMISSION_PROFILE_ENV_VAR);
-    }
-    if let Some(active_permission_profile) = active_permission_profile {
-        env.insert(
-            CODEX_PERMISSION_PROFILE_ENV_VAR.to_string(),
-            active_permission_profile.id.clone(),
-        );
-    }
 }
 
 /// Enables line-ending preservation for older standalone patch executables,

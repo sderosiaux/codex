@@ -20,7 +20,6 @@ codex-config = { workspace = true }
 codex-exec-server = { workspace = true }
 codex-http-client = { workspace = true }
 codex-keyring-store = { workspace = true }
-codex-network-proxy = { workspace = true }
 codex-otel = { workspace = true }
 codex-protocol = { workspace = true }
 codex-secrets = { workspace = true }
@@ -75,6 +74,7 @@ codex-http-client = { workspace = true }
 codex-utils-cargo-bin = { workspace = true }
 pretty_assertions = { workspace = true }
 serial_test = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber = { workspace = true }
 tracing-test = { workspace = true, features = ["no-env-filter"] }
 wiremock = { workspace = true }

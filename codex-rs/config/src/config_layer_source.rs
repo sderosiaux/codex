@@ -6,12 +6,8 @@ use serde_json::Value as JsonValue;
 pub enum ConfigLayerSource {
     /// Default configuration supplied with the installed Codex package.
     PackagedDefaults { file: AbsolutePathBuf },
-    /// Managed preferences delivered by MDM.
-    Mdm { domain: String, key: String },
     /// Host-wide configuration loaded from a file.
     System { file: AbsolutePathBuf },
-    /// Configuration delivered by an enterprise cloud bundle.
-    EnterpriseManaged { id: String, name: String },
     /// User configuration, optionally augmented by a selected profile.
     User {
         file: AbsolutePathBuf,
@@ -21,10 +17,6 @@ pub enum ConfigLayerSource {
     Project { dot_codex_folder: AbsolutePathBuf },
     /// Overrides supplied for the current session.
     SessionFlags,
-    /// Legacy managed configuration loaded from a file.
-    LegacyManagedConfigTomlFromFile { file: AbsolutePathBuf },
-    /// Legacy managed configuration delivered by MDM.
-    LegacyManagedConfigTomlFromMdm,
 }
 
 impl ConfigLayerSource {
@@ -33,9 +25,7 @@ impl ConfigLayerSource {
     pub fn precedence(&self) -> i16 {
         match self {
             ConfigLayerSource::PackagedDefaults { .. } => -10,
-            ConfigLayerSource::Mdm { .. } => 0,
             ConfigLayerSource::System { .. } => 10,
-            ConfigLayerSource::EnterpriseManaged { .. } => 15,
             ConfigLayerSource::User { profile, .. } => {
                 if profile.is_some() {
                     21
@@ -45,8 +35,6 @@ impl ConfigLayerSource {
             }
             ConfigLayerSource::Project { .. } => 25,
             ConfigLayerSource::SessionFlags => 30,
-            ConfigLayerSource::LegacyManagedConfigTomlFromFile { .. } => 40,
-            ConfigLayerSource::LegacyManagedConfigTomlFromMdm => 50,
         }
     }
 }
@@ -80,14 +68,8 @@ pub fn format_config_layer_source(source: &ConfigLayerSource, config_toml_file: 
         ConfigLayerSource::PackagedDefaults { file } => {
             format!("packaged defaults ({})", file.as_path().display())
         }
-        ConfigLayerSource::Mdm { domain, key } => {
-            format!("MDM ({domain}:{key})")
-        }
         ConfigLayerSource::System { file } => {
             format!("system ({})", file.as_path().display())
-        }
-        ConfigLayerSource::EnterpriseManaged { id, name } => {
-            format!("enterprise-managed ({name}, {id})")
         }
         ConfigLayerSource::User { file, .. } => {
             format!("user ({})", file.as_path().display())
@@ -99,11 +81,5 @@ pub fn format_config_layer_source(source: &ConfigLayerSource, config_toml_file: 
             )
         }
         ConfigLayerSource::SessionFlags => "session-flags".to_string(),
-        ConfigLayerSource::LegacyManagedConfigTomlFromFile { file } => {
-            format!("legacy managed_config.toml ({})", file.as_path().display())
-        }
-        ConfigLayerSource::LegacyManagedConfigTomlFromMdm => {
-            "legacy managed_config.toml (MDM)".to_string()
-        }
     }
 }

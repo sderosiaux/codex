@@ -58,7 +58,7 @@ async fn prewarming_resolves_global_locations_without_cwd_or_config() -> anyhow:
         "codex/plugins/cache/team/demo/.codex-remote-plugin-install.json",
         r#"{"schema_version":1,"remote_plugin_id":"plugins~demo"}"#,
     )?;
-    let locations = prewarm_locations(&LocalFileSystem::unsandboxed(), &request).await?;
+    let locations = prewarm_locations(&LocalFileSystem::new(), &request).await?;
     let mut actual = locations.locations;
     actual.sort_unstable_by_key(|location| location.root.to_string());
     let mut expected = vec![CapabilityLocation {
@@ -85,7 +85,7 @@ async fn prewarming_resolves_global_locations_without_cwd_or_config() -> anyhow:
         " ".repeat(super::MAX_REMOTE_INSTALL_METADATA_BYTES as usize + 1),
     ] {
         write(temp.path(), metadata, &contents)?;
-        let locations = prewarm_locations(&LocalFileSystem::unsandboxed(), &request).await?;
+        let locations = prewarm_locations(&LocalFileSystem::new(), &request).await?;
         assert!(locations.warnings.iter().any(|warning| {
             warning.contains("could not read remote installation metadata for demo@team")
         }));
@@ -98,7 +98,7 @@ async fn prewarming_resolves_global_locations_without_cwd_or_config() -> anyhow:
     }
     // Missing remote metadata is valid for locally installed plugins.
     std::fs::remove_file(temp.path().join(metadata))?;
-    let locations = prewarm_locations(&LocalFileSystem::unsandboxed(), &request).await?;
+    let locations = prewarm_locations(&LocalFileSystem::new(), &request).await?;
     assert!(locations.warnings.is_empty());
     assert!(locations.locations.iter().any(|location| {
         location
@@ -114,7 +114,7 @@ async fn prewarming_resolves_global_locations_without_cwd_or_config() -> anyhow:
         let directory = temp.path().join("codex/plugins/cache/team");
         let permissions = std::fs::metadata(&directory)?.permissions();
         std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o000))?;
-        let result = prewarm_locations(&LocalFileSystem::unsandboxed(), &request).await;
+        let result = prewarm_locations(&LocalFileSystem::new(), &request).await;
         std::fs::set_permissions(&directory, permissions)?;
         assert!(
             result.is_err(),

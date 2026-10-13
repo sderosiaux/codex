@@ -1,6 +1,5 @@
 //! Executor capability inventory; callers apply identity and enablement.
 
-use codex_file_system::FileSystemSandboxContext;
 use codex_utils_path_uri::PathUri;
 use serde::Deserialize;
 use serde::Serialize;
@@ -16,8 +15,6 @@ pub const CAPABILITIES_DISCOVER_V2_METHOD: &str = "capabilities/discoverV2";
 #[serde(rename_all = "camelCase")]
 pub struct DiscoverV2CapabilitiesRequest {
     pub cwd: PathUri,
-    #[serde(default)]
-    pub sandbox: Option<FileSystemSandboxContext>,
 }
 
 /// Discovered metadata before caller policy is applied.

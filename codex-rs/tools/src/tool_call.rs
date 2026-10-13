@@ -129,20 +129,6 @@ impl TurnItemEmitter for NoopTurnItemEmitter {
     }
 }
 
-/// Host-visible source for a model tool call.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ToolCallSource {
-    /// The model invoked the tool directly.
-    Direct,
-    /// Code mode invoked the tool while executing a runtime cell.
-    CodeMode {
-        /// Runtime cell that issued the nested tool request.
-        cell_id: String,
-        /// Code-mode's per-cell tool invocation id.
-        runtime_tool_call_id: String,
-    },
-}
-
 #[derive(Clone)]
 pub struct ToolCall<'call> {
     pub turn_id: String,
@@ -151,7 +137,6 @@ pub struct ToolCall<'call> {
     pub model: String,
     pub codex_turn_metadata: Option<String>,
     pub truncation_policy: TruncationPolicy,
-    pub source: ToolCallSource,
     pub conversation_history: ConversationHistory,
     pub turn_item_emitter: Arc<dyn TurnItemEmitter>,
     pub environments: Vec<ToolEnvironment<'call>>,
@@ -170,7 +155,6 @@ impl std::fmt::Debug for ToolCall<'_> {
                 &self.codex_turn_metadata.is_some(),
             )
             .field("truncation_policy", &self.truncation_policy)
-            .field("source", &self.source)
             .field("conversation_history", &self.conversation_history)
             .field("turn_item_emitter", &"<host turn item emitter>")
             .field("environment_count", &self.environments.len())
@@ -180,20 +164,11 @@ impl std::fmt::Debug for ToolCall<'_> {
 }
 
 impl ToolCall<'_> {
-    /// Returns the response-content budget, bounded by the tool's own size limit.
-    ///
-    /// Direct calls use the host's effective text-output allowance. Code Mode receives
-    /// typed results without that truncation, so only the tool's limit applies.
-    /// Callers must include serialization overhead when fitting a response to this budget.
+    /// Returns the response-content budget: the host's effective text-output allowance,
+    /// bounded by the tool's own size limit. Callers must include serialization overhead
+    /// when fitting a response to this budget.
     pub fn response_byte_budget(&self, max_response_bytes: usize) -> usize {
-        match &self.source {
-            ToolCallSource::Direct => max_response_bytes
-                .min(with_serialization_allowance(self.truncation_policy).byte_budget()),
-            ToolCallSource::CodeMode {
-                cell_id: _,
-                runtime_tool_call_id: _,
-            } => max_response_bytes,
-        }
+        max_response_bytes.min(with_serialization_allowance(self.truncation_policy).byte_budget())
     }
 
     pub fn function_arguments(&self) -> Result<&str, FunctionCallError> {

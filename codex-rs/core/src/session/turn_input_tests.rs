@@ -1,23 +1,19 @@
 use super::*;
-use crate::config::Constrained;
 use crate::session::step_settings::StepSettingsUpdate;
-use crate::session::tests::make_session_and_context;
 use crate::session::tests::make_session_and_context_with_rx;
 use crate::session::turn_context::TurnContext;
 use crate::state::TaskKind;
 use crate::tasks::SessionTask;
 use crate::tasks::SessionTaskResult;
 use codex_protocol::AgentPath;
-use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
+use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::Settings;
-use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::protocol::TurnAbortReason;
@@ -111,69 +107,14 @@ async fn submit_steer_only(
 }
 
 #[tokio::test]
-#[expect(
-    clippy::await_holding_invalid_type,
-    reason = "simulate an in-flight realtime append while checking input admission"
-)]
-async fn steering_does_not_wait_for_realtime_history() {
-    let (mut session, turn_context) = make_session_and_context().await;
-    session.realtime_history = Some(tokio::sync::Mutex::new(Default::default()));
-    let session = Arc::new(session);
-    let turn_context = Arc::new(turn_context);
-    session
-        .spawn_task(
-            Arc::clone(&turn_context),
-            Vec::new(),
-            NeverEndingTask {
-                kind: TaskKind::Regular,
-                listen_to_cancellation_token: true,
-            },
-        )
-        .await;
-
-    let history = session
-        .realtime_history
-        .as_ref()
-        .expect("realtime history")
-        .lock()
-        .await;
-    for mode in [
-        TurnInputMode::StartOrSteer,
-        TurnInputMode::Steer {
-            expected_turn_id: turn_context.sub_id.clone(),
-        },
-    ] {
-        let submission = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            handle(
-                &session,
-                TurnInputRequest::user_input(vec![UserInput::Text {
-                    text: "steer without waiting for persistence".to_string(),
-                    text_elements: Vec::new(),
-                }]),
-                mode,
-                "steer-submission".to_string(),
-            ),
-        )
-        .await
-        .expect("steering must not wait for the realtime recorder")
-        .expect("steering should succeed");
-        assert_eq!(
-            submission,
-            TurnInputSubmission::Steered {
-                root_turn_id: turn_context.sub_id.clone(),
-                turn_id: turn_context.sub_id.clone()
-            }
-        );
-    }
-    drop(history);
-    session.abort_all_tasks(TurnAbortReason::Interrupted).await;
-}
-
-#[tokio::test]
 async fn accepted_input_applies_thread_settings() {
     let (session, turn_context, _rx) = make_session_and_context_with_rx().await;
     let config = session.get_config().await;
+    let personality = if config.personality == Some(Personality::Friendly) {
+        Personality::None
+    } else {
+        Personality::Friendly
+    };
     handle(
         &session,
         TurnInputRequest::user_input(vec![UserInput::Text {
@@ -182,11 +123,8 @@ async fn accepted_input_applies_thread_settings() {
         }])
         .with_thread_settings(ThreadSettingsOverrides {
             environments: Some(local_selections(config.cwd.clone()).into_requests()),
-            approval_policy: Some(config.permissions.approval_policy.value()),
-            approvals_reviewer: Some(codex_config::types::ApprovalsReviewer::AutoReview),
-            sandbox_policy: Some(config.legacy_sandbox_policy()),
             summary: config.model_reasoning_summary,
-            personality: config.personality,
+            personality: Some(personality),
             collaboration_mode: Some(CollaborationMode {
                 mode: ModeKind::Default,
                 settings: Settings {
@@ -205,12 +143,8 @@ async fn accepted_input_applies_thread_settings() {
 
     let state = session.state.lock().await;
     assert_eq!(
-        state.session_configuration.step_settings.approvals_reviewer,
-        codex_config::types::ApprovalsReviewer::AutoReview
-    );
-    assert!(
-        session.mcp_refresh.is_pending(),
-        "server elicitation authority changes must refresh MCP state"
+        state.session_configuration.step_settings.personality,
+        Some(personality)
     );
 }
 
@@ -252,12 +186,7 @@ async fn start_only_rejects_active_turn_without_injecting() {
 #[tokio::test]
 async fn recovery_rejects_active_turn_without_injecting_or_applying_settings() {
     let (session, turn_context, _rx) = make_session_and_context_with_rx().await;
-    let original_approval_policy = session
-        .get_config()
-        .await
-        .permissions
-        .approval_policy
-        .value();
+    let original_settings = session.thread_settings_snapshot().await;
     session
         .spawn_task(
             Arc::clone(&turn_context),
@@ -272,7 +201,7 @@ async fn recovery_rejects_active_turn_without_injecting_or_applying_settings() {
     let submission = handle_recovery(
         &session,
         ThreadSettingsOverrides {
-            approval_policy: Some(AskForApproval::Never),
+            model: Some("recovery-model-must-not-be-applied".to_string()),
             ..Default::default()
         },
         TurnStartOptions::default(),
@@ -287,15 +216,7 @@ async fn recovery_rejects_active_turn_without_injecting_or_applying_settings() {
             reason: NotSubmittedReason::NotIdle,
         }
     );
-    assert_eq!(
-        session
-            .get_config()
-            .await
-            .permissions
-            .approval_policy
-            .value(),
-        original_approval_policy
-    );
+    assert_eq!(session.thread_settings_snapshot().await, original_settings);
     assert_eq!(
         session
             .input_queue
@@ -309,70 +230,39 @@ async fn recovery_rejects_active_turn_without_injecting_or_applying_settings() {
 }
 
 #[tokio::test]
-async fn start_only_rejects_current_plan_before_validating_settings() {
+async fn start_only_rejects_current_plan_before_applying_settings() {
     let (session, _turn_context, _rx) = make_session_and_context_with_rx().await;
     let default_mode = session.collaboration_mode().await;
     {
         let mut state = session.state.lock().await;
         let settings = Arc::make_mut(&mut state.session_configuration.step_settings);
         settings.collaboration_mode.mode = ModeKind::Plan;
-        settings.approval_policy = Constrained::allow_only(AskForApproval::OnRequest);
     }
     let desired_settings = session.thread_settings_snapshot().await;
-    let invalid_override = ThreadSettingsOverrides {
-        collaboration_mode: Some(default_mode.clone()),
-        approval_policy: Some(AskForApproval::Never),
+    let leave_plan_override = ThreadSettingsOverrides {
+        collaboration_mode: Some(default_mode),
         ..Default::default()
     };
 
-    // Current Plan takes precedence even when the request would leave Plan or
-    // fail settings validation. Nothing has been reserved or applied yet.
+    // Current Plan takes precedence even when the request would leave Plan.
+    // Nothing has been reserved or applied yet.
     let submission = handle(
         &session,
         TurnInputRequest::new(SubmittedTurnInput::ResponseItem(user_message(
             "synthetic idle input",
         )))
-        .with_thread_settings(invalid_override.clone()),
+        .with_thread_settings(leave_plan_override),
         TurnInputMode::StartIfIdle,
         "automatic-plan-submission".to_string(),
     )
     .await
-    .expect("current Plan must reject before settings validation");
+    .expect("current Plan must reject before applying settings");
     assert_eq!(
         submission,
         TurnInputSubmission::NotSubmitted {
             reason: NotSubmittedReason::PlanMode,
         }
     );
-    assert_eq!(session.thread_settings_snapshot().await, desired_settings);
-    assert!(session.active_turn.lock().await.is_none());
-
-    session
-        .update_settings(SessionSettingsUpdate {
-            step_settings: StepSettingsUpdate {
-                collaboration_mode: Some(default_mode),
-                ..Default::default()
-            },
-            ..Default::default()
-        })
-        .await
-        .expect("explicit settings may leave Plan mode");
-    let desired_settings = session.thread_settings_snapshot().await;
-    let result = handle(
-        &session,
-        TurnInputRequest::new(SubmittedTurnInput::ResponseItem(user_message(
-            "invalid automatic input",
-        )))
-        .with_thread_settings(invalid_override),
-        TurnInputMode::StartIfIdle,
-        "invalid-automatic-submission".to_string(),
-    )
-    .await;
-    let error = result.expect_err("invalid automatic settings must be rejected");
-    assert!(matches!(
-        error.details(),
-        CodexErrorDetails::InvalidRequest(_)
-    ));
     assert_eq!(session.thread_settings_snapshot().await, desired_settings);
     assert!(session.active_turn.lock().await.is_none());
     assert_eq!(
@@ -528,7 +418,7 @@ async fn automatic_admission_uses_current_candidate_after_plan_preview() {
 
 #[tokio::test]
 async fn automatic_admission_rechecks_plan_mode_without_committing_sparse_settings() {
-    struct ConfigRecorder(Arc<std::sync::Mutex<Vec<(AskForApproval, ApprovalsReviewer)>>>);
+    struct ConfigRecorder(Arc<std::sync::Mutex<Vec<Option<String>>>>);
 
     impl codex_extension_api::ConfigContributor<crate::config::Config> for ConfigRecorder {
         fn on_config_changed(
@@ -538,10 +428,10 @@ async fn automatic_admission_rechecks_plan_mode_without_committing_sparse_settin
             _previous_config: &crate::config::Config,
             new_config: &crate::config::Config,
         ) {
-            self.0.lock().expect("config records lock").push((
-                new_config.permissions.approval_policy.value(),
-                new_config.approvals_reviewer,
-            ));
+            self.0
+                .lock()
+                .expect("config records lock")
+                .push(new_config.model.clone());
         }
     }
 
@@ -554,12 +444,6 @@ async fn automatic_admission_rechecks_plan_mode_without_committing_sparse_settin
         .expect("unique test session")
         .services
         .extensions = Arc::new(extensions.build());
-    {
-        let mut state = session.state.lock().await;
-        let settings = Arc::make_mut(&mut state.session_configuration.step_settings);
-        settings.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
-        settings.approvals_reviewer = ApprovalsReviewer::User;
-    }
     let original_environments = session.services.turn_environments.selections();
     let workspace = tempfile::tempdir().expect("create proposed workspace");
     let proposed_environments = local_selections(
@@ -571,8 +455,6 @@ async fn automatic_admission_rechecks_plan_mode_without_committing_sparse_settin
         model: Some("automatic-model-must-not-be-applied".to_string()),
         service_tier: Some(Some(ServiceTier::Fast.request_value().to_string())),
         environments: Some(proposed_environments.clone().into_requests()),
-        approval_policy: Some(AskForApproval::Never),
-        approvals_reviewer: Some(ApprovalsReviewer::AutoReview),
         ..Default::default()
     };
     let default_override = ThreadSettingsOverrides {
@@ -669,81 +551,7 @@ async fn automatic_admission_rechecks_plan_mode_without_committing_sparse_settin
     assert!(session.mcp_refresh.is_pending());
     assert_eq!(
         *records.lock().expect("config records lock"),
-        vec![(AskForApproval::Never, ApprovalsReviewer::AutoReview)]
-    );
-}
-
-#[test_case(TurnStartKind::User; "ordinary constructor")]
-#[test_case(TurnStartKind::Automatic; "conditional constructor")]
-#[tokio::test]
-async fn admission_revalidates_constraints_before_committing(kind: TurnStartKind) {
-    let (session, _turn_context, rx) = make_session_and_context_with_rx().await;
-    {
-        let mut state = session.state.lock().await;
-        Arc::make_mut(&mut state.session_configuration.step_settings).approval_policy =
-            Constrained::allow_any(AskForApproval::OnRequest);
-    }
-    let prepared = PreparedTurnInputSettings::prepare(
-        &session,
-        ThreadSettingsOverrides {
-            approval_policy: Some(AskForApproval::Never),
-            service_tier: Some(Some(ServiceTier::Fast.request_value().to_string())),
-            ..Default::default()
-        },
-        TurnStartOptions::default(),
-    )
-    .await
-    .expect("approval-policy edit should initially be valid");
-
-    let approval_policy = Constrained::allow_only(AskForApproval::OnRequest);
-    let expected_message = CodexErr::InvalidRequest(
-        approval_policy
-            .can_set(&AskForApproval::Never)
-            .expect_err("new constraint must reject the prepared edit")
-            .to_string(),
-    )
-    .to_string();
-    {
-        let mut state = session.state.lock().await;
-        Arc::make_mut(&mut state.session_configuration.step_settings).approval_policy =
-            approval_policy;
-    }
-    let desired_settings = session.thread_settings_snapshot().await;
-    let submission_id = "constraints-after-preview";
-    let result = prepared
-        .apply_started(&session, submission_id.to_string(), kind)
-        .await;
-    let Err(error) = result else {
-        panic!("commit-time constraint failure must return InvalidRequest");
-    };
-    let CodexErrorDetails::InvalidRequest(message) = error.details() else {
-        panic!("unexpected commit-time error: {error}");
-    };
-    assert_eq!(message, &expected_message);
-    let errors: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok())
-        .filter(|event| event.id == submission_id)
-        .map(|event| match event.msg {
-            EventMsg::Error(error) => error,
-            other => panic!("unexpected rejected-turn event: {other:?}"),
-        })
-        .collect();
-    assert_eq!(
-        errors,
-        vec![ErrorEvent {
-            misalignment: None,
-            message: expected_message,
-            codex_error_info: Some(CodexErrorInfo::BadRequest),
-        }]
-    );
-    assert_eq!(session.thread_settings_snapshot().await, desired_settings);
-    assert!(session.active_turn.lock().await.is_none());
-    assert_eq!(
-        session
-            .input_queue
-            .get_pending_input(&session.active_turn)
-            .await
-            .0,
-        Vec::<TurnInput>::new()
+        vec![Some("automatic-model-must-not-be-applied".to_string())]
     );
 }
 
@@ -756,7 +564,6 @@ async fn start_only_accepts_user_input_in_plan_mode() {
         let mut state = session.state.lock().await;
         Arc::make_mut(&mut state.session_configuration.step_settings).collaboration_mode =
             collaboration_mode;
-        state.merge_connector_selection(["calendar".to_string()]);
     }
 
     let submission = submit_start_only(
@@ -771,14 +578,6 @@ async fn start_only_accepts_user_input_in_plan_mode() {
     )
     .await;
     assert!(matches!(submission, TurnInputSubmission::Started { .. }));
-    assert!(
-        session
-            .state
-            .lock()
-            .await
-            .get_connector_selection()
-            .is_empty()
-    );
 
     session.abort_all_tasks(TurnAbortReason::Interrupted).await;
 }

@@ -225,54 +225,6 @@ fn automatic_marketplace_git_ignores_inherited_repository_configuration() {
 }
 
 #[test]
-fn upgrade_uses_validated_source_for_git_operations() {
-    let codex_home = TempDir::new().expect("create Codex home");
-    let remote_repo = TempDir::new().expect("create remote repository");
-    init_marketplace_repo(remote_repo.path(), "good");
-    let normalized_url = url::Url::from_directory_path(remote_repo.path())
-        .expect("remote repository URL")
-        .to_string();
-    let raw_source = codex_home.path().join("missing-raw-source");
-    let raw_source = raw_source.to_string_lossy().into_owned();
-    let config = format!(
-        r#"
-[marketplaces.good]
-source_type = "git"
-source = {raw_source:?}
-ref = "missing-ref"
-"#
-    );
-    std::fs::write(codex_home.path().join(CONFIG_TOML_FILE), config).expect("write config");
-    let marketplace = ConfiguredGitMarketplace {
-        name: "good".to_string(),
-        source: raw_source,
-        ref_name: Some("missing-ref".to_string()),
-        sparse_paths: Vec::new(),
-    };
-    let normalized_source = MarketplaceSource::Git {
-        url: normalized_url,
-        ref_name: Some("HEAD".to_string()),
-    };
-    let install_root = marketplace_install_root(codex_home.path());
-
-    let upgraded_root = upgrade_configured_git_marketplace(
-        codex_home.path(),
-        &install_root,
-        &marketplace,
-        &config_reloader(codex_home.path()),
-        Some(&normalized_source),
-        PluginGitMode::Manual,
-    )
-    .expect("upgrade should use the validated source")
-    .expect("marketplace should be upgraded");
-
-    assert_eq!(
-        upgraded_root,
-        AbsolutePathBuf::try_from(install_root.join("good")).expect("installed marketplace root")
-    );
-}
-
-#[test]
 fn up_to_date_fast_path_validates_marketplace_name() {
     const REVISION: &str = "0123456789abcdef0123456789abcdef01234567";
     let codex_home = TempDir::new().expect("create Codex home");
@@ -289,23 +241,18 @@ fn up_to_date_fast_path_validates_marketplace_name() {
     let missing_source = missing_source.to_string_lossy().into_owned();
     let marketplace = ConfiguredGitMarketplace {
         name: "good".to_string(),
-        source: missing_source.clone(),
+        source: missing_source,
         ref_name: Some(REVISION.to_string()),
         sparse_paths: Vec::new(),
     };
     super::activation::write_installed_marketplace_metadata(&destination, &marketplace, REVISION)
         .expect("write installed marketplace metadata");
-    let normalized_source = MarketplaceSource::Git {
-        url: missing_source,
-        ref_name: Some(REVISION.to_string()),
-    };
 
     let err = upgrade_configured_git_marketplace(
         codex_home.path(),
         &install_root,
         &marketplace,
         &config_reloader(codex_home.path()),
-        Some(&normalized_source),
         PluginGitMode::Manual,
     )
     .expect_err("mismatched marketplace name must not use the up-to-date fast path");
@@ -390,8 +337,6 @@ fn config_reloader(codex_home: &Path) -> ConfigLayerReload {
     let codex_home = codex_home.to_path_buf();
     let options = LoaderOverrides {
         system_config_path: Some(codex_home.join("system.toml")),
-        managed_config_path: Some(codex_home.join("managed.toml")),
-        system_requirements_path: Some(codex_home.join("requirements.toml")),
         ..LoaderOverrides::without_managed_config_for_tests()
     };
     let runtime = tokio::runtime::Builder::new_current_thread()

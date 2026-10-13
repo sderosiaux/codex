@@ -2,11 +2,6 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::io::ErrorKind;
 
-use codex_analytics::CompactionImplementation;
-use codex_analytics::CompactionPhase;
-use codex_analytics::CompactionReason;
-use codex_analytics::CompactionStrategy;
-use codex_analytics::CompactionTrigger;
 use codex_git_utils::SanitizedGitUrl;
 use codex_protocol::ThreadId;
 use codex_protocol::mcp::McpAttribution;
@@ -43,7 +38,6 @@ pub(crate) const LEGACY_CODE_MODE_TOOL_NAMES_KEY: &str = "code_mode_tool_names";
 pub(crate) const TOOL_NAMESPACES_INFO_KEY: &str = "tool_namespaces_info";
 pub(crate) const TURN_STARTED_AT_UNIX_MS_KEY: &str = "turn_started_at_unix_ms";
 pub(crate) const HISTORY_INGEST_REQUESTED_KEY: &str = "history_ingest_requested";
-pub(crate) const ANALYTICS_ENABLED_KEY: &str = "analytics_enabled";
 pub(crate) const HISTORY_INITIALIZATION_KEY: &str = "history_initialization";
 pub(crate) const MCP_ATTRIBUTION_CLIENT_METADATA_KEY: &str = "mcp_attribution";
 pub(crate) const MAX_MCP_ATTRIBUTION_BYTES: usize = 16 * 1024;
@@ -56,17 +50,11 @@ pub(crate) const ROOT_TURN_ID_KEY: &str = "root_turn_id";
 pub(crate) const SUBAGENT_KIND_KEY: &str = "subagent_kind";
 pub(crate) const THREAD_SOURCE_KEY: &str = "thread_source";
 pub(crate) const TURN_TRIGGER_KEY: &str = "turn_trigger";
-pub(crate) const SANDBOX_KEY: &str = "sandbox";
-pub(crate) const SANDBOX_MODE_KEY: &str = "sandbox_mode";
-pub(crate) const AUTO_REVIEW_ENABLED_KEY: &str = "auto_review_enabled";
-pub(crate) const NODE_REPL_AUTO_REVIEW_REQUIRED_KEY: &str = "node_repl_auto_review_required";
-pub(crate) const NODE_REPL_DISABLED_KEY: &str = "node_repl_disabled";
 pub(crate) const WORKSPACES_KEY: &str = "workspaces";
 
 // App-server clients can specify additional metadata in the `responsesapi_client_metadata` param
 // when submitting a turn, but they must not override fields owned by core.
 const RESERVED_METADATA_KEYS: &[&str] = &[
-    "guardian_credits_requested",
     MCP_ATTRIBUTION_CLIENT_METADATA_KEY,
     INSTALLATION_ID_KEY,
     X_CODEX_INSTALLATION_ID_HEADER,
@@ -87,7 +75,6 @@ const RESERVED_METADATA_KEYS: &[&str] = &[
     TOOL_NAMESPACES_INFO_KEY,
     TURN_STARTED_AT_UNIX_MS_KEY,
     HISTORY_INGEST_REQUESTED_KEY,
-    ANALYTICS_ENABLED_KEY,
     HISTORY_INITIALIZATION_KEY,
     FORKED_FROM_THREAD_ID_KEY,
     FORKED_FROM_ORDINAL_EXCLUSIVE_KEY,
@@ -97,30 +84,61 @@ const RESERVED_METADATA_KEYS: &[&str] = &[
     SUBAGENT_KIND_KEY,
     THREAD_SOURCE_KEY,
     TURN_TRIGGER_KEY,
-    SANDBOX_KEY,
-    SANDBOX_MODE_KEY,
-    AUTO_REVIEW_ENABLED_KEY,
-    NODE_REPL_AUTO_REVIEW_REQUIRED_KEY,
-    NODE_REPL_DISABLED_KEY,
     WORKSPACES_KEY,
 ];
 
 // These keys were previously valid user configuration. Accept existing configs while filtering
 // their values before constructing Core-owned request metadata.
-const BACKWARD_COMPATIBLE_RESERVED_METADATA_KEYS: &[&str] = &[
-    WINDOW_NUMBER_KEY,
-    FORKED_FROM_ORDINAL_EXCLUSIVE_KEY,
-    ANALYTICS_ENABLED_KEY,
-];
+const BACKWARD_COMPATIBLE_RESERVED_METADATA_KEYS: &[&str] =
+    &[WINDOW_NUMBER_KEY, FORKED_FROM_ORDINAL_EXCLUSIVE_KEY];
 const MAX_EXTRA_METADATA_ENTRIES: usize = 16;
 const MAX_EXTRA_METADATA_KEY_BYTES: usize = 64;
 pub(crate) const MAX_EXTRA_METADATA_VALUE_BYTES: usize = 128;
 
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum CompactionImplementation {
+    Responses,
+    ResponsesCompactionV2,
+}
+
+// Variant names are the wire values (`pre_turn`, `post_turn`, ...).
+#[allow(clippy::enum_variant_names)]
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum CompactionPhase {
+    StandaloneTurn,
+    PreTurn,
+    MidTurn,
+    PostTurn,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum CompactionReason {
+    UserRequested,
+    ContextLimit,
+    ModelDownshift,
+    CompHashChanged,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum CompactionStrategy {
+    Memento,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum CompactionTrigger {
+    Manual,
+    Auto,
+}
+
 /// Metadata attached to model requests whose purpose is conversation compaction.
 ///
 /// This covers both local and remote compaction requests sent through the `/responses` path. These
-/// fields describe the operation at dispatch time. Post-response outcomes such as status, error,
-/// duration, and token deltas remain in compaction analytics events.
+/// fields describe the operation at dispatch time.
 #[derive(Clone, Copy, Debug, Serialize)]
 pub(crate) struct CompactionTurnMetadata {
     trigger: CompactionTrigger,
@@ -211,7 +229,6 @@ pub(crate) struct TurnToolNamespaceInfo {
 pub(crate) struct TurnToolFunctionInfo {
     pub(crate) name: String,
     pub(crate) direct: bool,
-    pub(crate) code_mode_name: Option<String>,
     pub(crate) deferred: bool,
     pub(crate) source: TurnToolSource,
 }
@@ -232,8 +249,6 @@ pub(crate) enum TurnToolSource {
 /// truth.
 #[derive(Clone, Debug)]
 pub struct CodexResponsesMetadata {
-    /// Guardian parent reference; projected only onto a Guardian request.
-    pub(crate) parent_response_id: Option<String>,
     pub(crate) installation_id: String,
     pub(crate) session_id: String,
     pub(crate) thread_id: String,
@@ -254,18 +269,10 @@ pub struct CodexResponsesMetadata {
     pub(crate) subagent_kind: Option<String>,
     pub(crate) thread_source: Option<ThreadSource>,
     pub(crate) turn_trigger: Option<String>,
-    pub(crate) sandbox: Option<String>,
-    pub(crate) sandbox_mode: Option<String>,
-    pub(crate) auto_review_enabled: Option<bool>,
-    pub(crate) node_repl_auto_review_required: Option<bool>,
-    pub(crate) node_repl_disabled: Option<bool>,
     pub(crate) workspaces: BTreeMap<String, TurnMetadataWorkspace>,
     pub(crate) tool_namespaces_info: Option<TurnToolNamespacesInfo>,
     pub(crate) turn_started_at_unix_ms: Option<i64>,
     pub(crate) history_ingest_requested: Option<bool>,
-    /// Selected session analytics client's collection state, independent of event eligibility or delivery.
-    /// Absent when the request has no initialized session analytics context.
-    pub(crate) analytics_enabled: Option<bool>,
     /// Cumulative MCP attribution for this logical request; body-only and model-invisible.
     pub(crate) mcp_attribution: Option<McpAttribution>,
     pub(crate) extra: BTreeMap<String, String>,
@@ -279,7 +286,6 @@ impl CodexResponsesMetadata {
         window_id: String,
     ) -> Self {
         Self {
-            parent_response_id: None,
             installation_id,
             session_id,
             thread_id,
@@ -300,16 +306,10 @@ impl CodexResponsesMetadata {
             subagent_kind: None,
             thread_source: None,
             turn_trigger: None,
-            sandbox: None,
-            sandbox_mode: None,
-            auto_review_enabled: None,
-            node_repl_auto_review_required: None,
-            node_repl_disabled: None,
             workspaces: BTreeMap::new(),
             tool_namespaces_info: None,
             turn_started_at_unix_ms: None,
             history_ingest_requested: None,
-            analytics_enabled: None,
             mcp_attribution: None,
             extra: BTreeMap::new(),
         }
@@ -442,16 +442,10 @@ impl CodexResponsesMetadata {
             subagent_kind: self.subagent_kind.as_deref(),
             thread_source: self.thread_source.as_ref(),
             turn_trigger: self.turn_trigger.as_deref(),
-            sandbox: self.sandbox.as_deref(),
-            sandbox_mode: self.sandbox_mode.as_deref(),
-            auto_review_enabled: self.auto_review_enabled,
-            node_repl_auto_review_required: self.node_repl_auto_review_required,
-            node_repl_disabled: self.node_repl_disabled,
             workspaces: non_empty_workspaces(&self.workspaces),
             tool_namespaces_info: self.tool_namespaces_info.as_ref(),
             turn_started_at_unix_ms: self.turn_started_at_unix_ms,
             history_ingest_requested: self.history_ingest_requested,
-            analytics_enabled: self.analytics_enabled,
             compaction,
             // Extra metadata enriches the Codex turn metadata blob, not literal top-level
             // Responses client_metadata. Product metadata is validated while loading config;
@@ -583,16 +577,6 @@ struct CodexTurnMetadataPayload<'a> {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     turn_trigger: Option<&'a str>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    sandbox: Option<&'a str>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    sandbox_mode: Option<&'a str>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    auto_review_enabled: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    node_repl_auto_review_required: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    node_repl_disabled: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     workspaces: Option<&'a BTreeMap<String, TurnMetadataWorkspace>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     tool_namespaces_info: Option<&'a TurnToolNamespacesInfo>,
@@ -600,8 +584,6 @@ struct CodexTurnMetadataPayload<'a> {
     turn_started_at_unix_ms: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     history_ingest_requested: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    analytics_enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     compaction: Option<CompactionTurnMetadata>,
     #[serde(flatten)]

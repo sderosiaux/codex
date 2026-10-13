@@ -221,25 +221,21 @@ mod tests {
         fs::create_dir_all(&installed_root).unwrap();
         let marker = installed_root.join("marker.txt");
         fs::write(&marker, "installed").unwrap();
-        let stack = ConfigLayerStack::new(
-            vec![
-                ConfigLayerEntry::new(
-                    ConfigLayerSource::System {
-                        file: system_file.clone(),
-                    },
-                    toml::from_str(config).unwrap(),
-                ),
-                ConfigLayerEntry::new(
-                    ConfigLayerSource::User {
-                        file: user_file.clone(),
-                        profile: None,
-                    },
-                    toml::from_str(config).unwrap(),
-                ),
-            ],
-            Default::default(),
-            Default::default(),
-        )
+        let stack = ConfigLayerStack::new(vec![
+            ConfigLayerEntry::new(
+                ConfigLayerSource::System {
+                    file: system_file.clone(),
+                },
+                toml::from_str(config).unwrap(),
+            ),
+            ConfigLayerEntry::new(
+                ConfigLayerSource::User {
+                    file: user_file.clone(),
+                    profile: None,
+                },
+                toml::from_str(config).unwrap(),
+            ),
+        ])
         .unwrap();
 
         let err = remove_marketplace_sync(

@@ -1,6 +1,4 @@
 use std::collections::BTreeMap;
-use std::path::Path;
-use std::path::PathBuf;
 
 use codex_protocol::protocol::HookEventName;
 use schemars::JsonSchema;
@@ -28,16 +26,12 @@ pub struct HooksToml {
 pub struct HookStateToml {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub trusted_hash: Option<String>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct HookEventsToml {
     #[serde(rename = "PreToolUse", default)]
     pub pre_tool_use: Vec<MatcherGroup>,
-    #[serde(rename = "PermissionRequest", default)]
-    pub permission_request: Vec<MatcherGroup>,
     #[serde(rename = "PostToolUse", default)]
     pub post_tool_use: Vec<MatcherGroup>,
     #[serde(rename = "PreCompact", default)]
@@ -64,7 +58,6 @@ impl HookEventsToml {
     pub fn is_empty(&self) -> bool {
         let Self {
             pre_tool_use,
-            permission_request,
             post_tool_use,
             pre_compact,
             post_compact,
@@ -77,7 +70,6 @@ impl HookEventsToml {
             interrupt,
         } = self;
         pre_tool_use.is_empty()
-            && permission_request.is_empty()
             && post_tool_use.is_empty()
             && pre_compact.is_empty()
             && post_compact.is_empty()
@@ -93,7 +85,6 @@ impl HookEventsToml {
     pub fn handler_count(&self) -> usize {
         let Self {
             pre_tool_use,
-            permission_request,
             post_tool_use,
             pre_compact,
             post_compact,
@@ -107,7 +98,6 @@ impl HookEventsToml {
         } = self;
         [
             pre_tool_use,
-            permission_request,
             post_tool_use,
             pre_compact,
             post_compact,
@@ -125,17 +115,16 @@ impl HookEventsToml {
         .sum()
     }
 
-    pub fn into_matcher_groups(mut self) -> [(HookEventName, Vec<MatcherGroup>); 12] {
+    pub fn into_matcher_groups(mut self) -> [(HookEventName, Vec<MatcherGroup>); 11] {
         self.matcher_groups_mut()
             .map(|(event, groups)| (event, std::mem::take(groups)))
     }
 
-    pub fn matcher_groups_mut(&mut self) -> [(HookEventName, &mut Vec<MatcherGroup>); 12] {
+    pub fn matcher_groups_mut(&mut self) -> [(HookEventName, &mut Vec<MatcherGroup>); 11] {
         use HookEventName as Event;
 
         [
             (Event::PreToolUse, &mut self.pre_tool_use),
-            (Event::PermissionRequest, &mut self.permission_request),
             (Event::PostToolUse, &mut self.post_tool_use),
             (Event::PreCompact, &mut self.pre_compact),
             (Event::PostCompact, &mut self.post_compact),
@@ -187,7 +176,7 @@ pub enum HookHandlerConfig {
     McpTool {
         server: String,
         tool: String,
-        #[serde(default, deserialize_with = "deserialize_mcp_tool_input")]
+        #[serde(default)]
         input: serde_json::Map<String, serde_json::Value>,
         #[serde(default, rename = "timeout")]
         timeout_sec: Option<u64>,
@@ -198,57 +187,6 @@ pub enum HookHandlerConfig {
     Prompt {},
     #[serde(rename = "agent")]
     Agent {},
-}
-
-// Reject values such as null that cannot be represented in TOML for trust hashing.
-fn deserialize_mcp_tool_input<'de, D>(
-    deserializer: D,
-) -> Result<serde_json::Map<String, serde_json::Value>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let input = serde_json::Map::deserialize(deserializer)?;
-    toml::Value::try_from(&input).map_err(|error| {
-        serde::de::Error::custom(format!(
-            "MCP hook input must be representable as TOML: {error}"
-        ))
-    })?;
-    Ok(input)
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ManagedHooksRequirementsToml {
-    pub managed_dir: Option<PathBuf>,
-    pub windows_managed_dir: Option<PathBuf>,
-    #[serde(flatten)]
-    pub hooks: HookEventsToml,
-}
-
-impl ManagedHooksRequirementsToml {
-    pub fn is_empty(&self) -> bool {
-        let Self {
-            managed_dir,
-            windows_managed_dir,
-            hooks,
-        } = self;
-        managed_dir.is_none() && windows_managed_dir.is_none() && hooks.is_empty()
-    }
-
-    pub fn handler_count(&self) -> usize {
-        self.hooks.handler_count()
-    }
-
-    pub fn managed_dir_for_current_platform(&self) -> Option<&Path> {
-        #[cfg(windows)]
-        {
-            self.windows_managed_dir.as_deref()
-        }
-
-        #[cfg(not(windows))]
-        {
-            self.managed_dir.as_deref()
-        }
-    }
 }
 
 #[cfg(test)]

@@ -6,7 +6,6 @@ use codex_protocol::models::ResponseItem;
 use super::AdditionalContextUserFragment;
 use super::AgentMessageBoardNotification;
 use super::ContextualUserFragment;
-use super::GuardianRetainedInstructions;
 use super::InternalModelContextFragment;
 use super::LegacyApplyPatchExecCommandWarning;
 use super::LegacyModelMismatchWarning;
@@ -36,20 +35,16 @@ const CONTEXTUAL_USER_FRAGMENT_MATCHERS: &[fn(&str) -> bool] = &[
     LegacyModelMismatchWarning::matches_text,
 ];
 
-/// Hidden runtime context is not user authorization. Explicit user goal edits are.
-pub(crate) fn is_guardian_context_message(item: &ResponseItem) -> bool {
-    matches!(item, ResponseItem::Message { role, content, internal_chat_message_metadata_passthrough, .. }
+/// Hidden runtime context is not conversation content. Explicit user goal edits are.
+pub(crate) fn is_hidden_context_message(item: &ResponseItem) -> bool {
+    matches!(item, ResponseItem::Message { role, content, .. }
         if role == "user"
-            && (content.iter().any(is_contextual_user_fragment)
-                || internal_chat_message_metadata_passthrough.as_ref()
-                    .and_then(|metadata| metadata.content_item_kinds.as_ref())
-                    .is_some_and(|kinds| !kinds.is_empty() && kinds.len() == content.len()
-                        && kinds.iter().all(|kind| kind.0 == GuardianRetainedInstructions::KIND)))
+            && content.iter().any(is_contextual_user_fragment)
             && UserGoalUpdate::message_text(item).is_none())
 }
 
-/// Uses host annotations rather than text markers to identify user authorization changes.
-pub(crate) fn is_user_authorization_message(item: &ResponseItem) -> bool {
+/// Uses host annotations rather than text markers to identify user-authored instructions.
+pub(crate) fn is_user_instruction_message(item: &ResponseItem) -> bool {
     let ResponseItem::Message {
         role,
         content,

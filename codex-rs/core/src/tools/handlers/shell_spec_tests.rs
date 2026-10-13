@@ -10,7 +10,6 @@ fn windows_shell_guidance_description() -> String {
 fn exec_command_tool_matches_expected_spec() {
     let tool = create_exec_command_tool(CommandToolOptions {
         include_login_parameter: true,
-        exec_permission_approvals_enabled: false,
     });
 
     let description = if cfg!(windows) {
@@ -28,7 +27,7 @@ fn exec_command_tool_matches_expected_spec() {
         "Wait before yielding output. Defaults to 10000 ms; effective range is 250-30000 ms."
     };
 
-    let mut properties = BTreeMap::from([
+    let properties = BTreeMap::from([
         (
             "cmd".to_string(),
             JsonSchema::string(Some("Shell command to execute.".to_string())),
@@ -70,9 +69,6 @@ fn exec_command_tool_matches_expected_spec() {
                 )),
         ),
     ]);
-    properties.extend(create_approval_parameters(
-        /*exec_permission_approvals_enabled*/ false,
-    ));
 
     assert_eq!(
         tool,
@@ -137,45 +133,6 @@ fn write_stdin_tool_matches_expected_spec() {
                 Some(false.into())
             ),
             output_schema: Some(unified_exec_output_schema().into()),
-        })
-    );
-}
-
-#[test]
-fn request_permissions_tool_includes_full_permission_schema() {
-    let tool =
-        create_request_permissions_tool("Request extra permissions for this turn.".to_string());
-
-    let properties = BTreeMap::from([
-        (
-            "reason".to_string(),
-            JsonSchema::string(Some(
-                "Optional short explanation for why additional permissions are needed.".to_string(),
-            )),
-        ),
-        (
-            "environment_id".to_string(),
-            JsonSchema::string(Some(
-                "Environment id from <environment_context>. Omit to use the primary environment."
-                    .to_string(),
-            )),
-        ),
-        ("permissions".to_string(), permission_profile_schema()),
-    ]);
-
-    assert_eq!(
-        tool,
-        ToolSpec::Function(ResponsesApiTool {
-            name: "request_permissions".to_string(),
-            description: "Request extra permissions for this turn.".to_string(),
-            strict: false,
-            defer_loading: None,
-            parameters: JsonSchema::object(
-                properties,
-                Some(vec!["permissions".to_string()]),
-                Some(false.into())
-            ),
-            output_schema: None,
         })
     );
 }

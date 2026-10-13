@@ -5,32 +5,6 @@ use std::collections::HashMap;
 use std::path::Path;
 
 #[test]
-fn app_tool_approval_restrictions_never_weaken_either_policy() {
-    use AppToolApproval::Approve;
-    use AppToolApproval::Auto;
-    use AppToolApproval::Prompt;
-    use AppToolApproval::Writes;
-
-    let modes = [Approve, Auto, Writes, Prompt];
-    let expected = [
-        [Approve, Auto, Writes, Prompt],
-        [Auto, Auto, Prompt, Prompt],
-        [Writes, Prompt, Writes, Prompt],
-        [Prompt, Prompt, Prompt, Prompt],
-    ];
-
-    for (parent_index, parent) in modes.into_iter().enumerate() {
-        for (requested_index, requested) in modes.into_iter().enumerate() {
-            assert_eq!(
-                parent.restrict_to(requested),
-                expected[parent_index][requested_index],
-                "parent: {parent:?}, requested: {requested:?}",
-            );
-        }
-    }
-}
-
-#[test]
 fn deserialize_stdio_command_server_config() {
     let cfg: McpServerConfig = toml::from_str(
         r#"
@@ -427,39 +401,6 @@ fn oauth_client_secret_round_trips_without_debug_disclosure() {
 }
 
 #[test]
-fn oauth_client_secret_requires_nonempty_secret_and_client_id() {
-    for (oauth, expected) in [
-        (
-            serde_json::json!({"client_id": "client", "client_secret": ""}),
-            "oauth.client_secret must not be empty",
-        ),
-        (
-            serde_json::json!({"client_id": "client", "client_secret": " \t"}),
-            "oauth.client_secret must not be empty",
-        ),
-        (
-            serde_json::json!({"client_secret": "test-client-secret"}),
-            "oauth.client_secret requires oauth.client_id",
-        ),
-        (
-            serde_json::json!({"client_id": "", "client_secret": "test-client-secret"}),
-            "oauth.client_secret requires oauth.client_id",
-        ),
-        (
-            serde_json::json!({"client_id": " \t", "client_secret": "test-client-secret"}),
-            "oauth.client_secret requires oauth.client_id",
-        ),
-    ] {
-        let err = serde_json::from_value::<McpServerConfig>(serde_json::json!({
-            "url": "https://example.com/mcp",
-            "oauth": oauth
-        }))
-        .expect_err("should reject invalid OAuth client credentials");
-        assert_eq!(err.to_string(), expected);
-    }
-}
-
-#[test]
 fn oauth_callback_port_prefers_server_port_over_global_port() {
     let cfg: McpServerConfig = toml::from_str(
         r#"
@@ -519,17 +460,9 @@ fn deserialize_server_config_with_parallel_tool_calls() {
 fn serialize_round_trips_server_config_with_omitted_tool_exposure_surfaces() {
     for omitted_surfaces in [
         vec![],
-        vec![ToolExposureSurface::CodeMode],
         vec![ToolExposureSurface::Deferred],
         vec![ToolExposureSurface::Direct],
-        vec![ToolExposureSurface::CodeMode, ToolExposureSurface::Deferred],
-        vec![ToolExposureSurface::CodeMode, ToolExposureSurface::Direct],
         vec![ToolExposureSurface::Deferred, ToolExposureSurface::Direct],
-        vec![
-            ToolExposureSurface::CodeMode,
-            ToolExposureSurface::Deferred,
-            ToolExposureSurface::Direct,
-        ],
     ] {
         let serialized_surfaces = omitted_surfaces
             .iter()
@@ -548,41 +481,6 @@ fn serialize_round_trips_server_config_with_omitted_tool_exposure_surfaces() {
             toml::from_str(&serialized).expect("should deserialize serialized MCP config");
         assert_eq!(round_tripped, cfg);
     }
-}
-
-#[test]
-fn deserialize_server_config_with_default_tool_approval_mode() {
-    let cfg: McpServerConfig = toml::from_str(
-        r#"
-            command = "echo"
-            default_tools_approval_mode = "approve"
-
-            [tools.search]
-            approval_mode = "prompt"
-            output_token_limit = 30000
-        "#,
-    )
-    .expect("should deserialize default tool approval mode");
-
-    assert_eq!(
-        cfg.default_tools_approval_mode,
-        Some(AppToolApproval::Approve)
-    );
-    assert_eq!(
-        cfg.tools.get("search"),
-        Some(&McpServerToolConfig {
-            approval_mode: Some(AppToolApproval::Prompt),
-            output_token_limit: std::num::NonZeroUsize::new(30_000),
-        })
-    );
-
-    let serialized = toml::to_string(&cfg).expect("should serialize MCP config");
-    assert!(serialized.contains("default_tools_approval_mode = \"approve\""));
-    assert!(serialized.contains("output_token_limit = 30000"));
-
-    let round_tripped: McpServerConfig =
-        toml::from_str(&serialized).expect("should deserialize serialized MCP config");
-    assert_eq!(round_tripped, cfg);
 }
 
 #[test]
@@ -614,48 +512,6 @@ fn serialize_round_trips_server_config_with_parallel_tool_calls() {
     let round_tripped: McpServerConfig =
         toml::from_str(&serialized).expect("should deserialize serialized MCP config");
     assert_eq!(round_tripped, cfg);
-}
-
-#[test]
-fn deserialize_ignores_unknown_server_fields() {
-    let cfg: McpServerConfig = toml::from_str(
-        r#"
-            command = "echo"
-            trust_level = "trusted"
-        "#,
-    )
-    .expect("should ignore unknown server fields");
-
-    assert_eq!(
-        cfg,
-        McpServerConfig {
-            auth: Default::default(),
-            transport: McpServerTransportConfig::Stdio {
-                command: "echo".to_string(),
-                args: vec![],
-                env: None,
-                env_vars: Vec::new(),
-                cwd: None,
-            },
-            environment_id: crate::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
-            enabled: true,
-            required: false,
-            startup_readiness: Default::default(),
-            supports_parallel_tool_calls: false,
-            tool_input_schema_max_bytes: None,
-            omit_tools_from: None,
-            disabled_reason: None,
-            startup_timeout_sec: None,
-            tool_timeout_sec: None,
-            default_tools_approval_mode: None,
-            enabled_tools: None,
-            disabled_tools: None,
-            scopes: None,
-            oauth: None,
-            oauth_resource: None,
-            tools: HashMap::new(),
-        }
-    );
 }
 
 #[test]

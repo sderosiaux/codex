@@ -99,9 +99,7 @@ async fn recovery_without_a_snapshot_keeps_each_threads_originator() -> Result<(
         serde_json::from_value(json!({"url": format!("{}/mcp", mcp.uri())}))?;
     let mut config = fixture.config.clone();
     config.mcp_oauth_credentials_store_mode = OAuthCredentialsStoreMode::File;
-    config
-        .mcp_servers
-        .set([("reauth".into(), server_config)].into())?;
+    config.mcp_servers = [("reauth".into(), server_config)].into();
     let metrics = codex_otel::install_global_metrics(MetricsClient::new(
         MetricsConfig::in_memory("test", "test", "1", Default::default()).with_runtime_reader(),
     )?);

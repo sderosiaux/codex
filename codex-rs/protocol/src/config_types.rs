@@ -1,14 +1,8 @@
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_redacted_string::RedactedString;
 use schemars::JsonSchema;
-use schemars::r#gen::SchemaGenerator;
-use schemars::schema::InstanceType;
-use schemars::schema::Metadata;
-use schemars::schema::Schema;
-use schemars::schema::SchemaObject;
 use serde::Deserialize;
 use serde::Serialize;
-use serde_json::Value;
 use std::collections::HashMap;
 use std::fmt;
 use std::num::NonZeroU64;
@@ -96,23 +90,6 @@ pub enum Verbosity {
     High,
 }
 
-#[derive(
-    Deserialize, Debug, Clone, Copy, PartialEq, Default, Serialize, Display, JsonSchema, TS,
-)]
-#[serde(rename_all = "kebab-case")]
-#[strum(serialize_all = "kebab-case")]
-pub enum SandboxMode {
-    #[serde(rename = "read-only")]
-    #[default]
-    ReadOnly,
-
-    #[serde(rename = "workspace-write")]
-    WorkspaceWrite,
-
-    #[serde(rename = "danger-full-access")]
-    DangerFullAccess,
-}
-
 /// Validated plain profile-v2 name used to select `$CODEX_HOME/<name>.config.toml`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProfileV2Name(String);
@@ -169,36 +146,6 @@ impl Deref for ProfileV2Name {
 impl fmt::Display for ProfileV2Name {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
-    }
-}
-
-#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Display, TS)]
-#[strum(serialize_all = "snake_case")]
-#[ts(type = r#""user" | "auto_review" | "guardian_subagent""#)]
-/// Configures who approval requests are routed to for review. Examples
-/// include sandbox escapes, blocked network access, MCP approval prompts, and
-/// ARC escalations. Defaults to `user`. `auto_review` uses a carefully
-/// prompted subagent to gather relevant context and apply a risk-based
-/// decision framework before approving or denying the request.
-pub enum ApprovalsReviewer {
-    #[default]
-    #[serde(rename = "user")]
-    User,
-    #[serde(rename = "auto_review", alias = "guardian_subagent")]
-    #[strum(serialize = "auto_review")]
-    AutoReview,
-}
-
-impl JsonSchema for ApprovalsReviewer {
-    fn schema_name() -> String {
-        "ApprovalsReviewer".to_string()
-    }
-
-    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
-        string_enum_schema_with_description(
-            &["user", "auto_review", "guardian_subagent"],
-            "Configures who approval requests are routed to for review. Examples include sandbox escapes, blocked network access, MCP approval prompts, and ARC escalations. Defaults to `user`. `auto_review` uses a carefully prompted subagent to gather relevant context and apply a risk-based decision framework before approving or denying the request. The legacy value `guardian_subagent` is accepted for compatibility.",
-        )
     }
 }
 
@@ -269,46 +216,6 @@ impl Default for ShellEnvironmentPolicy {
             use_profile: false,
         }
     }
-}
-
-fn string_enum_schema_with_description(values: &[&str], description: &str) -> Schema {
-    let mut schema = SchemaObject {
-        instance_type: Some(InstanceType::String.into()),
-        metadata: Some(Box::new(Metadata {
-            description: Some(description.to_string()),
-            ..Default::default()
-        })),
-        ..Default::default()
-    };
-    schema.enum_values = Some(
-        values
-            .iter()
-            .map(|value| Value::String((*value).to_string()))
-            .collect(),
-    );
-    Schema::Object(schema)
-}
-
-#[derive(
-    Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Display, JsonSchema, TS,
-)]
-#[serde(rename_all = "kebab-case")]
-#[strum(serialize_all = "kebab-case")]
-pub enum WindowsSandboxLevel {
-    #[default]
-    Disabled,
-    RestrictedToken,
-    Elevated,
-}
-
-/// Controls whether a Windows sandbox launch reconciles persistent proxy settings or preserves
-/// the settings established by another launch.
-#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum WindowsSandboxProxySettingsMode {
-    #[default]
-    Reconcile,
-    Preserve,
 }
 
 /// Deprecated: `friendly` and `pragmatic` no longer select a style.
@@ -398,8 +305,6 @@ impl WebSearchMode {
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
 pub enum ToolExposureSurface {
-    /// Nested tools available to Code Mode scripts.
-    CodeMode,
     /// Tools discovered later through tool search.
     Deferred,
     /// Tools present in the model's initial tool list.
@@ -634,38 +539,6 @@ fn is_default_provider_auth_cwd(path: &AbsolutePathBuf) -> bool {
     path == &default_provider_auth_cwd()
 }
 
-/// Represents the trust level for a project directory.
-/// This determines the approval policy and sandbox mode applied.
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Display, JsonSchema, TS)]
-#[serde(rename_all = "lowercase")]
-#[strum(serialize_all = "lowercase")]
-pub enum TrustLevel {
-    Trusted,
-    Untrusted,
-}
-
-/// Controls whether the TUI uses the terminal's alternate screen buffer.
-///
-/// - `auto` (default): Use alternate screen mode.
-/// - `always`: Always use alternate screen mode.
-/// - `never`: Never use alternate screen mode. Runs in inline mode, preserving scrollback.
-///
-/// The CLI flag `--no-alt-screen` can override this setting at runtime.
-#[derive(
-    Debug, Serialize, Deserialize, Default, Clone, Copy, PartialEq, Eq, Display, JsonSchema, TS,
-)]
-#[serde(rename_all = "lowercase")]
-#[strum(serialize_all = "lowercase")]
-pub enum AltScreenMode {
-    /// Use alternate screen mode.
-    #[default]
-    Auto,
-    /// Always use alternate screen mode.
-    Always,
-    /// Never use alternate screen (inline mode only).
-    Never,
-}
-
 /// Initial collaboration mode to use when the TUI starts.
 #[derive(
     Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash, JsonSchema, TS, Default,
@@ -860,31 +733,6 @@ mod tests {
             let json = format!("\"{alias}\"");
             let mode: ModeKind = serde_json::from_str(&json).expect("deserialize mode");
             assert_eq!(ModeKind::Default, mode);
-        }
-    }
-
-    #[test]
-    fn approvals_reviewer_serializes_auto_review_and_accepts_legacy_guardian_subagent() {
-        assert_eq!(ApprovalsReviewer::User.to_string(), "user");
-        assert_eq!(
-            serde_json::to_string(&ApprovalsReviewer::User).expect("serialize reviewer"),
-            "\"user\""
-        );
-        assert_eq!(
-            serde_json::to_string(&ApprovalsReviewer::AutoReview).expect("serialize reviewer"),
-            "\"auto_review\""
-        );
-
-        for value in ["user", "auto_review", "guardian_subagent"] {
-            let json = format!("\"{value}\"");
-            let reviewer: ApprovalsReviewer =
-                serde_json::from_str(&json).expect("deserialize reviewer");
-            let expected = if value == "user" {
-                ApprovalsReviewer::User
-            } else {
-                ApprovalsReviewer::AutoReview
-            };
-            assert_eq!(expected, reviewer);
         }
     }
 

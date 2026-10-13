@@ -984,9 +984,6 @@ fn apply_plugin_mcp_server_policy(config: &mut McpServerConfig, policy: &PluginM
     if policy.has_unsupported_ema_auth {
         config.auth = codex_config::McpServerAuth::EmaAuth;
     }
-    if let Some(approval_mode) = policy.default_tools_approval_mode {
-        config.default_tools_approval_mode = Some(approval_mode);
-    }
     if let Some(enabled_tools) = &policy.enabled_tools {
         config.enabled_tools = Some(enabled_tools.clone());
     }
@@ -995,9 +992,6 @@ fn apply_plugin_mcp_server_policy(config: &mut McpServerConfig, policy: &PluginM
     }
     for (tool_name, tool_policy) in &policy.tools {
         let tool_config = config.tools.entry(tool_name.clone()).or_default();
-        if let Some(approval_mode) = tool_policy.approval_mode {
-            tool_config.approval_mode = Some(approval_mode);
-        }
         tool_config.restrict_output_token_limit(tool_policy.output_token_limit);
     }
 }
@@ -1445,12 +1439,6 @@ pub fn apply_configured_plugin_mcp_server_policies(
             if policy.has_unsupported_ema_auth {
                 server.auth = codex_config::McpServerAuth::EmaAuth;
             }
-            let declared_approval_mode = server.default_tools_approval_mode.unwrap_or_default();
-
-            if let Some(approval_mode) = policy.default_tools_approval_mode {
-                server.default_tools_approval_mode =
-                    Some(declared_approval_mode.restrict_to(approval_mode));
-            }
             if let Some(enabled_tools) = &policy.enabled_tools {
                 match &mut server.enabled_tools {
                     Some(declared_tools) => {
@@ -1468,24 +1456,11 @@ pub fn apply_configured_plugin_mcp_server_policies(
                 }
             }
             for (tool_name, tool_policy) in &policy.tools {
-                if tool_policy.approval_mode.is_some() || tool_policy.output_token_limit.is_some() {
+                if tool_policy.output_token_limit.is_some() {
                     server.tools.entry(tool_name.clone()).or_default();
                 }
             }
             for (tool_name, tool_config) in &mut server.tools {
-                if let Some(approval_mode) = policy
-                    .tools
-                    .get(tool_name)
-                    .and_then(|tool_policy| tool_policy.approval_mode)
-                    .or(policy.default_tools_approval_mode)
-                {
-                    tool_config.approval_mode = Some(
-                        tool_config
-                            .approval_mode
-                            .unwrap_or(declared_approval_mode)
-                            .restrict_to(approval_mode),
-                    );
-                }
                 tool_config.restrict_output_token_limit(
                     policy
                         .tools

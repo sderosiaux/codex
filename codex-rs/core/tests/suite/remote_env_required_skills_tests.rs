@@ -86,10 +86,7 @@ async fn required_environment_skill_gates_inference(availability: Availability) 
         .with_extensions(Arc::new(extensions.build()))
         .with_config(|config| {
             config.project_doc_max_bytes = 0;
-            config
-                .features
-                .enable(Feature::ExecutorCapabilityDiscovery)
-                .expect("enable executor capability discovery");
+            config.features.enable(Feature::ExecutorCapabilityDiscovery);
         })
         .build_with_environment(&server, environment)
         .await?;
@@ -126,11 +123,10 @@ async fn required_environment_skill_gates_inference(availability: Availability) 
     if matches!(availability, Availability::FailedEnvironment) {
         required.config = EnvironmentConfigState::Failed("configuration unavailable".to_string());
     }
-    submit_turn_with_approval_and_environments(
+    start_turn_with_environments(
         &test,
         "Review the workspace.",
         vec![primary.clone(), required],
-        AskForApproval::Never,
     )
     .await?;
     let mut errors = Vec::new();

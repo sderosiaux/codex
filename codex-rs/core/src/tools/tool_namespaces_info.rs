@@ -10,14 +10,12 @@ use crate::tools::registry::ToolRegistry;
 use codex_protocol::DEFAULT_FUNCTION_NAMESPACE;
 use codex_tools::ResponsesApiNamespaceTool;
 use codex_tools::TOOL_SEARCH_TOOL_NAME;
-use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 
 const TOOL_SEARCH_FUNCTION_NAME: &str = "tool_search_tool";
 
 pub(super) fn collect_tool_namespaces_info(
     registry: &ToolRegistry,
-    code_mode_tool_names: &BTreeMap<String, ToolName>,
     model_visible_specs: &[ToolSpec],
 ) -> TurnToolNamespacesInfo {
     let mut direct_functions = BTreeSet::new();
@@ -44,12 +42,6 @@ pub(super) fn collect_tool_namespaces_info(
         }
     }
 
-    let code_mode_names_by_tool = code_mode_tool_names
-        .iter()
-        .map(|(code_mode_name, tool_name)| {
-            (tool_name.clone().with_default_namespace(), code_mode_name)
-        })
-        .collect::<BTreeMap<_, _>>();
     let mut namespaces = TurnToolNamespacesInfo::default();
 
     for tool in registry.entries() {
@@ -74,13 +66,10 @@ pub(super) fn collect_tool_namespaces_info(
             )
         };
         let direct = direct_functions.contains(&(namespace_name, function_name));
-        let code_mode_name = code_mode_names_by_tool
-            .get(&tool_name)
-            .map(|name| (*name).clone());
         let deferred = exposure.is_deferred()
             && native_tool_search_visible
             && (runtime.immutable_spec().is_some() || runtime.search_info().is_some());
-        if !direct && !deferred && code_mode_name.is_none() {
+        if !direct && !deferred {
             continue;
         }
 
@@ -96,7 +85,6 @@ pub(super) fn collect_tool_namespaces_info(
             .or_insert_with(|| TurnToolFunctionInfo {
                 name: function_name.to_string(),
                 direct,
-                code_mode_name,
                 deferred,
                 source: match runtime.mcp_server_name() {
                     Some(server_name) => TurnToolSource::Mcp {

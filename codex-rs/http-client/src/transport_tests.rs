@@ -26,11 +26,7 @@ async fn disabled_request_logging_suppresses_transport_url_and_body() {
     assert!(!logs.contains("url-secret"));
     assert!(!logs.contains("body-secret"));
 
-    let controller = crate::NetworkPolicyController::default();
-    let policy = controller.policy();
-    controller.publish(policy.revision(), crate::DestinationPolicy::Unrestricted);
-    let factory = crate::HttpClientFactory::new(crate::OutboundProxyPolicy::ReqwestDefault)
-        .with_network_policy(policy);
+    let factory = crate::HttpClientFactory::new(crate::OutboundProxyPolicy::ReqwestDefault);
     let client =
         crate::RouteAwareClientPool::new(factory, crate::ClientRouteClass::Api).into_client();
     let logs = capture_transport_logs(client.clone()).await;

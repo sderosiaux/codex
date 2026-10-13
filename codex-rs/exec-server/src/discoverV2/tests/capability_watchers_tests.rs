@@ -1,7 +1,6 @@
 //! Watch events invalidate discovery; no subscription keeps requests uncached.
 
 use super::*;
-use crate::DiscoverV2CapabilitiesRequest;
 use crate::LocalFileSystem;
 use crate::discover_v2::capability_locations::tests::request;
 use crate::discover_v2::capability_locations::tests::write;
@@ -37,14 +36,8 @@ async fn watch_events_invalidate_discovery_and_no_subscription_disables_caching(
     )?;
     let request = request(&root)?;
     let demo_skill = request.codex_home.join("skills/demo/SKILL.md")?;
-    let manager = CapabilityManager::new(LocalFileSystem::unsandboxed());
-    let params = DiscoverV2CapabilitiesRequest {
-        cwd: PathUri::from_host_native_path(&root)?,
-        sandbox: None,
-    };
-    let original = manager
-        .get_or_refresh_discovery(request.clone(), params.clone())
-        .await?;
+    let manager = CapabilityManager::new(LocalFileSystem::new());
+    let original = manager.get_or_refresh_discovery(request.clone()).await?;
     assert!(
         original
             .skills
@@ -71,7 +64,7 @@ async fn watch_events_invalidate_discovery_and_no_subscription_disables_caching(
                 .await
                 .context("missing snapshot")?;
             if !Arc::ptr_eq(&initial, &snapshot) {
-                assert!(snapshot.sandbox_discoveries.lock().await.is_empty());
+                assert!(snapshot.discovery.get().is_none());
                 break anyhow::Ok(());
             }
         }
@@ -112,7 +105,7 @@ async fn watch_events_invalidate_discovery_and_no_subscription_disables_caching(
                         .is_some_and(|plugin| plugin.id == "gmail@acme")
                 })
             {
-                assert!(snapshot.sandbox_discoveries.lock().await.is_empty());
+                assert!(snapshot.discovery.get().is_none());
                 break anyhow::Ok(());
             }
         }
@@ -121,9 +114,7 @@ async fn watch_events_invalidate_discovery_and_no_subscription_disables_caching(
     .context("native watcher missed creation of a global root")??;
     // Drive subsequent refreshes explicitly so native delivery cannot race cache assertions.
     stop_listener(&manager).await?;
-    let refreshed = manager
-        .get_or_refresh_discovery(request.clone(), params.clone())
-        .await?;
+    let refreshed = manager.get_or_refresh_discovery(request.clone()).await?;
     let added_skill = home_skills.join("added/SKILL.md")?;
     assert!(
         refreshed
@@ -138,21 +129,11 @@ async fn watch_events_invalidate_discovery_and_no_subscription_disables_caching(
             .iter()
             .any(|skill| skill.path == demo_skill && skill.description == "ready")
     );
-    let sandbox_params = DiscoverV2CapabilitiesRequest {
-        sandbox: Some(crate::FileSystemSandboxContext::from_legacy_sandbox_policy(
-            codex_protocol::protocol::SandboxPolicy::DangerFullAccess,
-            params.cwd.clone(),
-        )?),
-        ..params.clone()
-    };
-    manager
-        .get_or_refresh_discovery(request.clone(), sandbox_params)
-        .await?;
     let retained = manager
         .location_snapshot()
         .await
         .context("missing populated snapshot")?;
-    assert_eq!(retained.sandbox_discoveries.lock().await.len(), 2);
+    assert!(retained.discovery.get().is_some());
     write(
         &root,
         "codex/plugins/cache/acme/gmail/2.0.0/.codex-plugin/plugin.json",
@@ -177,8 +158,8 @@ async fn watch_events_invalidate_discovery_and_no_subscription_disables_caching(
             .map(|plugin| plugin.version.as_str()),
         Some("2.0.0")
     );
-    assert!(next.sandbox_discoveries.lock().await.is_empty());
-    assert_eq!(retained.sandbox_discoveries.lock().await.len(), 2);
+    assert!(next.discovery.get().is_none());
+    assert!(retained.discovery.get().is_some());
     assert_eq!(
         retained
             .locations
@@ -189,22 +170,18 @@ async fn watch_events_invalidate_discovery_and_no_subscription_disables_caching(
             .map(|plugin| plugin.version.as_str()),
         Some("1.0.0")
     );
-    let after = manager
-        .get_or_refresh_discovery(request.clone(), params.clone())
-        .await?;
+    let after = manager.get_or_refresh_discovery(request.clone()).await?;
     assert!(
         after
             .skills
             .iter()
             .any(|skill| skill.path == demo_skill && skill.description == "refreshed")
     );
-    // Only the requested context is rebuilt; subsequent requests reuse it.
-    assert_eq!(next.sandbox_discoveries.lock().await.len(), 1);
+    // The replacement snapshot is rebuilt once; subsequent requests reuse it.
+    assert!(next.discovery.get().is_some());
     assert!(Arc::ptr_eq(
         &after,
-        &manager
-            .get_or_refresh_discovery(request.clone(), params.clone())
-            .await?
+        &manager.get_or_refresh_discovery(request.clone()).await?
     ));
 
     #[cfg(unix)]
@@ -215,9 +192,7 @@ async fn watch_events_invalidate_discovery_and_no_subscription_disables_caching(
         std::fs::rename(&cache, &saved_cache)?;
         std::os::unix::fs::symlink(&cache, &cache)?;
         manager.refresh_locations().await;
-        let fallback = manager
-            .get_or_refresh_discovery(request.clone(), params.clone())
-            .await?;
+        let fallback = manager.get_or_refresh_discovery(request.clone()).await?;
         assert!(Arc::ptr_eq(&after, &fallback));
         std::fs::remove_file(&cache)?;
         std::fs::rename(&saved_cache, &cache)?;
@@ -226,9 +201,7 @@ async fn watch_events_invalidate_discovery_and_no_subscription_disables_caching(
             "codex/skills/recovered/SKILL.md",
             "---\nname: recovered\ndescription: recovered after failed refresh\n---\n",
         )?;
-        let recovered = manager
-            .get_or_refresh_discovery(request.clone(), params.clone())
-            .await?;
+        let recovered = manager.get_or_refresh_discovery(request.clone()).await?;
         assert!(
             recovered
                 .skills
@@ -238,21 +211,17 @@ async fn watch_events_invalidate_discovery_and_no_subscription_disables_caching(
         assert!(!Arc::ptr_eq(&fallback, &recovered));
         assert!(Arc::ptr_eq(
             &recovered,
-            &manager
-                .get_or_refresh_discovery(request.clone(), params.clone())
-                .await?
+            &manager.get_or_refresh_discovery(request.clone()).await?
         ));
     }
 
     // Without a subscription, requests reload both membership and content.
-    let mut uncached = CapabilityManager::new(LocalFileSystem::unsandboxed());
+    let mut uncached = CapabilityManager::new(LocalFileSystem::new());
     Arc::get_mut(&mut uncached)
         .context("new manager unexpectedly shared")?
         .watchers
         .file_watcher = None;
-    let before = uncached
-        .get_or_refresh_discovery(request.clone(), params.clone())
-        .await?;
+    let before = uncached.get_or_refresh_discovery(request.clone()).await?;
     assert!(uncached.watchers.subscription.get().is_none());
     write(
         &root,
@@ -264,9 +233,7 @@ async fn watch_events_invalidate_discovery_and_no_subscription_disables_caching(
         "codex/plugins/cache/acme/calendar/1.0.0/.codex-plugin/plugin.json",
         r#"{"name":"calendar"}"#,
     )?;
-    let after = uncached
-        .get_or_refresh_discovery(request.clone(), params.clone())
-        .await?;
+    let after = uncached.get_or_refresh_discovery(request.clone()).await?;
     assert_eq!(after.plugins.len(), before.plugins.len() + 1);
     assert!(
         after
@@ -280,7 +247,7 @@ async fn watch_events_invalidate_discovery_and_no_subscription_disables_caching(
             .iter()
             .any(|skill| skill.path == demo_skill && skill.description == "uncached edit")
     );
-    let repeated = uncached.get_or_refresh_discovery(request, params).await?;
+    let repeated = uncached.get_or_refresh_discovery(request).await?;
     assert_eq!(after, repeated);
     assert!(!Arc::ptr_eq(&after, &repeated));
     Ok(())

@@ -10,7 +10,6 @@ use codex_protocol::models::BaseInstructionsProvenance;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::AgentMessageContentDeltaEvent;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ItemCompletedEvent;
@@ -21,7 +20,6 @@ use codex_protocol::review_format::render_review_output_text;
 use tokio_util::sync::CancellationToken;
 
 use crate::codex_delegate::run_codex_thread_one_shot;
-use crate::config::Constrained;
 use crate::session::TurnInput;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
@@ -106,19 +104,13 @@ async fn start_review_conversation(
     let mut sub_agent_config = config.as_ref().clone();
     // Carry over review-only feature restrictions so the delegate cannot
     // re-enable blocked tools (web search, collab tools, view image).
-    if let Err(err) = sub_agent_config
-        .web_search_mode
-        .set(WebSearchMode::Disabled)
-    {
-        panic!("by construction Constrained<WebSearchMode> must always support Disabled: {err}");
-    }
-    let _ = sub_agent_config.features.disable(Feature::Collab);
-    let _ = sub_agent_config.features.disable(Feature::MultiAgentV2);
+    sub_agent_config.web_search_mode = WebSearchMode::Disabled;
+    sub_agent_config.features.disable(Feature::Collab);
+    sub_agent_config.features.disable(Feature::MultiAgentV2);
 
     // Set explicit review rubric for the sub-agent
     sub_agent_config.base_instructions = Some(crate::REVIEW_PROMPT.to_string());
     sub_agent_config.base_instructions_provenance = Some(BaseInstructionsProvenance::Custom);
-    sub_agent_config.permissions.approval_policy = Constrained::allow_only(AskForApproval::Never);
 
     let model = config
         .review_model

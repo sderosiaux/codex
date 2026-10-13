@@ -165,7 +165,6 @@ fn bedrock_model(
     model.availability_nux = None;
     model.upgrade = None;
     model.use_responses_lite = false;
-    model.tool_mode = None;
     model
 }
 
@@ -376,7 +375,6 @@ mod tests {
             expected.availability_nux = None;
             expected.upgrade = None;
             expected.use_responses_lite = false;
-            expected.tool_mode = None;
             expected.additional_speed_tiers.clear();
             expected.service_tiers = if matches!(
                 slug,

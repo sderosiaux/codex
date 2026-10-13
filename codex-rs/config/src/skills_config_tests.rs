@@ -2,7 +2,6 @@ use crate::CONFIG_TOML_FILE;
 use crate::ConfigLayerEntry;
 use crate::ConfigLayerSource;
 use crate::ConfigLayerStack;
-use crate::ConfigRequirementsToml;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_absolute_path::test_support::PathBufExt;
 use codex_utils_path_uri::PathUri;
@@ -28,17 +27,13 @@ fn user_layer(codex_home: &TempDir, config: &str) -> ConfigLayerEntry {
 }
 
 fn stack(codex_home: &TempDir, user: &str, session: &str) -> ConfigLayerStack {
-    ConfigLayerStack::new(
-        vec![
-            user_layer(codex_home, user),
-            ConfigLayerEntry::new(
-                ConfigLayerSource::SessionFlags,
-                toml::from_str(session).expect("valid session config"),
-            ),
-        ],
-        Default::default(),
-        ConfigRequirementsToml::default(),
-    )
+    ConfigLayerStack::new(vec![
+        user_layer(codex_home, user),
+        ConfigLayerEntry::new(
+            ConfigLayerSource::SessionFlags,
+            toml::from_str(session).expect("valid session config"),
+        ),
+    ])
     .expect("valid config stack")
 }
 

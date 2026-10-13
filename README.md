@@ -1,81 +1,58 @@
-<p align="center"><strong>Codex CLI</strong> is a coding agent from OpenAI that runs locally on your computer.
-<p align="center">
-  <img src="https://github.com/openai/codex/blob/main/.github/codex-cli-splash.png" alt="Codex CLI splash" width="80%" />
-</p>
-</br>
-If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="https://developers.openai.com/codex/ide">install in your IDE.</a>
-</br>If you want the desktop app experience, run <code>codex app</code> or visit <a href="https://chatgpt.com/codex?app-landing-page=true">the Codex App page</a>.
-</br>If you are looking for the <em>cloud-based agent</em> from OpenAI, <strong>Codex Web</strong>, go to <a href="https://chatgpt.com/codex">chatgpt.com/codex</a>.</p>
+# codex, cut down to the agent loop
 
----
+A fork of [openai/codex](https://github.com/openai/codex) with the security layers and most of the product surface removed. What's left is the loop itself: the model asks for a tool, the tool runs, the result goes back to the model.
 
-## Quickstart
+Commands run on your machine with your user's privileges. There is no sandbox and no approval prompt.
 
-### Installing and running Codex CLI
+## Why
 
-Run the following on Mac or Linux to install Codex CLI:
+I run Codex in full-access mode all the time. In that mode the sandbox, the approval prompts and the reviewer agent do nothing, yet they make up a large share of the code. I wanted to see what Codex looks like without them.
 
-```shell
-curl -fsSL https://chatgpt.com/codex/install.sh | sh
-```
+## What's left
 
-Run the following on Windows to install Codex CLI:
+- A `codex` binary (`codex-rs/cli`), headless, for one-shot prompts or an interactive session.
+- The loop: threads, turns, streaming, compaction, AGENTS.md, rollouts with SQLite state, resume.
+- Tools: shell (unified exec), `apply_patch`, MCP servers and plugins, sub-agents, `update_plan`, `request_user_input`, `view_image`, tool search, web search, image generation, skills and hooks.
+- Remote execution environments through `codex exec-server`.
 
-```shell
-powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"
-```
+## What's gone
 
-The standalone installers download from `https://releases.openai.com/codex` by default and fall back to GitHub Releases if a metadata or asset download is unavailable. To force GitHub Releases, set `CODEX_INSTALLER_USE_RELEASES_OPENAI_COM` to `false` (`0` and `no` are also accepted):
+Security: sandboxing (Seatbelt, Landlock/bubblewrap, Windows), approval policies and prompts, guardian auto-review, exec-policy rules, the network proxy and its destination allowlists, project trust, permission profiles, managed requirements and cloud config, process hardening, the shell-snapshot credential broker, dangerous-command detection.
+
+Everything around the loop: the TUI, app-server and its SDKs, cloud tasks, realtime voice, code mode, analytics, feedback upload, rollout tracing, TUI and desktop settings.
+
+Production Rust dropped from 1.06M lines to 382k, and the workspace from about 160 crates to about 90.
+
+## Running it
 
 ```shell
-curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_INSTALLER_USE_RELEASES_OPENAI_COM=false sh
+cd codex-rs
+cargo build -p codex-cli
+mkdir -p ~/.codex-loop && cp ~/.codex/auth.json ~/.codex-loop/   # or export CODEX_API_KEY
+CODEX_HOME=~/.codex-loop ./target/debug/codex "make the failing test pass"
 ```
 
-```powershell
-$env:CODEX_INSTALLER_USE_RELEASES_OPENAI_COM='false'; irm https://chatgpt.com/codex/install.ps1 | iex
-```
+With no prompt and a terminal on stdin, `codex` opens an interactive session. Piped stdin is read as the prompt.
 
-Codex CLI can also be installed via the following package managers:
+| Flag | |
+|---|---|
+| `-m, --model` | model to use |
+| `-C, --cd` | working directory |
+| `-c key=value` | override a `config.toml` value (parsed as TOML) |
+| `--resume <id\|last>` | continue a stored thread |
+| `--json` | print raw events as JSON lines |
+| `--ephemeral` | don't persist the thread |
+| `--reasoning` | show reasoning summaries on stderr |
 
-```shell
-# Install using npm
-npm install -g @openai/codex
-```
+Ctrl-C interrupts the current turn. The assistant's text goes to stdout and tool activity to stderr, so `codex "..." > answer.md` keeps only the answer.
 
-```shell
-# Install using Homebrew
-brew install --cask codex
-```
+## Caveats
 
-Then simply run `codex` to get started.
+- The model can run anything you can run. Point it at a machine or a directory where that's fine.
+- Keep a separate `CODEX_HOME`. Rollouts written by official Codex load here, but this build migrates the state database on its own and warns about config keys it no longer knows, like project trust levels and TUI settings.
+- MCP elicitations that only ask for confirmation are accepted automatically. Forms are asked in the terminal, and declined when there is no terminal.
+- I've only run it end to end on macOS. Linux and Windows builds are untested.
+- The Bazel files, GitHub workflows, `docs/` and the npm wrapper come from upstream and aren't maintained here. Build with cargo.
+- The 1,603 core unit tests pass. The integration suites compile, but I haven't run all of them since the cut.
 
-<details>
-<summary>You can also go to the <a href="https://github.com/openai/codex/releases/latest">latest GitHub Release</a> and download the appropriate binary for your platform.</summary>
-
-Each GitHub Release contains many executables, but in practice, you likely want one of these:
-
-- macOS
-  - Apple Silicon/arm64: `codex-aarch64-apple-darwin.tar.gz`
-  - x86_64 (older Mac hardware): `codex-x86_64-apple-darwin.tar.gz`
-- Linux
-  - x86_64: `codex-x86_64-unknown-linux-musl.tar.gz`
-  - arm64: `codex-aarch64-unknown-linux-musl.tar.gz`
-
-Each archive contains a single entry with the platform baked into the name (e.g., `codex-x86_64-unknown-linux-musl`), so you likely want to rename it to `codex` after extracting it.
-
-</details>
-
-### Using Codex with your ChatGPT plan
-
-Run `codex` and select **Sign in with ChatGPT**. We recommend signing into your ChatGPT account to use Codex as part of your Plus, Pro, Business, Edu, or Enterprise plan. [Learn more about what's included in your ChatGPT plan](https://help.openai.com/en/articles/11369540-codex-in-chatgpt).
-
-You can also use Codex with an API key, but this requires [additional setup](https://developers.openai.com/codex/auth#sign-in-with-an-api-key).
-
-## Docs
-
-- [**Codex Documentation**](https://developers.openai.com/codex)
-- [**Contributing**](./docs/contributing.md)
-- [**Installing & building**](./docs/install.md)
-- [**Open source fund**](./docs/open-source-fund.md)
-
-This repository is licensed under the [Apache-2.0 License](LICENSE).
+Apache-2.0, same as upstream.

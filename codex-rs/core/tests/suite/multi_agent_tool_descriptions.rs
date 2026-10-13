@@ -52,7 +52,6 @@ const EXPECTED_CATALOG_PARAMETERS: &str = r#"{
 enum Exposure {
     Namespaced,
     Plain,
-    CodeMode,
     V1,
 }
 
@@ -82,12 +81,9 @@ fn all_tool_messages(message: Value) -> Value {
 #[test_case(all_tool_messages(json!({"description": ""})), Exposure::Namespaced, None; "empty_description")]
 #[test_case(json!({"multi_agent": {"send_message": {"description": "Catalog send."}}}), Exposure::Namespaced, None; "sparse_sibling_fallback")]
 #[test_case(all_tool_messages(json!({"description": "Catalog TOOL_NAME description."})), Exposure::Plain, None; "plain_tools")]
-#[test_case(all_tool_messages(json!({"description": "Catalog TOOL_NAME description."})), Exposure::CodeMode, None; "code_mode_declarations")]
-#[test_case(all_tool_messages(json!({"description": ""})), Exposure::CodeMode, None; "empty_code_mode_descriptions")]
 #[test_case(all_tool_messages(json!({"description": "Catalog TOOL_NAME description."})), Exposure::V1, None; "v1_unchanged")]
 #[test_case(all_tool_messages(json!({"parameters": CATALOG_PARAMETERS})), Exposure::Namespaced, Some(EXPECTED_CATALOG_PARAMETERS); "catalog_parameters")]
 #[test_case(all_tool_messages(json!({"parameters": CATALOG_PARAMETERS})), Exposure::Plain, Some(EXPECTED_CATALOG_PARAMETERS); "plain_parameters")]
-#[test_case(all_tool_messages(json!({"parameters": CATALOG_PARAMETERS})), Exposure::CodeMode, Some(EXPECTED_CATALOG_PARAMETERS); "code_mode_parameters")]
 #[test_case(all_tool_messages(json!({"parameters": CATALOG_PARAMETERS})), Exposure::V1, None; "v1_parameters_unchanged")]
 #[test_case(json!({"multi_agent": {
     "spawn_agent": {"parameters": null},
@@ -132,25 +128,10 @@ async fn multi_agent_catalog_messages_change_only_selected_tool_fields(
             })
             .with_config(move |config| {
                 if matches!(exposure, Exposure::V1) {
-                    config.features.enable(Feature::Collab).expect("enable V1");
-                    config
-                        .features
-                        .disable(Feature::MultiAgentV2)
-                        .expect("disable V2");
+                    config.features.enable(Feature::Collab);
+                    config.features.disable(Feature::MultiAgentV2);
                 } else {
-                    config
-                        .features
-                        .enable(Feature::MultiAgentV2)
-                        .expect("enable V2");
-                }
-                if matches!(exposure, Exposure::CodeMode) {
-                    config
-                        .features
-                        .enable(Feature::CodeMode)
-                        .expect("enable Code Mode");
-                    // Inspect declarations even when the test has no Code Mode host to execute them.
-                    config.code_mode.disable_in_process_fallback = true;
-                    config.multi_agent_v2.non_code_mode_only = false;
+                    config.features.enable(Feature::MultiAgentV2);
                 }
                 config.multi_agent_v2.tool_namespace =
                     (!matches!(exposure, Exposure::Plain)).then(|| "delegation".to_string());
@@ -210,19 +191,6 @@ async fn multi_agent_catalog_messages_change_only_selected_tool_fields(
                 .find(|tool| tool["name"] == name)
                 .expect(name);
             if let Some(description) = tool_messages["multi_agent"][name]["description"].as_str() {
-                let bundled = expected_tool["description"]
-                    .as_str()
-                    .expect("bundled description");
-                let declaration = bundled
-                    .find("\n\nexec tool declaration:")
-                    .map(|index| &bundled[index..])
-                    .unwrap_or_default();
-                if matches!(exposure, Exposure::CodeMode) {
-                    assert!(
-                        declaration.contains(&format!("delegation__{name}")),
-                        "Code Mode description for {name}: {bundled}"
-                    );
-                }
                 let replacement = if name == "spawn_agent" {
                     let actual_description = actual_tool["description"]
                         .as_str()
@@ -232,15 +200,10 @@ async fn multi_agent_catalog_messages_change_only_selected_tool_fields(
                         !actual_description
                             .contains("Spawns an agent to work on the specified task.")
                     );
-                    assert!(
-                        actual_description
-                            .strip_suffix(declaration)
-                            .expect("unchanged declaration")
-                            .ends_with("Local delegation hint.")
-                    );
+                    assert!(actual_description.ends_with("Local delegation hint."));
                     actual_description.to_string()
                 } else {
-                    format!("{description}{declaration}")
+                    description.to_string()
                 };
                 expected_tool["description"] = json!(replacement);
             }
@@ -251,15 +214,6 @@ async fn multi_agent_catalog_messages_change_only_selected_tool_fields(
                 if matches!(name, "spawn_agent" | "send_message" | "followup_task") {
                     expected_tool["parameters"]["properties"]["message"]["encrypted"] = json!(true);
                 }
-                if matches!(exposure, Exposure::CodeMode) {
-                    let description = expected_tool["description"].as_str().expect("description");
-                    let (prefix, signature) =
-                        description.rsplit_once("(args: ").expect("arguments");
-                    let (_, result) = signature.split_once("): Promise").expect("result type");
-                    expected_tool["description"] = json!(format!(
-                        "{prefix}(args: {{\n  // Catalog limit.\n  catalog_limit: number;\n  // Catalog message.\n  message?: string;\n}}): Promise{result}"
-                    ));
-                }
             }
         }
     }
@@ -267,10 +221,8 @@ async fn multi_agent_catalog_messages_change_only_selected_tool_fields(
     Ok(())
 }
 
-#[test_case(Exposure::Namespaced; "namespaced")]
-#[test_case(Exposure::CodeMode; "code_mode")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn channel_catalog_descriptions_change_only_selected_tools(exposure: Exposure) -> Result<()> {
+async fn channel_catalog_descriptions_change_only_selected_tools() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let names = [
@@ -323,23 +275,9 @@ async fn channel_catalog_descriptions_change_only_selected_tools(exposure: Expos
             })
             .with_config(move |config| {
                 config.ephemeral = false;
-                config
-                    .features
-                    .enable(Feature::MultiAgentV2)
-                    .expect("enable V2");
-                config
-                    .features
-                    .enable(Feature::AgentMessageBoard)
-                    .expect("enable channels");
+                config.features.enable(Feature::MultiAgentV2);
+                config.features.enable(Feature::AgentMessageBoard);
                 config.multi_agent_v2.tool_namespace = Some("delegation".into());
-                if matches!(exposure, Exposure::CodeMode) {
-                    config
-                        .features
-                        .enable(Feature::CodeMode)
-                        .expect("enable Code Mode");
-                    config.code_mode.disable_in_process_fallback = true;
-                    config.multi_agent_v2.non_code_mode_only = false;
-                }
             })
             .build_with_auto_env(&server)
             .await?;
@@ -364,17 +302,8 @@ async fn channel_catalog_descriptions_change_only_selected_tools(exposure: Expos
                 .iter_mut()
                 .find(|tool| tool["name"] == name)
                 .expect(name);
-            let bundled = tool["description"].as_str().expect("bundled description");
             if let Some(description) = message["multi_agent"][name]["description"].as_str() {
-                let declaration = if matches!(exposure, Exposure::CodeMode) {
-                    let offset = bundled
-                        .find("\n\nexec tool declaration:")
-                        .expect("Code Mode declaration");
-                    &bundled[offset..]
-                } else {
-                    ""
-                };
-                tool["description"] = json!(format!("{description}{declaration}"));
+                tool["description"] = json!(description);
             }
         }
         assert_eq!(request.body_json()["tools"], expected);

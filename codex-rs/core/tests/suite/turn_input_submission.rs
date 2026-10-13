@@ -8,7 +8,6 @@ use codex_core::TurnInputRequest;
 use codex_core::TurnInputSubmission;
 use codex_core::TurnStartOptions;
 use codex_core::WithTurnExtensionData;
-use codex_core::config::Constrained;
 use codex_core::context::ContextualUserFragment;
 use codex_core::context::InternalContextSource;
 use codex_core::context::InternalModelContextFragment;
@@ -20,7 +19,6 @@ use codex_protocol::AgentPath;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::Op;
@@ -377,107 +375,6 @@ async fn host_drain_allows_running_review_to_finish_its_delegate() -> anyhow::Re
     };
     assert_eq!(event.review_output, Some(expected));
     response.single_request();
-    Ok(())
-}
-
-#[tokio::test]
-async fn host_drain_closes_realtime_after_handoff_error() -> anyhow::Result<()> {
-    use codex_protocol::protocol::ConversationStartParams;
-    use codex_protocol::protocol::RealtimeConversationClosedEvent;
-    use codex_protocol::protocol::RealtimeConversationRealtimeEvent;
-    use codex_protocol::protocol::RealtimeEvent;
-    use codex_protocol::protocol::RealtimeHandoffRequested;
-    use codex_protocol::protocol::RealtimeTranscriptEntry;
-
-    let server = responses::start_mock_server().await;
-    let response = responses::mount_sse_once(&server, responses::sse_completed("unexpected")).await;
-    let realtime = responses::start_websocket_server(vec![vec![vec![
-        serde_json::json!({
-            "type": "session.updated",
-            "session": { "id": "draining", "instructions": "backend prompt" }
-        }),
-        serde_json::json!({
-            "type": "conversation.handoff.requested",
-            "handoff_id": "rejected",
-            "item_id": "rejected",
-            "input_transcript": "must not start"
-        }),
-    ]]])
-    .await;
-    let mut extensions = ExtensionRegistryBuilder::new();
-    extensions.turn_start_admission(Arc::new(TestAdmission(AtomicBool::new(true))));
-    let test = test_codex()
-        .with_extensions(Arc::new(extensions.build()))
-        .with_config({
-            let realtime_url = realtime.uri().to_string();
-            move |config| {
-                config.experimental_realtime_ws_base_url = Some(realtime_url);
-                config.realtime.version = codex_config::config_toml::RealtimeWsVersion::V1;
-            }
-        })
-        .build_with_auto_env(&server)
-        .await?;
-    test.codex
-        .submit(Op::RealtimeConversationStart(ConversationStartParams {
-            client_managed_handoffs: false,
-            delegation_ack_filler: None,
-            flush_transcript_tail_on_session_end: false,
-            codex_responses_as_items: false,
-            codex_response_item_prefix: None,
-            codex_response_handoff_mode:
-                codex_protocol::protocol::CodexResponseHandoffMode::Thinking,
-            backend_reasoning_status: false,
-            codex_response_handoff_channel_prefixes: None,
-            model: None,
-            output_modality: codex_protocol::protocol::RealtimeOutputModality::Audio,
-            include_startup_context: false,
-            initial_items: Vec::new(),
-            realtime_start_instructions: None,
-            realtime_end_instructions: None,
-            prompt: Some(Some("backend prompt".to_string())),
-            realtime_session_id: None,
-            transport: None,
-            version: None,
-            voice: None,
-        }))
-        .await?;
-    for expected in [
-        EventMsg::RealtimeConversationRealtime(RealtimeConversationRealtimeEvent {
-            payload: RealtimeEvent::HandoffRequested(RealtimeHandoffRequested {
-                handoff_id: "rejected".to_string(),
-                item_id: "rejected".to_string(),
-                input_transcript: "must not start".to_string(),
-                active_transcript: vec![RealtimeTranscriptEntry {
-                    role: "user".to_string(),
-                    text: "must not start".to_string(),
-                }],
-            }),
-        }),
-        EventMsg::RealtimeConversationRealtime(RealtimeConversationRealtimeEvent {
-            payload: RealtimeEvent::Error(
-                "Server is draining; retry the turn after reconnecting".to_string(),
-            ),
-        }),
-        EventMsg::RealtimeConversationClosed(RealtimeConversationClosedEvent {
-            reason: Some("error".to_string()),
-        }),
-    ] {
-        let event = wait_for_event(&test.codex, |event| match event {
-            EventMsg::RealtimeConversationRealtime(RealtimeConversationRealtimeEvent {
-                payload: RealtimeEvent::HandoffRequested(_) | RealtimeEvent::Error(_),
-            })
-            | EventMsg::RealtimeConversationClosed(_) => true,
-            EventMsg::TurnStarted(_) | EventMsg::Error(_) => panic!("unexpected event: {event:?}"),
-            _ => false,
-        })
-        .await;
-        assert_eq!(
-            serde_json::to_value(event)?,
-            serde_json::to_value(expected)?
-        );
-    }
-    assert!(response.requests().is_empty());
-    realtime.shutdown().await;
     Ok(())
 }
 
@@ -999,10 +896,7 @@ async fn continue_turn_if_idle_starts_new_turn_with_internal_input() {
     let test = test_codex()
         .with_model("gpt-5.6-sol")
         .with_config(|config| {
-            config
-                .features
-                .enable(codex_features::Feature::FastMode)
-                .unwrap();
+            config.features.enable(codex_features::Feature::FastMode);
         })
         .build_with_auto_env(&server)
         .await
@@ -1091,7 +985,6 @@ async fn continue_turn_if_idle_starts_new_turn_with_internal_input() {
     submit_thread_settings(
         &test.codex,
         ThreadSettingsOverrides {
-            approval_policy: Some(AskForApproval::OnRequest),
             ..Default::default()
         },
     )
@@ -1245,9 +1138,6 @@ async fn turn_input_submission_applies_thread_settings_only_after_accepted_input
     .await;
     let test = test_codex()
         .with_model("gpt-5.4")
-        .with_config(|config| {
-            config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
-        })
         .build_with_streaming_server(&server)
         .await
         .expect("build approval-constrained turn-input submission session");
@@ -1273,7 +1163,6 @@ async fn turn_input_submission_applies_thread_settings_only_after_accepted_input
         .start_or_steer_turn(
             user_message_request("steer active turn").with_thread_settings(
                 ThreadSettingsOverrides {
-                    approval_policy: Some(AskForApproval::Never),
                     environments: Some(steered_environments.clone().into_requests()),
                     ..Default::default()
                 },
@@ -1289,10 +1178,6 @@ async fn turn_input_submission_applies_thread_settings_only_after_accepted_input
         }
     );
     assert_eq!(
-        codex.config_snapshot().await.approval_policy,
-        AskForApproval::Never
-    );
-    assert_eq!(
         codex.environment_selections().await,
         steered_environments.environments
     );
@@ -1306,7 +1191,6 @@ async fn turn_input_submission_applies_thread_settings_only_after_accepted_input
     let rejected = codex
         .steer_turn(
             user_message_request("no active turn").with_thread_settings(ThreadSettingsOverrides {
-                approval_policy: Some(AskForApproval::OnRequest),
                 environments: Some(TurnEnvironmentRequests::new(
                     rejected_cwd.clone(),
                     vec![local_request(rejected_cwd)],
@@ -1322,10 +1206,6 @@ async fn turn_input_submission_applies_thread_settings_only_after_accepted_input
         SteerSubmission::NotSubmitted {
             reason: NotSubmittedReason::NoActiveTurn,
         }
-    );
-    assert_eq!(
-        codex.config_snapshot().await.approval_policy,
-        AskForApproval::Never
     );
     assert_eq!(
         codex.environment_selections().await,
@@ -1355,9 +1235,6 @@ async fn start_or_steer_turn_requires_matching_active_output_schema() {
     ])
     .await;
     let test = test_codex()
-        .with_config(|config| {
-            config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
-        })
         .build_with_streaming_server(&server)
         .await
         .expect("build turn-input submission session");
@@ -1398,7 +1275,6 @@ async fn start_or_steer_turn_requires_matching_active_output_schema() {
         .start_or_steer_turn(
             user_message_request("rejected steer")
                 .with_thread_settings(ThreadSettingsOverrides {
-                    approval_policy: Some(AskForApproval::Never),
                     ..Default::default()
                 })
                 .on_start(TurnStartOptions {
@@ -1413,10 +1289,6 @@ async fn start_or_steer_turn_requires_matching_active_output_schema() {
         TurnInputSubmission::NotSubmitted {
             reason: NotSubmittedReason::ActiveTurnOutputSchemaMismatch,
         }
-    );
-    assert_eq!(
-        codex.config_snapshot().await.approval_policy,
-        AskForApproval::OnRequest
     );
 
     let steered = codex
@@ -1524,7 +1396,7 @@ async fn daemon_recovery_includes_local_environment_that_finished_starting() -> 
     .await;
     let test = test_codex()
         .with_config(|config| {
-            config.features.enable(Feature::DeferredExecutor).unwrap();
+            config.features.enable(Feature::DeferredExecutor);
         })
         .build_with_streaming_server(&server)
         .await?;

@@ -24,12 +24,10 @@ use crate::protocol::EXEC_TERMINATE_METHOD;
 use crate::protocol::FS_CLOSE_METHOD;
 use crate::protocol::INITIALIZE_METHOD;
 use crate::protocol::INITIALIZED_METHOD;
-use crate::rpc::RpcCallError;
 use crate::rpc::RpcRouter;
 use crate::rpc::RpcServerOutboundMessage;
 use crate::rpc::invalid_request;
 use crate::rpc::method_not_found;
-use crate::rpc_server_requests::RpcServerRequestSender;
 use crate::server::ExecServerHandler;
 use crate::telemetry::ExecServerTelemetry;
 
@@ -38,7 +36,6 @@ pub(super) struct RequestDispatcher {
     handler: Arc<ExecServerHandler>,
     outgoing_tx: mpsc::Sender<RpcServerOutboundMessage>,
     disconnected_rx: watch::Receiver<bool>,
-    requests: RpcServerRequestSender,
     telemetry: ExecServerTelemetry,
     lanes: Option<RequestLanes>,
     tasks: JoinSet<RequestTaskResult>,
@@ -51,7 +48,6 @@ impl RequestDispatcher {
         handler: Arc<ExecServerHandler>,
         outgoing_tx: mpsc::Sender<RpcServerOutboundMessage>,
         disconnected_rx: watch::Receiver<bool>,
-        requests: RpcServerRequestSender,
         telemetry: ExecServerTelemetry,
         mode: RequestDispatchMode,
     ) -> Self {
@@ -70,7 +66,6 @@ impl RequestDispatcher {
             handler,
             outgoing_tx,
             disconnected_rx,
-            requests,
             telemetry,
             lanes,
             tasks: JoinSet::new(),
@@ -140,34 +135,21 @@ impl RequestDispatcher {
         RequestTaskResult::Completed
     }
 
+    /// The server never issues requests to the client, so any response is a protocol violation.
     pub(super) fn handle_response(&self, response: JSONRPCResponse) -> RequestTaskResult {
-        if !self
-            .requests
-            .complete(response.id.clone(), Ok(response.result))
-        {
-            warn!(
-                "closing exec-server connection after unexpected client response: {:?}",
-                response.id
-            );
-            return RequestTaskResult::ConnectionClosed;
-        }
-
-        RequestTaskResult::Completed
+        warn!(
+            "closing exec-server connection after unexpected client response: {:?}",
+            response.id
+        );
+        RequestTaskResult::ConnectionClosed
     }
 
     pub(super) fn handle_error(&self, error: JSONRPCError) -> RequestTaskResult {
-        if !self
-            .requests
-            .complete(error.id.clone(), Err(RpcCallError::Server(error.error)))
-        {
-            warn!(
-                "closing exec-server connection after unexpected client error: {:?}",
-                error.id
-            );
-            return RequestTaskResult::ConnectionClosed;
-        }
-
-        RequestTaskResult::Completed
+        warn!(
+            "closing exec-server connection after unexpected client error: {:?}",
+            error.id
+        );
+        RequestTaskResult::ConnectionClosed
     }
 
     pub(super) async fn dispatch_request(
@@ -382,9 +364,7 @@ fn request_result(message: &Option<RpcServerOutboundMessage>) -> &'static str {
     match message {
         Some(RpcServerOutboundMessage::Error { .. }) => "error",
         Some(
-            RpcServerOutboundMessage::Request(_)
-            | RpcServerOutboundMessage::Response { .. }
-            | RpcServerOutboundMessage::Notification(_),
+            RpcServerOutboundMessage::Response { .. } | RpcServerOutboundMessage::Notification(_),
         )
         | None => "success",
     }

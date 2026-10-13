@@ -43,8 +43,6 @@ use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TokenUsageRecord;
 use codex_protocol::protocol::TurnContextItem;
 use codex_protocol::protocol::WorldStateItem;
-use codex_protocol::realtime::RealtimeItem;
-use codex_protocol::security_risk::SecurityRiskScore;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Deserializer;
@@ -65,22 +63,6 @@ pub struct ResponseItemEnvelope {
 ///
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
 pub struct CodexHarnessMetadata {
-    /// Complete retained records actually delivered by this Guardian message. Host-only.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub guardian_sources: Vec<RetainedSource>,
-
-    /// Completed sync reviews delivered by this complete Guardian message. Host-only.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub guardian_review_ids: Vec<codex_protocol::ResponseItemId>,
-
-    /// This complete message delivered the meaning of retained source-order labels.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub guardian_source_order_guidance: bool,
-
-    /// Section-scoped omission delivery proof; None means unknown, not complete.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub guardian_retained_omissions: Option<GuardianRetainedOmissions>,
-
     /// Original retained evidence represented by this exact history item.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retained_source: Option<RetainedSource>,
@@ -155,15 +137,9 @@ where
 }
 
 impl CodexHarnessMetadata {
-    /// Shortened messages no longer prove complete instruction or review delivery.
+    /// Shortened messages no longer prove complete instruction delivery.
     pub fn mark_retained_sources_incomplete(&mut self) {
-        self.guardian_review_ids.clear();
-        self.guardian_source_order_guidance = false;
-        self.guardian_retained_omissions = None;
         if let Some(source) = &mut self.retained_source {
-            source.complete = false;
-        }
-        for source in &mut self.guardian_sources {
             source.complete = false;
         }
     }
@@ -216,18 +192,13 @@ pub enum RolloutItem {
     SessionMeta(SessionMetaLine),
     ResponseItem(ResponseItemEnvelope),
     InterAgentCommunication(InterAgentCommunication),
-    InterAgentCommunicationMetadata {
-        trigger_turn: bool,
-    },
+    InterAgentCommunicationMetadata { trigger_turn: bool },
     Compacted(CompactedItem),
     TurnContext(TurnContextItem),
     TokenUsageRecord(TokenUsageRecord),
     WorldState(WorldStateItem),
-    SecurityRiskScore(SecurityRiskScore),
     RetainedContext(RetainedContextEvent),
     EventMsg(EventMsg),
-    /// Sparse, model-invisible facts used to reconstruct realtime presentation.
-    RealtimeItem(RealtimeItem),
 }
 
 impl Serialize for RolloutItem {
@@ -262,7 +233,6 @@ impl JsonSchema for RolloutItem {
     }
 }
 
-mod guardian_history;
 mod reconciled_retained_context;
 mod retained_context;
 mod sender_user_messages;
@@ -283,14 +253,10 @@ pub use retained_context::VerifiedAnswer;
 pub use retained_context::VerifiedQuestionAnswer;
 mod rollout_payload;
 
-pub use guardian_history::GuardianHistoryCheckpoint;
-pub use guardian_history::GuardianRetainedOmissions;
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct CompactedItem {
     pub message: String,
     pub replacement_history: Option<Vec<ResponseItemEnvelope>>,
-    pub guardian_history: Option<GuardianHistoryCheckpoint>,
     pub retained_context: Option<RetainedContext>,
     pub mcp_resource_origins: Option<McpResourceOriginCheckpoint>,
     pub window_number: Option<u64>,
@@ -393,14 +359,6 @@ pub enum InitialHistory {
 }
 
 impl InitialHistory {
-    pub fn scan_rollout_items(&self, mut predicate: impl FnMut(&RolloutItem) -> bool) -> bool {
-        match self {
-            Self::New | Self::Cleared => false,
-            Self::Resumed(resumed) => resumed.history.iter().any(&mut predicate),
-            Self::Forked(items) => items.iter().any(predicate),
-        }
-    }
-
     pub fn forked_from_id(&self) -> Option<ThreadId> {
         match self {
             Self::New | Self::Cleared => None,

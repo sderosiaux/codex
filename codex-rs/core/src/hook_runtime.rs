@@ -2,16 +2,10 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
-use codex_analytics::CompactionTrigger;
-use codex_analytics::HookRunFact;
-use codex_analytics::build_track_events_context;
 use codex_connectors::AppToolPolicyEvaluator;
 use codex_connectors::AppToolPolicyInput;
 use codex_core_plugins::executor_plugin_hook_sources;
 use codex_hooks::InterruptRequest;
-use codex_hooks::PermissionRequestDecision;
-use codex_hooks::PermissionRequestOutcome;
-use codex_hooks::PermissionRequestRequest;
 use codex_hooks::PostToolUseOutcome;
 use codex_hooks::PostToolUseRequest;
 use codex_hooks::PreToolUseOutcome;
@@ -34,7 +28,6 @@ use codex_protocol::items::TurnItem;
 use codex_protocol::items::UserMessageItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::HookCompletedEvent;
@@ -63,14 +56,13 @@ use crate::context::ContextualUserFragment;
 use crate::context::HookAdditionalContext;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::event_mapping::parse_turn_item;
-use crate::guardian::GuardianReviewContext;
+use crate::responses_metadata::CompactionTrigger;
 use crate::session::TurnInput;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
 use crate::state::TurnState;
 use crate::tools::hook_names::HookToolName;
-use crate::tools::sandboxing::PermissionRequestPayload;
 use crate::turn_metadata::ExecutionMetadata;
 
 pub(crate) struct HookRuntimeOutcome {
@@ -158,7 +150,7 @@ pub(crate) async fn run_pending_session_start_hooks(
             cwd: turn_context.cwd.clone(),
             transcript_path: sess.hook_transcript_path().await,
             model: turn_context.model_info().slug.clone(),
-            permission_mode: hook_permission_mode(turn_context.approval_policy()),
+            permission_mode: HOOK_PERMISSION_MODE.to_string(),
             target,
         };
         let hooks = sess.hooks();
@@ -200,7 +192,7 @@ pub(crate) async fn run_pre_tool_use_hooks(
         cwd: tool_hook_cwd(&step_context.environments, turn_context),
         transcript_path: sess.hook_transcript_path().await,
         model: step_context.settings.model_info.slug.clone(),
-        permission_mode: hook_permission_mode(step_context.settings.approval_policy()),
+        permission_mode: HOOK_PERMISSION_MODE.to_string(),
         tool_name: tool_name.name().to_string(),
         matcher_aliases: tool_name.matcher_aliases().to_vec(),
         tool_use_id,
@@ -252,42 +244,6 @@ fn tool_hook_cwd(environments: &TurnEnvironmentSnapshot, turn: &TurnContext) -> 
         .unwrap_or_else(|| turn.cwd.clone())
 }
 
-// PermissionRequest hooks share the same preview/start/completed event flow as
-// other hook types, but they return an optional decision instead of mutating
-// tool input or post-run state.
-pub(crate) async fn run_permission_request_hooks(
-    sess: &Arc<Session>,
-    review_context: &GuardianReviewContext,
-    run_id_suffix: &str,
-    payload: PermissionRequestPayload,
-) -> Option<PermissionRequestDecision> {
-    let turn_context = review_context.turn();
-    let request = PermissionRequestRequest {
-        session_id: sess.session_id().into(),
-        turn_id: turn_context.sub_id.clone(),
-        subagent: thread_spawn_subagent_hook_context(sess, turn_context),
-        cwd: tool_hook_cwd(review_context.environments(), turn_context).to_path_buf(),
-        transcript_path: sess.hook_transcript_path().await,
-        model: review_context.model_info.slug.clone(),
-        permission_mode: hook_permission_mode(review_context.approval_policy),
-        tool_name: payload.tool_name.name().to_string(),
-        matcher_aliases: payload.tool_name.matcher_aliases().to_vec(),
-        run_id_suffix: run_id_suffix.to_string(),
-        tool_input: payload.tool_input,
-    };
-    let hooks = sess.hooks();
-    let preview_runs = hooks.preview_permission_request(&request);
-    emit_hook_started_events(sess, turn_context, preview_runs).await;
-
-    let PermissionRequestOutcome {
-        hook_events,
-        decision,
-    } = hooks.run_permission_request(request).await;
-    emit_hook_completed_events(sess, turn_context, hook_events).await;
-
-    decision
-}
-
 /// Runs matching `PostToolUse` hooks after a tool has produced a successful output.
 ///
 /// The `tool_name`, matcher aliases, `tool_input`, and `tool_response` values are
@@ -311,7 +267,7 @@ pub(crate) async fn run_post_tool_use_hooks(
         cwd: tool_hook_cwd(&step_context.environments, turn_context),
         transcript_path: sess.hook_transcript_path().await,
         model: step_context.settings.model_info.slug.clone(),
-        permission_mode: hook_permission_mode(step_context.settings.approval_policy()),
+        permission_mode: HOOK_PERMISSION_MODE.to_string(),
         tool_name,
         matcher_aliases,
         tool_use_id,
@@ -343,18 +299,15 @@ fn executor_hook_sources_for_step(step_context: &StepContext) -> Vec<ExecutorPlu
                             return true;
                         }
                         let annotations = tool_info.tool.annotations.as_ref();
-                        app_tool_policy
-                            .policy(AppToolPolicyInput {
-                                connector_id: tool_info.connector_id.as_deref(),
-                                link_id: None,
-                                tool_name: &tool_info.tool.name,
-                                tool_title: tool_info.tool.title.as_deref(),
-                                destructive_hint: annotations
-                                    .and_then(|annotations| annotations.destructive_hint),
-                                open_world_hint: annotations
-                                    .and_then(|annotations| annotations.open_world_hint),
-                            })
-                            .enabled
+                        app_tool_policy.tool_enabled(AppToolPolicyInput {
+                            connector_id: tool_info.connector_id.as_deref(),
+                            tool_name: &tool_info.tool.name,
+                            tool_title: tool_info.tool.title.as_deref(),
+                            destructive_hint: annotations
+                                .and_then(|annotations| annotations.destructive_hint),
+                            open_world_hint: annotations
+                                .and_then(|annotations| annotations.open_world_hint),
+                        })
                     })
             })
             .into_iter()
@@ -452,7 +405,7 @@ pub(crate) async fn run_turn_stop_hooks(
         cwd: turn_context.cwd.clone(),
         transcript_path,
         model: turn_context.model_info().slug.clone(),
-        permission_mode: hook_permission_mode(turn_context.approval_policy()),
+        permission_mode: HOOK_PERMISSION_MODE.to_string(),
         request_metadata: (!request_metadata.is_empty()).then_some(request_metadata),
         stop_hook_active,
         last_assistant_message,
@@ -529,7 +482,7 @@ pub(crate) async fn run_turn_interrupt_hooks(
         cwd: turn_context.cwd.clone(),
         transcript_path: sess.hook_transcript_path().await,
         model: turn_context.model_info().slug.clone(),
-        permission_mode: hook_permission_mode(turn_context.approval_policy()),
+        permission_mode: HOOK_PERMISSION_MODE.to_string(),
         request_metadata: (!request_metadata.is_empty()).then_some(request_metadata),
     };
     if let Err(err) = sess.flush_rollout().await {
@@ -689,7 +642,7 @@ pub(crate) async fn inspect_pending_input(
                 cwd: turn_context.cwd.clone(),
                 transcript_path: sess.hook_transcript_path().await,
                 model: turn_context.model_info().slug.clone(),
-                permission_mode: hook_permission_mode(turn_context.approval_policy()),
+                permission_mode: HOOK_PERMISSION_MODE.to_string(),
                 prompt: UserMessageItem::new(content).message(),
             };
             let hooks = sess.hooks();
@@ -920,7 +873,6 @@ pub(crate) async fn emit_hook_completed_events(
 
     for completed in completed_events {
         emit_hook_completed_metrics(turn_context, &completed);
-        track_hook_completed_analytics(sess, turn_context, &completed);
         if should_emit_hook_notification(&completed.run) {
             sess.send_event(turn_context, EventMsg::HookCompleted(completed))
                 .await;
@@ -944,48 +896,9 @@ fn emit_hook_completed_metrics(turn_context: &TurnContext, completed: &HookCompl
     }
 }
 
-fn track_hook_completed_analytics(
-    sess: &Arc<Session>,
-    turn_context: &Arc<TurnContext>,
-    completed: &HookCompletedEvent,
-) {
-    let (tracking, hook) =
-        hook_run_analytics_payload(sess.thread_id.to_string(), turn_context, completed);
-    sess.services
-        .analytics_events_client
-        .track_hook_run(tracking, hook);
-}
-
-fn hook_run_analytics_payload(
-    thread_id: String,
-    turn_context: &TurnContext,
-    completed: &HookCompletedEvent,
-) -> (codex_analytics::TrackEventsContext, HookRunFact) {
-    (
-        build_track_events_context(
-            turn_context.model_info().slug.clone(),
-            thread_id,
-            completed
-                .turn_id
-                .clone()
-                .unwrap_or_else(|| turn_context.sub_id.clone()),
-            turn_context.originator.clone(),
-            /*turn_metadata*/ None,
-        ),
-        HookRunFact {
-            event_name: completed.run.event_name,
-            hook_source: completed.run.source,
-            handler_type: completed.run.handler_type,
-            execution_mode: completed.run.execution_mode,
-            status: completed.run.status,
-        },
-    )
-}
-
 fn hook_run_metric_tags(run: &HookRunSummary) -> [(&'static str, &'static str); 5] {
     let hook_name = match run.event_name {
         HookEventName::PreToolUse => "PreToolUse",
-        HookEventName::PermissionRequest => "PermissionRequest",
         HookEventName::PostToolUse => "PostToolUse",
         HookEventName::PreCompact => "PreCompact",
         HookEventName::PostCompact => "PostCompact",
@@ -1001,13 +914,8 @@ fn hook_run_metric_tags(run: &HookRunSummary) -> [(&'static str, &'static str); 
         HookSource::System => "system",
         HookSource::User => "user",
         HookSource::Project => "project",
-        HookSource::Mdm => "mdm",
         HookSource::SessionFlags => "session_flags",
         HookSource::Plugin => "plugin",
-        HookSource::CloudRequirements => "cloud_requirements",
-        HookSource::CloudManagedConfig => "cloud_managed_config",
-        HookSource::LegacyManagedConfigFile => "legacy_managed_config_file",
-        HookSource::LegacyManagedConfigMdm => "legacy_managed_config_mdm",
         HookSource::Unknown => "unknown",
     };
     let status = match run.status {
@@ -1029,15 +937,9 @@ fn hook_run_metric_tags(run: &HookRunSummary) -> [(&'static str, &'static str); 
     ]
 }
 
-fn hook_permission_mode(approval_policy: AskForApproval) -> String {
-    match approval_policy {
-        AskForApproval::Never => "bypassPermissions",
-        AskForApproval::UnlessTrusted | AskForApproval::OnRequest | AskForApproval::Granular(_) => {
-            "default"
-        }
-    }
-    .to_string()
-}
+/// Claude-compatible hook input: Codex never asks for permission, so every
+/// hook observes the bypass mode.
+const HOOK_PERMISSION_MODE: &str = "bypassPermissions";
 
 fn thread_spawn_subagent_hook_context(
     sess: &Arc<Session>,
@@ -1092,9 +994,7 @@ mod tests {
     use super::additional_context_messages;
     use super::emit_hook_completed_events;
     use super::emit_hook_started_events;
-    use super::hook_run_analytics_payload;
     use super::hook_run_metric_tags;
-    use crate::session::tests::make_session_and_context;
     use crate::session::tests::make_session_and_context_with_rx;
     use codex_protocol::protocol::HookCompletedEvent;
     use codex_protocol::protocol::HookRunSummary;
@@ -1244,47 +1144,8 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn hook_run_analytics_payload_uses_completed_turn_id() {
-        let (_session, turn_context) = make_session_and_context().await;
-        let completed = HookCompletedEvent {
-            turn_id: Some("turn-from-hook".to_string()),
-            run: sample_hook_run(HookRunStatus::Blocked, HookSource::Project),
-        };
-
-        let (tracking, hook) =
-            hook_run_analytics_payload("thread-123".to_string(), &turn_context, &completed);
-
-        assert_eq!(tracking.thread_id, "thread-123");
-        assert_eq!(tracking.turn_id, "turn-from-hook");
-        assert_eq!(tracking.model_slug, turn_context.model_info().slug);
-        assert_eq!(hook.event_name, HookEventName::Stop);
-        assert_eq!(hook.handler_type, HookHandlerType::Command);
-        assert_eq!(hook.execution_mode, HookExecutionMode::Sync);
-        assert_eq!(hook.hook_source, HookSource::Project);
-        assert_eq!(hook.status, HookRunStatus::Blocked);
-    }
-
-    #[tokio::test]
-    async fn hook_run_analytics_payload_falls_back_to_turn_context_id() {
-        let (_session, turn_context) = make_session_and_context().await;
-        let mut run = sample_hook_run(HookRunStatus::Failed, HookSource::Unknown);
-        run.handler_type = HookHandlerType::Prompt;
-        run.execution_mode = HookExecutionMode::Async;
-        let completed = HookCompletedEvent { turn_id: None, run };
-
-        let (tracking, hook) =
-            hook_run_analytics_payload("thread-123".to_string(), &turn_context, &completed);
-
-        assert_eq!(tracking.turn_id, turn_context.sub_id);
-        assert_eq!(hook.handler_type, HookHandlerType::Prompt);
-        assert_eq!(hook.execution_mode, HookExecutionMode::Async);
-        assert_eq!(hook.hook_source, HookSource::Unknown);
-        assert_eq!(hook.status, HookRunStatus::Failed);
-    }
-
     #[test]
-    fn hook_run_metric_tags_match_analytics_shape() {
+    fn hook_run_metric_tags_describe_the_run() {
         let mut run = sample_hook_run(HookRunStatus::Blocked, HookSource::Project);
         run.handler_type = HookHandlerType::McpTool;
 
@@ -1298,32 +1159,18 @@ mod tests {
                 ("execution_mode", "sync"),
             ]
         );
-
-        let cloud_requirements =
-            sample_hook_run(HookRunStatus::Blocked, HookSource::CloudRequirements);
-
-        assert_eq!(
-            hook_run_metric_tags(&cloud_requirements),
-            [
-                ("hook_name", "Stop"),
-                ("source", "cloud_requirements"),
-                ("status", "blocked"),
-                ("handler_type", "command"),
-                ("execution_mode", "sync"),
-            ]
-        );
     }
 
     #[test]
-    fn hook_run_metric_tags_include_expanded_hook_sources() {
-        let mut run = sample_hook_run(HookRunStatus::Completed, HookSource::LegacyManagedConfigMdm);
+    fn hook_run_metric_tags_include_async_plugin_runs() {
+        let mut run = sample_hook_run(HookRunStatus::Completed, HookSource::Plugin);
         run.execution_mode = HookExecutionMode::Async;
 
         assert_eq!(
             hook_run_metric_tags(&run),
             [
                 ("hook_name", "Stop"),
-                ("source", "legacy_managed_config_mdm"),
+                ("source", "plugin"),
                 ("status", "completed"),
                 ("handler_type", "command"),
                 ("execution_mode", "async"),

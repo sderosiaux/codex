@@ -20,8 +20,6 @@ use codex_protocol::capabilities::EnvironmentCapabilityRoots;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
-use codex_protocol::models::PermissionProfile;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EnvironmentConfig;
 use codex_protocol::protocol::EnvironmentConfigState;
 use codex_protocol::protocol::EnvironmentConnectionEvent;
@@ -41,12 +39,10 @@ use tracing::Instrument;
 use tracing::instrument::WithSubscriber;
 
 use crate::session::ThreadEnvironmentDefaults;
-use crate::session::turn_context::ShellSnapshotCache;
 use crate::session::turn_context::ShellSnapshotTask;
 use crate::session::turn_context::TurnEnvironment;
 use crate::shell::Shell;
 use crate::shell_snapshot::ShellSnapshot;
-use crate::shell_snapshot::SnapshotCredentialBrokerState;
 
 // Reject pathological selected cwd values at the environment-selection boundary.
 const MAX_TURN_ENVIRONMENT_CWD_BYTES: usize = 8 * 1024;
@@ -176,8 +172,6 @@ struct ResolvedEnvironment {
     executor_platform_os: Option<String>,
     temporary_directories: Option<Vec<PathUri>>,
     shell_snapshot: ShellSnapshotTask,
-    shell_snapshot_builder: ShellSnapshot,
-    shell_snapshot_cache: ShellSnapshotCache,
     shell_snapshot_v2_supported: bool,
     installed_config: Option<EnvironmentConfig>,
 }
@@ -312,13 +306,6 @@ impl ThreadEnvironments {
                 let selection = environment.selection;
                 let config_origin = environment.config_origin;
                 let selected_environment = Arc::clone(&environment.environment);
-                let inherited_snapshot = if !selected_environment.is_remote()
-                    && shell_snapshot.should_rebuild_inherited()
-                {
-                    futures::future::ready(None).boxed().shared()
-                } else {
-                    environment.shell_snapshot
-                };
                 let resolution: TurnEnvironmentResolution =
                     futures::future::ready(Ok(ResolvedEnvironment {
                         environment: environment.environment,
@@ -326,12 +313,8 @@ impl ThreadEnvironments {
                         user_home_dir: environment.user_home_dir,
                         executor_platform_os: environment.executor_platform_os,
                         temporary_directories: environment.temporary_directories,
-                        shell_snapshot: inherited_snapshot,
-                        shell_snapshot_builder: shell_snapshot.clone(),
-                        shell_snapshot_cache: Arc::default(),
-                        shell_snapshot_v2_supported: environment.shell_snapshot_v2_supported
-                            && (selected_environment.is_remote()
-                                || !shell_snapshot.should_rebuild_inherited()),
+                        shell_snapshot: environment.shell_snapshot,
+                        shell_snapshot_v2_supported: environment.shell_snapshot_v2_supported,
                         installed_config: None,
                     }))
                     .boxed()
@@ -370,10 +353,6 @@ impl ThreadEnvironments {
         shell: Option<Shell>,
         config: &EnvironmentConfigState,
     ) -> ShellSnapshotTask {
-        // Protected snapshots require the command's sandbox and are captured lazily.
-        if shell_snapshot.should_rebuild_inherited() {
-            return futures::future::ready(None).boxed().shared();
-        }
         let EnvironmentConfigState::Ready(config) = config else {
             return futures::future::ready(None).boxed().shared();
         };
@@ -382,9 +361,7 @@ impl ThreadEnvironments {
                 environment,
                 cwd,
                 shell,
-                /*allow_login_shell*/ true,
                 config.shell_environment_policy.clone(),
-                /*sandbox*/ None,
             )
             .boxed()
             .shared();
@@ -445,21 +422,8 @@ impl ThreadEnvironments {
                         );
 
                 if !failed && !restarting_as_pending {
-                    let shell_settings_changed = matches!(
-                        (&environment.selection.config, &selected_environment.config),
-                        (EnvironmentConfigState::Ready(previous), EnvironmentConfigState::Ready(current))
-                            if previous.allow_login_shell != current.allow_login_shell
-                                || previous.shell_environment_policy != current.shell_environment_policy
-                    );
                     environment.selection = selected_environment;
                     environment.config_origin = config_origin;
-                    if shell_settings_changed
-                        && !environment.environment.is_remote()
-                        && self.shell_snapshot.should_rebuild_inherited()
-                        && let Some(Ok(resolved)) = environment.resolution.clone().now_or_never()
-                    {
-                        self.restart_shell_snapshot(&mut environment, resolved);
-                    }
                     next.push(environment);
                     continue;
                 }
@@ -598,18 +562,6 @@ impl ThreadEnvironments {
             .collect()
     }
 
-    /// Returns installed owner configuration without treating pending attachments as ready.
-    pub(crate) fn primary_config_for(
-        selections: &[TurnEnvironmentSelection],
-    ) -> Option<&EnvironmentConfig> {
-        match &selections.first()?.config {
-            EnvironmentConfigState::Ready(config) => Some(config),
-            EnvironmentConfigState::FromThread
-            | EnvironmentConfigState::Pending
-            | EnvironmentConfigState::Failed(_) => None,
-        }
-    }
-
     pub(crate) fn primary_workspace_roots_for(
         selections: &[TurnEnvironmentSelection],
     ) -> Vec<AbsolutePathBuf> {
@@ -638,61 +590,8 @@ impl ThreadEnvironments {
         }
         thread_defaults.common = defaults;
         for environment in environments.iter_mut() {
-            let shell_settings_changed = environment.config_origin
-                == EnvironmentConfigOrigin::Thread
-                && matches!(
-                    &environment.selection.config,
-                    EnvironmentConfigState::Ready(previous)
-                        if previous.allow_login_shell != thread_defaults.common.allow_login_shell
-                            || previous.shell_environment_policy != thread_defaults.common.shell_environment_policy
-                );
             environment.refresh_thread_config(thread_defaults);
-            if shell_settings_changed
-                && !environment.environment.is_remote()
-                && self.shell_snapshot.should_rebuild_inherited()
-                && let Some(Ok(resolved)) = environment.resolution.clone().now_or_never()
-            {
-                self.restart_shell_snapshot(environment, resolved);
-            }
         }
-    }
-
-    pub(crate) fn set_snapshot_credential_broker(&self, broker: SnapshotCredentialBrokerState) {
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        if !self.shell_snapshot.set_credential_broker(broker) {
-            return;
-        }
-
-        for selected in &mut state.environments {
-            if !selected.environment.is_remote()
-                && let Some(Ok(resolved)) = selected.resolution.clone().now_or_never()
-            {
-                self.restart_shell_snapshot(selected, resolved);
-            }
-        }
-    }
-
-    fn restart_shell_snapshot(
-        &self,
-        selected: &mut SelectedTurnEnvironment,
-        resolved: ResolvedEnvironment,
-    ) {
-        let shell_snapshot = Self::start_shell_snapshot_task(
-            self.shell_snapshot.clone(),
-            Arc::clone(&resolved.environment),
-            selected.selection.cwd.clone(),
-            resolved.shell.clone(),
-            &selected.selection.config,
-        );
-        selected.resolution = futures::future::ready(Ok(ResolvedEnvironment {
-            shell_snapshot,
-            shell_snapshot_cache: Arc::default(),
-            shell_snapshot_v2_supported: cfg!(unix)
-                && !self.shell_snapshot.should_rebuild_inherited(),
-            ..resolved
-        }))
-        .boxed()
-        .shared();
     }
 
     /// Combines persisted thread roots with installed attachment roots, keeping
@@ -871,7 +770,6 @@ impl ThreadEnvironments {
                 cfg!(unix),
             )
         };
-        let shell_snapshot_builder = shell_snapshot.clone();
         let snapshot_config = installed_config
             .clone()
             .map(EnvironmentConfigState::Ready)
@@ -883,8 +781,6 @@ impl ThreadEnvironments {
             shell.clone(),
             &snapshot_config,
         );
-        let shell_snapshot_v2_supported = snapshot_v2
-            && (environment.is_remote() || !shell_snapshot_builder.should_rebuild_inherited());
         Ok(ResolvedEnvironment {
             environment,
             shell,
@@ -892,9 +788,7 @@ impl ThreadEnvironments {
             executor_platform_os,
             temporary_directories: temporary_dirs,
             shell_snapshot: task,
-            shell_snapshot_builder,
-            shell_snapshot_cache: Arc::default(),
-            shell_snapshot_v2_supported,
+            shell_snapshot_v2_supported: snapshot_v2,
             installed_config,
         })
     }
@@ -968,7 +862,7 @@ impl ThreadEnvironments {
 pub(crate) enum TurnEnvironmentState {
     Ready(TurnEnvironment),
     Starting(StartingTurnEnvironment),
-    /// Unavailable for execution, but still selected when evaluating permissions.
+    /// Unavailable for execution, but still part of the selection.
     Failed {
         // Keep the input form so connection failure doesn't hide whether config comes from the thread.
         selection: TurnEnvironmentSelection,
@@ -1014,9 +908,6 @@ impl TurnEnvironmentState {
                 );
                 turn_environment.executor_platform_os = environment.executor_platform_os;
                 turn_environment.shell_snapshot = environment.shell_snapshot;
-                turn_environment.shell_snapshot_builder =
-                    Some(Box::new(environment.shell_snapshot_builder));
-                turn_environment.shell_snapshot_cache = environment.shell_snapshot_cache;
                 turn_environment.shell_snapshot_v2_supported =
                     environment.shell_snapshot_v2_supported;
                 turn_environment.user_home_dir = environment.user_home_dir;
@@ -1060,26 +951,6 @@ impl TurnEnvironmentSnapshot {
             };
             &selection.selected_capability_roots
         }))
-    }
-
-    pub(crate) fn has_full_access(
-        &self,
-        approval_policy: AskForApproval,
-        thread_profile: &PermissionProfile,
-    ) -> bool {
-        codex_protocol::protocol::has_full_access(
-            approval_policy,
-            thread_profile,
-            self.refresh_readiness()
-                .environments
-                .iter()
-                .map(|environment| match environment {
-                    TurnEnvironmentState::Ready(environment) => &environment.selection.config,
-                    TurnEnvironmentState::Starting(_) | TurnEnvironmentState::Failed { .. } => {
-                        &EnvironmentConfigState::Pending
-                    }
-                }),
-        )
     }
 
     /// Promotes completed startup work without adopting newer thread selections.
@@ -1169,16 +1040,6 @@ impl TurnEnvironmentSnapshot {
             None => return &[],
         };
         &selection.workspace_roots
-    }
-
-    /// Returns the primary environment's resolved permissions, or the provided fallback.
-    pub(crate) fn permission_profile_or_else(
-        &self,
-        fallback: impl FnOnce() -> PermissionProfile,
-    ) -> PermissionProfile {
-        self.primary()
-            .map(TurnEnvironment::permission_profile_with_workspace_roots)
-            .unwrap_or_else(fallback)
     }
 
     pub(crate) fn local(&self) -> Option<&TurnEnvironment> {
@@ -1310,21 +1171,15 @@ mod snapshot_tests;
 mod tests {
     use std::time::Duration;
 
-    use crate::config::PermissionProfileSnapshot;
     use codex_exec_server::Environment;
-    use codex_exec_server::ExecServerRuntimeOptions;
     use codex_exec_server::LOCAL_ENVIRONMENT_ID;
     use codex_exec_server::REMOTE_ENVIRONMENT_ID;
     use codex_exec_server_test_support::environment_manager_without_environments;
     use codex_http_client::HttpClientFactory;
     use codex_http_client::OutboundProxyPolicy;
-    use codex_protocol::config_types::WindowsSandboxLevel;
-    use codex_protocol::models::ActivePermissionProfile;
-    use codex_protocol::models::PermissionProfile;
-    use codex_protocol::permissions::FileSystemSandboxPolicyContext;
+    use codex_protocol::config_types::ShellEnvironmentPolicy;
     use codex_protocol::protocol::TurnEnvironmentRequest;
     use codex_protocol::protocol::TurnEnvironmentSelection;
-    use codex_protocol::sandbox::SandboxType;
     use codex_utils_absolute_path::AbsolutePathBuf;
     use codex_utils_path_uri::PathUri;
     use futures::SinkExt;
@@ -1347,14 +1202,7 @@ mod tests {
         EnvironmentConfig {
             allow_login_shell: true,
             workspace_roots: Vec::new(),
-            windows_sandbox_level: WindowsSandboxLevel::Disabled,
-            windows_sandbox_type: codex_protocol::sandbox::SandboxType::None,
-            use_legacy_landlock: false,
-            permission_profile: PermissionProfileSnapshot::legacy(PermissionProfile::read_only()),
             shell_environment_policy: Default::default(),
-            exec_policy: None,
-            mcp_policy: None,
-            network_policy: None,
             selected_capability_roots: Vec::new(),
         }
     }
@@ -1366,7 +1214,7 @@ mod tests {
         let turn_environments = Arc::new(ThreadEnvironments::new(
             environment_manager,
             crate::shell::default_user_shell(),
-            ThreadEnvironmentDefaults::new(test_environment_config(), SandboxType::None),
+            ThreadEnvironmentDefaults::new(test_environment_config()),
             ShellSnapshot::disabled(),
             TurnEnvironmentSnapshot::default(),
             /*non_blocking_snapshots*/ false,
@@ -1374,14 +1222,6 @@ mod tests {
         turn_environments.update_selections(selections);
         turn_environments.snapshot().await;
         turn_environments
-    }
-
-    fn test_runtime_paths() -> ExecServerRuntimeOptions {
-        ExecServerRuntimeOptions::new(
-            std::env::current_exe().expect("current exe"),
-            /*codex_linux_sandbox_exe*/ None,
-        )
-        .expect("runtime paths")
     }
 
     async fn read_websocket_json(websocket: &mut WebSocketStream<TcpStream>) -> Value {
@@ -1449,11 +1289,8 @@ mod tests {
     async fn default_thread_environment_requests_use_manager_default_id() {
         let cwd = AbsolutePathBuf::current_dir().expect("cwd");
         let cwd_uri = PathUri::from_abs_path(&cwd);
-        let manager = EnvironmentManager::create_for_tests(
-            Some("ws://127.0.0.1:8765".to_string()),
-            Some(test_runtime_paths()),
-        )
-        .await;
+        let manager =
+            EnvironmentManager::create_for_tests(Some("ws://127.0.0.1:8765".to_string())).await;
 
         assert_eq!(
             default_thread_environment_requests(&manager, &cwd, std::slice::from_ref(&cwd)),
@@ -1482,7 +1319,6 @@ url = "ws://127.0.0.1:8765"
         let cwd_uri = PathUri::from_abs_path(&cwd);
         let manager = EnvironmentManager::from_codex_home(
             temp_dir.path(),
-            Some(test_runtime_paths()),
             HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
         )
         .await
@@ -1528,27 +1364,13 @@ url = "ws://127.0.0.1:8765"
         let expected_config = EnvironmentConfig {
             allow_login_shell: false,
             workspace_roots: Vec::new(),
-            windows_sandbox_level: WindowsSandboxLevel::Disabled,
-            windows_sandbox_type: codex_protocol::sandbox::SandboxType::None,
-            use_legacy_landlock: false,
-            permission_profile: PermissionProfileSnapshot::active_with_profile_workspace_roots(
-                PermissionProfile::read_only(),
-                ActivePermissionProfile::read_only(),
-                vec![cwd.join("profile-root").into()],
-            ),
             shell_environment_policy: Default::default(),
-            exec_policy: None,
-            mcp_policy: None,
-            network_policy: None,
             selected_capability_roots: Vec::new(),
         };
         let turn_environments = ThreadEnvironments::new(
             Arc::new(EnvironmentManager::default_for_tests()),
             local_shell.clone(),
-            ThreadEnvironmentDefaults::new(
-                expected_config.clone(),
-                expected_config.windows_sandbox_type,
-            ),
+            ThreadEnvironmentDefaults::new(expected_config.clone()),
             ShellSnapshot::disabled(),
             TurnEnvironmentSnapshot::default(),
             /*non_blocking_snapshots*/ false,
@@ -1568,16 +1390,10 @@ url = "ws://127.0.0.1:8765"
 
         assert_eq!(environment.shell.as_ref(), Some(&local_shell));
         assert_eq!(environment.config(), &expected_config);
+        assert_eq!(environment.user_home_dir, expected_user_home_dir);
         assert_eq!(
-            environment
-                .sandbox_context(/*additional_permissions*/ None)
-                .policy_context(),
-            FileSystemSandboxPolicyContext {
-                cwd: environment.cwd(),
-                workspace_roots: &[],
-                user_home_dir: expected_user_home_dir.as_ref(),
-                temporary_directories: Some(expected_temporary_directories.as_slice()),
-            }
+            environment.temporary_directories,
+            Some(expected_temporary_directories)
         );
     }
 
@@ -1708,13 +1524,10 @@ url = "ws://127.0.0.1:8765"
             .await
             .expect("bind websocket listener");
         let manager = Arc::new(
-            EnvironmentManager::create_for_tests(
-                Some(format!(
-                    "ws://{}",
-                    listener.local_addr().expect("listener address")
-                )),
-                Some(test_runtime_paths()),
-            )
+            EnvironmentManager::create_for_tests(Some(format!(
+                "ws://{}",
+                listener.local_addr().expect("listener address")
+            )))
             .await,
         );
         let selection = TurnEnvironmentSelection {
@@ -1727,7 +1540,7 @@ url = "ws://127.0.0.1:8765"
         let environments = Arc::new(ThreadEnvironments::new(
             manager,
             crate::shell::default_user_shell(),
-            ThreadEnvironmentDefaults::new(test_environment_config(), SandboxType::None),
+            ThreadEnvironmentDefaults::new(test_environment_config()),
             ShellSnapshot::disabled(),
             TurnEnvironmentSnapshot::default(),
             /*non_blocking_snapshots*/ false,
@@ -1779,49 +1592,22 @@ url = "ws://127.0.0.1:8765"
         );
     }
 
-    #[test_case::test_case(SandboxType::None, SandboxType::None, WindowsSandboxLevel::Disabled; "legacy")]
-    #[test_case::test_case(SandboxType::WindowsRestrictedToken, SandboxType::WindowsMxc, WindowsSandboxLevel::Elevated; "local preference")]
-    #[test_case::test_case(SandboxType::WindowsMxc, SandboxType::WindowsMxc, WindowsSandboxLevel::Disabled; "explicit MXC")]
     #[tokio::test]
-    async fn snapshot_refreshes_readiness_in_selection_order(
-        configured_sandbox: SandboxType,
-        local_sandbox: SandboxType,
-        legacy_level: WindowsSandboxLevel,
-    ) {
+    async fn snapshot_refreshes_readiness_in_selection_order() {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind websocket listener");
         let manager = Arc::new(
-            EnvironmentManager::create_for_tests_with_local(
-                Some(format!(
-                    "ws://{}",
-                    listener.local_addr().expect("listener address")
-                )),
-                test_runtime_paths(),
-            )
+            EnvironmentManager::create_for_tests_with_local(Some(format!(
+                "ws://{}",
+                listener.local_addr().expect("listener address")
+            )))
             .await,
         );
         let cwd = AbsolutePathBuf::current_dir().expect("cwd");
         let expected_config = EnvironmentConfig {
             allow_login_shell: false,
-            workspace_roots: Vec::new(),
-            windows_sandbox_level: legacy_level,
-            windows_sandbox_type: configured_sandbox,
-            use_legacy_landlock: false,
-            permission_profile: PermissionProfileSnapshot::active_with_profile_workspace_roots(
-                PermissionProfile::read_only(),
-                ActivePermissionProfile::read_only(),
-                vec![cwd.join("profile-root").into()],
-            ),
-            shell_environment_policy: Default::default(),
-            exec_policy: None,
-            mcp_policy: None,
-            network_policy: None,
-            selected_capability_roots: Vec::new(),
-        };
-        let expected_local_config = EnvironmentConfig {
-            windows_sandbox_type: local_sandbox,
-            ..expected_config.clone()
+            ..test_environment_config()
         };
         let cwd = PathUri::from_abs_path(&cwd);
         let remote = TurnEnvironmentSelection {
@@ -1841,7 +1627,7 @@ url = "ws://127.0.0.1:8765"
         let turn_environments = ThreadEnvironments::new(
             Arc::clone(&manager),
             crate::shell::default_user_shell(),
-            ThreadEnvironmentDefaults::new(test_environment_config(), local_sandbox),
+            ThreadEnvironmentDefaults::new(test_environment_config()),
             ShellSnapshot::disabled(),
             TurnEnvironmentSnapshot::default(),
             /*non_blocking_snapshots*/ true,
@@ -1855,10 +1641,7 @@ url = "ws://127.0.0.1:8765"
         let initial = turn_environments.snapshot().await;
         assert_eq!(
             initial.primary().expect("local environment").config(),
-            &EnvironmentConfig {
-                windows_sandbox_type: local_sandbox,
-                ..test_environment_config()
-            },
+            &test_environment_config(),
         );
         assert_eq!(
             initial.starting().next().unwrap().selection.config,
@@ -1883,7 +1666,7 @@ url = "ws://127.0.0.1:8765"
                 .turn_environments()
                 .map(|environment| environment.config().clone())
                 .collect::<Vec<_>>(),
-            vec![expected_local_config.clone()]
+            vec![expected_config.clone()]
         );
         assert_eq!(
             starting
@@ -1900,14 +1683,15 @@ url = "ws://127.0.0.1:8765"
         assert!(starting.single_local_environment().is_none());
 
         let next_config = EnvironmentConfig {
-            permission_profile: PermissionProfileSnapshot::legacy(PermissionProfile::Disabled),
+            shell_environment_policy: ShellEnvironmentPolicy {
+                use_profile: true,
+                ..Default::default()
+            },
             ..test_environment_config()
         };
         turn_environments.set_active_thread_defaults(next_config.clone());
         let next_starting = turn_environments.snapshot().await;
-        assert!(
-            !next_starting.has_full_access(AskForApproval::Never, &PermissionProfile::Disabled)
-        );
+        assert!(next_starting.starting().next().is_some());
 
         let server = tokio::spawn(serve_environment_info(listener));
         timeout(
@@ -1922,15 +1706,20 @@ url = "ws://127.0.0.1:8765"
         .await
         .expect("environment resolution should finish")
         .expect("environment resolution should succeed");
-        assert!(next_starting.has_full_access(AskForApproval::Never, &PermissionProfile::Disabled));
-        assert!(!starting.has_full_access(AskForApproval::Never, &PermissionProfile::Disabled));
+        assert!(
+            next_starting
+                .refresh_readiness()
+                .starting()
+                .next()
+                .is_none()
+        );
         let attached = starting.refresh_readiness();
 
         assert!(attached.starting().next().is_none());
         let child = ThreadEnvironments::new(
             manager,
             crate::shell::default_user_shell(),
-            ThreadEnvironmentDefaults::new(next_config.clone(), local_sandbox),
+            ThreadEnvironmentDefaults::new(next_config.clone()),
             ShellSnapshot::disabled(),
             attached.clone(),
             /*non_blocking_snapshots*/ true,
@@ -1960,7 +1749,7 @@ url = "ws://127.0.0.1:8765"
                 .turn_environments()
                 .map(|environment| environment.config().clone())
                 .collect::<Vec<_>>(),
-            vec![expected_config, expected_local_config]
+            vec![expected_config.clone(), expected_config]
         );
         assert_eq!(
             attached
@@ -1974,16 +1763,10 @@ url = "ws://127.0.0.1:8765"
         let expected_user_home_dir = PathUri::parse("file:///home/remote").expect("remote home");
         let expected_temporary_directories =
             [PathUri::parse("file:///tmp/remote").expect("remote temporary directory")];
+        assert_eq!(environment.user_home_dir, Some(expected_user_home_dir));
         assert_eq!(
-            environment
-                .sandbox_context(/*additional_permissions*/ None)
-                .policy_context(),
-            FileSystemSandboxPolicyContext {
-                cwd: environment.cwd(),
-                workspace_roots: &[],
-                user_home_dir: Some(&expected_user_home_dir),
-                temporary_directories: Some(expected_temporary_directories.as_slice()),
-            }
+            environment.temporary_directories,
+            Some(expected_temporary_directories.to_vec())
         );
         assert_eq!(
             next_starting
@@ -1991,13 +1774,7 @@ url = "ws://127.0.0.1:8765"
                 .turn_environments()
                 .map(|environment| environment.config().clone())
                 .collect::<Vec<_>>(),
-            vec![
-                next_config.clone(),
-                EnvironmentConfig {
-                    windows_sandbox_type: local_sandbox,
-                    ..next_config
-                }
-            ]
+            vec![next_config.clone(), next_config]
         );
         server.await.expect("server task");
     }
@@ -2005,11 +1782,7 @@ url = "ws://127.0.0.1:8765"
     #[tokio::test]
     async fn failed_resolution_is_replaced_from_the_environment_manager() {
         let manager = Arc::new(
-            EnvironmentManager::create_for_tests(
-                Some("http://example.com".to_string()),
-                Some(test_runtime_paths()),
-            )
-            .await,
+            EnvironmentManager::create_for_tests(Some("http://example.com".to_string())).await,
         );
         let selection = TurnEnvironmentSelection {
             selected_capability_roots: Default::default(),
@@ -2021,7 +1794,7 @@ url = "ws://127.0.0.1:8765"
         let environments = ThreadEnvironments::new(
             Arc::clone(&manager),
             crate::shell::default_user_shell(),
-            ThreadEnvironmentDefaults::new(test_environment_config(), SandboxType::None),
+            ThreadEnvironmentDefaults::new(test_environment_config()),
             ShellSnapshot::disabled(),
             TurnEnvironmentSnapshot::default(),
             /*non_blocking_snapshots*/ true,
@@ -2036,9 +1809,7 @@ url = "ws://127.0.0.1:8765"
             .await
             .err()
             .expect("environment should fail to start");
-        // Failed selections must not turn an empty executable snapshot into Full Access.
         for snapshot in [starting.refresh_readiness(), environments.snapshot().await] {
-            assert!(!snapshot.has_full_access(AskForApproval::Never, &PermissionProfile::Disabled));
             assert_eq!(snapshot.all_selections(), vec![selection.clone()]);
             assert!(snapshot.ready_environment_handles().is_empty());
         }
@@ -2105,13 +1876,10 @@ url = "ws://127.0.0.1:8765"
             .await
             .expect("bind first listener");
         let manager = Arc::new(
-            EnvironmentManager::create_for_tests(
-                Some(format!(
-                    "ws://{}",
-                    first_listener.local_addr().expect("first listener address")
-                )),
-                Some(test_runtime_paths()),
-            )
+            EnvironmentManager::create_for_tests(Some(format!(
+                "ws://{}",
+                first_listener.local_addr().expect("first listener address")
+            )))
             .await,
         );
         let selection = TurnEnvironmentSelection {
@@ -2125,7 +1893,7 @@ url = "ws://127.0.0.1:8765"
         let environments = Arc::new(ThreadEnvironments::new(
             Arc::clone(&manager),
             crate::shell::default_user_shell(),
-            ThreadEnvironmentDefaults::new(test_environment_config(), SandboxType::None),
+            ThreadEnvironmentDefaults::new(test_environment_config()),
             ShellSnapshot::disabled(),
             TurnEnvironmentSnapshot::default(),
             /*non_blocking_snapshots*/ true,
@@ -2235,25 +2003,12 @@ url = "ws://127.0.0.1:8765"
             .expect("replacement environment");
         let child_config = EnvironmentConfig {
             allow_login_shell: false,
-            workspace_roots: Vec::new(),
-            windows_sandbox_level: WindowsSandboxLevel::Disabled,
-            windows_sandbox_type: codex_protocol::sandbox::SandboxType::None,
-            use_legacy_landlock: false,
-            permission_profile: PermissionProfileSnapshot::active_with_profile_workspace_roots(
-                PermissionProfile::read_only(),
-                ActivePermissionProfile::read_only(),
-                vec![cwd.join("child-profile-root").into()],
-            ),
-            shell_environment_policy: Default::default(),
-            exec_policy: None,
-            mcp_policy: None,
-            network_policy: None,
-            selected_capability_roots: Vec::new(),
+            ..test_environment_config()
         };
         let environments = ThreadEnvironments::new(
             manager,
             crate::shell::default_user_shell(),
-            ThreadEnvironmentDefaults::new(child_config.clone(), child_config.windows_sandbox_type),
+            ThreadEnvironmentDefaults::new(child_config.clone()),
             ShellSnapshot::disabled(),
             TurnEnvironmentSnapshot {
                 environments: vec![TurnEnvironmentState::Ready(inherited)],
@@ -2268,16 +2023,11 @@ url = "ws://127.0.0.1:8765"
         assert!(Arc::ptr_eq(&inherited.environment, &inherited_environment));
         assert_eq!(inherited.config(), &child_config);
         assert_eq!(
-            inherited
-                .sandbox_context(/*additional_permissions*/ None)
-                .user_home_dir,
+            inherited.user_home_dir,
             Some(PathUri::parse("file:///home/inherited").expect("home directory")),
         );
         assert_eq!(
-            inherited
-                .sandbox_context(/*additional_permissions*/ None)
-                .temporary_directories
-                .as_deref(),
+            inherited.temporary_directories.as_deref(),
             Some(
                 [PathUri::parse("file:///tmp/inherited").expect("temporary directory")].as_slice()
             )
@@ -2305,7 +2055,7 @@ url = "ws://127.0.0.1:8765"
         let parent = ThreadEnvironments::new(
             Arc::clone(&manager),
             crate::shell::default_user_shell(),
-            ThreadEnvironmentDefaults::new(test_environment_config(), SandboxType::WindowsMxc),
+            ThreadEnvironmentDefaults::new(test_environment_config()),
             ShellSnapshot::disabled(),
             TurnEnvironmentSnapshot::default(),
             /*non_blocking_snapshots*/ false,
@@ -2315,14 +2065,7 @@ url = "ws://127.0.0.1:8765"
         let parent_owner_config = EnvironmentConfig {
             allow_login_shell: false,
             workspace_roots: selection.workspace_roots.clone(),
-            windows_sandbox_level: WindowsSandboxLevel::Disabled,
-            windows_sandbox_type: codex_protocol::sandbox::SandboxType::None,
-            use_legacy_landlock: false,
-            permission_profile: PermissionProfileSnapshot::legacy(PermissionProfile::read_only()),
             shell_environment_policy: Default::default(),
-            exec_policy: None,
-            mcp_policy: None,
-            network_policy: None,
             selected_capability_roots: vec![root("parent-root")],
         };
         let mut owner_selection = selection.clone();
@@ -2330,10 +2073,10 @@ url = "ws://127.0.0.1:8765"
         parent.update_selections(std::slice::from_ref(&owner_selection));
 
         let child_thread_config = EnvironmentConfig {
-            windows_sandbox_type: SandboxType::WindowsMxc,
-            permission_profile: PermissionProfileSnapshot::legacy(
-                PermissionProfile::workspace_write(),
-            ),
+            shell_environment_policy: ShellEnvironmentPolicy {
+                use_profile: true,
+                ..Default::default()
+            },
             ..test_environment_config()
         };
         parent.set_active_thread_defaults(child_thread_config.clone());
@@ -2349,7 +2092,7 @@ url = "ws://127.0.0.1:8765"
         let child = ThreadEnvironments::new(
             manager,
             crate::shell::default_user_shell(),
-            ThreadEnvironmentDefaults::new(child_thread_config.clone(), SandboxType::WindowsMxc),
+            ThreadEnvironmentDefaults::new(child_thread_config.clone()),
             ShellSnapshot::disabled(),
             parent.snapshot().await,
             /*non_blocking_snapshots*/ false,

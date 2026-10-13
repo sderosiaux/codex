@@ -89,7 +89,7 @@ pub(super) async fn load_host_skill_metadata(
         SkillMetadataDiscovery::Absent => return LoadedSkillMetadata::default(),
         SkillMetadataDiscovery::Probe(path) => {
             match file_system
-                .get_metadata(path, GetMetadataOptions::default(), /*sandbox*/ None)
+                .get_metadata(path, GetMetadataOptions::default())
                 .await
             {
                 Ok(metadata) if metadata.is_file => {}
@@ -110,11 +110,7 @@ pub(super) async fn load_host_skill_metadata(
     };
 
     let contents = match file_system
-        .read_file_text(
-            metadata_path,
-            ReadFileOptions::default(),
-            /*sandbox*/ None,
-        )
+        .read_file_text(metadata_path, ReadFileOptions::default())
         .await
     {
         Ok(contents) => contents,

@@ -1,5 +1,4 @@
 use super::*;
-use crate::context::APPROVED_COMMAND_PREFIX_SAVED_MESSAGE_PREFIX;
 use crate::context::UserInstructions;
 use crate::context::world_state::SectionTransition;
 use crate::context::world_state::WorldState;
@@ -31,11 +30,9 @@ use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::default_input_modalities;
 use codex_protocol::protocol::APPS_INSTRUCTIONS_OPEN_TAG;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::ENVIRONMENTS_INSTRUCTIONS_OPEN_TAG;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::PLUGINS_INSTRUCTIONS_OPEN_TAG;
-use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::TurnContextItem;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_output_truncation::TruncationPolicy;
@@ -123,10 +120,7 @@ fn inter_agent_assistant_msg(text: &str) -> ResponseItem {
 }
 
 fn root_history() -> ContextManager {
-    ContextManager::for_session(
-        &SessionSource::Cli,
-        &ManagedFeatures::from(codex_features::Features::with_defaults()),
-    )
+    ContextManager::for_session(&SessionSource::Cli)
 }
 
 fn create_history_with_items(items: Vec<ResponseItem>) -> ContextManager {
@@ -139,56 +133,6 @@ fn create_history_with_items(items: Vec<ResponseItem>) -> ContextManager {
 
 fn raw_items(history: &ContextManager) -> Vec<ResponseItem> {
     history.raw_items().cloned().collect()
-}
-
-#[test]
-fn delivered_assistant_context_invalidates_reviews_without_changing_authorization() {
-    let revisions = |history: &ContextManager| {
-        let snapshot = history.conversation_history_snapshot();
-        (
-            snapshot.guardian_review_context_revision(),
-            snapshot.user_message_revision(),
-        )
-    };
-    let mut history = create_history_with_items(vec![user_msg("Yes.")]);
-    let before_delivery = history.conversation_history_snapshot();
-    let authorization = before_delivery.user_message_revision();
-    let event = RetainedContextEvent::DeliveredAssistantMessage {
-        message: codex_history::RetainedUserMessage {
-            origin: codex_history::UserInputOrigin::User,
-            turn_id: "turn".to_owned(),
-            message_id: Some("send".to_owned()),
-            text: "Deploy publicly?".to_owned(),
-            complete: true,
-            phase: None,
-        },
-        acceptance_order: history.reserve_input_order(),
-    };
-    assert!(history.record_retained_context(&event));
-    let delivered_revision = revisions(&history).0;
-    assert_ne!(
-        before_delivery.guardian_review_context_revision(),
-        delivered_revision
-    );
-    assert!(!history.record_retained_context(&event));
-    assert_eq!(revisions(&history), (delivered_revision, authorization));
-    let mut resumed = ContextManager::new();
-    resumed.restore_retained_context(Some(history.retained_context()));
-    assert_ne!(revisions(&resumed).0, delivered_revision);
-
-    let answer = RetainedContextEvent::VerifiedAnswer {
-        answer: codex_history::VerifiedAnswer {
-            turn_id: "turn".to_owned(),
-            call_id: "ask".to_owned(),
-            questions: vec![codex_history::VerifiedQuestionAnswer {
-                question: "Run tests?".to_owned(),
-                answer: "Yes.".to_owned(),
-            }],
-        },
-        acceptance_order: Some(history.reserve_input_order()),
-    };
-    assert!(history.record_retained_context(&answer));
-    assert_eq!(revisions(&history), (delivered_revision, authorization + 1));
 }
 
 #[test]
@@ -218,237 +162,6 @@ fn conversation_history_snapshot_shares_response_items_until_history_changes() {
     assert_ne!(
         snapshot.history_version(),
         history.conversation_history_snapshot().history_version()
-    );
-}
-
-#[test_case(None; "missing hash")]
-#[test_case(Some(""); "empty hash")]
-#[test_case(Some("other-producer"); "incompatible hash")]
-fn conversation_history_snapshot_binds_review_mode_and_hash_to_the_latest_item(
-    latest_hash: Option<&str>,
-) {
-    let checkpoint = ResponseItemEnvelope {
-        item: serde_json::from_value(serde_json::json!({
-            "type": "compaction", "id": "known", "encrypted_content": "opaque checkpoint"
-        }))
-        .expect("checkpoint fixture"),
-        metadata: Some(CodexHarnessMetadata {
-            compaction_model_hash: Some("producer-hash".to_owned()),
-            ..Default::default()
-        }),
-    };
-    let mut history = root_history();
-    history.replace_annotated(vec![checkpoint.clone()]);
-    history.restore_review_context(
-        /*retained_context*/ None,
-        /*checkpoint*/ None,
-        Some("producer-hash"),
-    );
-    let snapshot = history.conversation_history_snapshot();
-    let mut unknown = checkpoint.clone();
-    unknown.metadata = latest_hash.map(|hash| CodexHarnessMetadata {
-        compaction_model_hash: Some(hash.to_owned()),
-        ..Default::default()
-    });
-    unknown.item = serde_json::from_value(serde_json::json!({
-        "type": "compaction", "id": "unknown", "encrypted_content": "newer opaque checkpoint"
-    }))
-    .expect("unknown checkpoint fixture");
-    history.replace_annotated(vec![checkpoint.clone(), unknown]);
-    let mut legacy_context = RetainedContext::default();
-    legacy_context.mark_user_messages_incomplete();
-    history.restore_review_context(
-        Some(&legacy_context),
-        /*checkpoint*/ None,
-        Some("producer-hash"),
-    );
-    assert_eq!(
-        GuardianContextMode::from_history(history.conversation_history_snapshot().as_ref()),
-        GuardianContextMode::Legacy,
-    );
-    assert_eq!(
-        history
-            .conversation_history_snapshot()
-            .latest_compaction()
-            .and_then(|checkpoint| checkpoint.model_hash),
-        latest_hash
-    );
-    assert_eq!(
-        snapshot
-            .latest_compaction()
-            .and_then(|checkpoint| checkpoint.model_hash),
-        Some("producer-hash")
-    );
-    assert_eq!(
-        GuardianContextMode::from_history(snapshot.as_ref()),
-        GuardianContextMode::ThreadOwned,
-    );
-    // Checkpoint replay/rollback restores the item's own provenance, not a new model's metadata.
-    history.replace_annotated(vec![checkpoint]);
-    history.restore_review_context(
-        /*retained_context*/ None,
-        /*checkpoint*/ None,
-        Some("producer-hash"),
-    );
-    assert_eq!(
-        GuardianContextMode::from_history(history.conversation_history_snapshot().as_ref()),
-        GuardianContextMode::ThreadOwned,
-    );
-    assert_eq!(
-        history
-            .conversation_history_snapshot()
-            .latest_compaction()
-            .and_then(|checkpoint| checkpoint.model_hash),
-        Some("producer-hash")
-    );
-}
-
-#[test_case(serde_json::json!({
-    "verified_answers": [], "incomplete": true
-}); "missing answers")]
-#[test_case(serde_json::json!({
-    "verified_answers": [], "incomplete": false, "next_order": 1,
-    "user_messages": [{
-        "turn_id": "turn", "message_id": "restriction",
-        "text": "Only publish to a private repository.", "complete": true
-    }]
-}); "retained instructions")]
-#[test_case(serde_json::json!({
-    "verified_answers": [], "incomplete": false, "next_order": 1,
-    "assistant_messages": [{
-        "turn_id": "turn", "message_id": "question",
-        "text": "May I publish to the private repository?", "complete": true
-    }]
-}); "retained assistant context")]
-fn checkpoint_retained_evidence_survives_legacy_review(saved_context: serde_json::Value) {
-    let mut history = root_history();
-    history.replace_annotated(vec![ResponseItemEnvelope::new(
-        serde_json::from_value(serde_json::json!({
-            "type": "compaction", "id": "unknown", "encrypted_content": "opaque checkpoint"
-        }))
-        .expect("checkpoint fixture"),
-    )]);
-    let retained: RetainedContext =
-        serde_json::from_value(saved_context).expect("retained evidence checkpoint");
-    for (checkpoint, expected_mode) in [
-        (None, GuardianContextMode::ThreadOwned),
-        (
-            Some(GuardianHistoryCheckpoint(vec![
-                assistant_msg("Original transcript").into(),
-            ])),
-            GuardianContextMode::Legacy,
-        ),
-    ] {
-        history.restore_review_context(Some(&retained), checkpoint.as_ref(), Some("reviewer"));
-        let snapshot = history.conversation_history_snapshot();
-        assert_eq!(
-            GuardianContextMode::from_history(snapshot.as_ref()),
-            expected_mode
-        );
-        assert_eq!(snapshot.retained_context(), Some(&retained));
-        assert_eq!(
-            snapshot
-                .latest_compaction()
-                .and_then(|checkpoint| checkpoint.model_hash),
-            None
-        );
-    }
-}
-
-#[test]
-fn checkpoint_replayed_messages_keep_legacy_review_when_the_source_survives() {
-    let mut history = root_history();
-    history.replace_annotated(vec![ResponseItemEnvelope::new(
-        serde_json::from_value(serde_json::json!({
-            "type": "compaction", "id": "unknown", "encrypted_content": "opaque checkpoint"
-        }))
-        .expect("checkpoint fixture"),
-    )]);
-    history.restore_review_context(
-        /*retained_context*/ None, /*checkpoint*/ None,
-        /*reviewer_compaction_hash*/ None,
-    );
-    history.record_items(
-        &[
-            user_input_text_msg("Only publish privately."),
-            assistant_msg("May I publish to the private repository?"),
-        ],
-        TruncationPolicy::Bytes(10_000),
-    );
-    let retained = history.retained_context().clone();
-    history.restore_review_context(
-        Some(&retained),
-        /*checkpoint*/ None,
-        /*reviewer_compaction_hash*/ None,
-    );
-
-    assert_eq!(
-        GuardianContextMode::from_history(history.conversation_history_snapshot().as_ref()),
-        GuardianContextMode::Legacy,
-    );
-    assert_eq!(history.retained_context(), &retained);
-}
-
-#[test_case(None; "no retained checkpoint")]
-#[test_case(Some(serde_json::json!({
-    "verified_answers": [], "incomplete": false
-})); "legacy retained checkpoint without instructions")]
-fn plaintext_checkpoint_without_backup_preserves_root_instructions(
-    saved_context: Option<serde_json::Value>,
-) {
-    let instruction = serde_json::from_value(serde_json::json!({
-        "type": "message", "id": "original-restriction", "role": "user",
-        "content": [{"type": "input_text", "text": "Only publish privately."}]
-    }))
-    .expect("old instruction without ordering metadata");
-    let saved_context: Option<RetainedContext> =
-        saved_context.map(|value| serde_json::from_value(value).expect("legacy retained context"));
-    let mut history = root_history();
-    history.replace(vec![instruction]);
-    history.restore_review_context(
-        saved_context.as_ref(),
-        /*checkpoint*/ None,
-        Some("reviewer"),
-    );
-
-    // Compaction removes the only plaintext copy. Resume must keep it available
-    // to worker authorization without adding it back to the reviewer's model window.
-    let compacted = vec![ResponseItemEnvelope {
-        item: serde_json::from_value(serde_json::json!({
-            "type": "compaction", "id": "new-checkpoint", "encrypted_content": "opaque"
-        }))
-        .expect("new checkpoint"),
-        metadata: Some(CodexHarnessMetadata {
-            compaction_model_hash: Some("reviewer".to_owned()),
-            ..Default::default()
-        }),
-    }];
-    history.replace_compacted(compacted.clone(), Some("reviewer"));
-    let mut resumed = root_history();
-    resumed.replace_annotated(compacted.clone());
-    resumed.restore_review_context(
-        Some(history.retained_context()),
-        history.guardian_history_checkpoint().as_ref(),
-        Some("reviewer"),
-    );
-    let snapshot = resumed.conversation_history_snapshot();
-    assert_eq!(
-        (
-            GuardianContextMode::from_history(snapshot.as_ref()),
-            snapshot.review_items().cloned().collect::<Vec<_>>(),
-            resumed
-                .legacy_user_messages()
-                .map(|message| message.text)
-                .collect::<Vec<_>>(),
-        ),
-        (
-            GuardianContextMode::ThreadOwned,
-            compacted
-                .into_iter()
-                .map(|envelope| envelope.item)
-                .collect::<Vec<_>>(),
-            vec!["Only publish privately.".to_owned()],
-        ),
     );
 }
 
@@ -483,11 +196,7 @@ fn legacy_checkpoint_rollback_keeps_answers_before_a_same_turn_steer() {
         .collect::<Vec<_>>();
     let mut history = root_history();
     history.replace_annotated(checkpoint.replacement_history.take().unwrap());
-    history.restore_review_context(
-        checkpoint.retained_context.as_ref(),
-        /*checkpoint*/ None,
-        /*reviewer_compaction_hash*/ None,
-    );
+    history.restore_retained_context(checkpoint.retained_context.as_ref());
     // The old checkpoint has no acceptance order; use the surviving source calls
     // to remove only the answer belonging to each rolled-back input.
     for remaining in [1, 0] {
@@ -732,17 +441,10 @@ fn reference_context_item() -> TurnContextItem {
                 .join("reference-cwd"),
         )
         .expect("absolute reference cwd"),
-        approval_policy: AskForApproval::OnRequest,
-        approvals_reviewer: None,
-        sandbox_policy: SandboxPolicy::new_read_only_policy(),
-        permission_profile: None,
-        active_permission_profile: None,
-        file_system_sandbox_policy: None,
         model: "gpt-test".to_string(),
         comp_hash: None,
         collaboration_mode: None,
         multi_agent_version: None,
-        realtime_active: Some(false),
         cyber_access_program: None,
         effort: None,
         summary: Some(codex_protocol::config_types::ReasoningSummary::Auto),
@@ -1742,7 +1444,7 @@ fn drop_last_n_user_turns_preserves_prefix() {
         }
     }
     history.drop_last_n_user_turns(/*num_turns*/ 1);
-    history.replace_compacted(Vec::new(), /*reviewer_compaction_hash*/ None);
+    history.replace_compacted(Vec::new());
     let retained = history.retained_context();
     assert!(retained.user_messages_complete());
     assert!(retained.verified_answers_complete());
@@ -2001,33 +1703,6 @@ fn drop_last_n_user_turns_preserves_annotations_for_surviving_developer_fragment
                 },
             ),
         }],
-    );
-}
-
-#[test]
-fn drop_last_n_user_turns_trims_saved_prefix_update_above_rolled_back_turn() {
-    let items = vec![
-        assistant_msg("session prefix item"),
-        user_input_text_msg("turn 1 user"),
-        assistant_msg("turn 1 assistant"),
-        developer_msg(&format!(
-            "{APPROVED_COMMAND_PREFIX_SAVED_MESSAGE_PREFIX}\n- [\"touch\"]"
-        )),
-        user_input_text_msg("turn 2 user"),
-        assistant_msg("turn 2 assistant"),
-    ];
-
-    let modalities = default_input_modalities();
-    let mut history = create_history_with_items(items);
-    history.drop_last_n_user_turns(/*num_turns*/ 1);
-
-    assert_eq!(
-        history.for_prompt(&modalities),
-        vec![
-            assistant_msg("session prefix item"),
-            user_input_text_msg("turn 1 user"),
-            assistant_msg("turn 1 assistant"),
-        ]
     );
 }
 

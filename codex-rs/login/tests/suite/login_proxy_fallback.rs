@@ -16,7 +16,6 @@ use codex_login::AuthKeyringBackendKind;
 use codex_login::AuthRouteConfig;
 use codex_login::ServerOptions;
 use codex_login::run_login_server;
-use core_test_support::skip_if_no_network;
 use pretty_assertions::assert_eq;
 use tempfile::tempdir;
 use wiremock::Mock;
@@ -127,7 +126,6 @@ async fn exercise_callback(expected: CallbackOutcome) -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn token_exchange_http_responses_do_not_retry_one_time_code() -> Result<()> {
-    skip_if_no_network!(Ok(()));
     if std::env::var_os(CHILD_CASE).is_some() {
         return exercise_callback(CallbackOutcome::Failed).await;
     }
@@ -155,7 +153,6 @@ async fn token_exchange_http_responses_do_not_retry_one_time_code() -> Result<()
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn token_exchange_does_not_retry_after_post_is_sent() -> Result<()> {
-    skip_if_no_network!(Ok(()));
     if std::env::var_os(CHILD_CASE).is_some() {
         return exercise_callback(CallbackOutcome::Failed).await;
     }
@@ -183,7 +180,6 @@ async fn token_exchange_does_not_retry_after_post_is_sent() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn token_exchange_preserves_redirects() -> Result<()> {
-    skip_if_no_network!(Ok(()));
     if std::env::var_os(CHILD_CASE).is_some() {
         return exercise_callback(CallbackOutcome::Succeeded).await;
     }

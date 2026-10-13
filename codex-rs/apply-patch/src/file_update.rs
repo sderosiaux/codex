@@ -1,5 +1,4 @@
 use codex_exec_server::ExecutorFileSystem;
-use codex_exec_server::FileSystemSandboxContext;
 use codex_exec_server::ReadFileOptions;
 use codex_utils_path_uri::PathUri;
 use similar::TextDiff;
@@ -27,10 +26,9 @@ pub(crate) async fn derive_new_contents_from_chunks(
     chunks: &[UpdateFileChunk],
     fs: &dyn ExecutorFileSystem,
     follow_symlinks: bool,
-    sandbox: Option<&FileSystemSandboxContext>,
 ) -> std::result::Result<AppliedPatch, ApplyPatchError> {
     let original_contents = fs
-        .read_file_text(path, ReadFileOptions { follow_symlinks }, sandbox)
+        .read_file_text(path, ReadFileOptions { follow_symlinks })
         .await
         .map_err(|err| {
             ApplyPatchError::IoError(IoError {
@@ -177,9 +175,8 @@ pub async fn unified_diff_from_chunks(
     path: &PathUri,
     chunks: &[UpdateFileChunk],
     fs: &dyn ExecutorFileSystem,
-    sandbox: Option<&FileSystemSandboxContext>,
 ) -> std::result::Result<ApplyPatchFileUpdate, ApplyPatchError> {
-    unified_diff_from_chunks_with_context(path, chunks, /*context*/ 1, fs, sandbox).await
+    unified_diff_from_chunks_with_context(path, chunks, /*context*/ 1, fs).await
 }
 
 pub async fn unified_diff_from_chunks_with_context(
@@ -187,13 +184,11 @@ pub async fn unified_diff_from_chunks_with_context(
     chunks: &[UpdateFileChunk],
     context: usize,
     fs: &dyn ExecutorFileSystem,
-    sandbox: Option<&FileSystemSandboxContext>,
 ) -> std::result::Result<ApplyPatchFileUpdate, ApplyPatchError> {
     let AppliedPatch {
         original_contents,
         new_contents,
-    } = derive_new_contents_from_chunks(path, chunks, fs, /*follow_symlinks*/ true, sandbox)
-        .await?;
+    } = derive_new_contents_from_chunks(path, chunks, fs, /*follow_symlinks*/ true).await?;
     let text_diff = TextDiff::from_lines(&original_contents, &new_contents);
     let unified_diff = text_diff.unified_diff().context_radius(context).to_string();
     Ok(ApplyPatchFileUpdate {

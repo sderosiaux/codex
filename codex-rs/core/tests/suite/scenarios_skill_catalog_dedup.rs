@@ -109,10 +109,7 @@ async fn cloud_preference_preserves_executor_aliases_and_description_budget() ->
         .with_config(|config| {
             super::configure_scenario_catalog(config);
             config.cloud_skill_enabled = true;
-            config
-                .features
-                .enable(Feature::ExecutorCapabilityDiscovery)
-                .expect("enable executor capability discovery");
+            config.features.enable(Feature::ExecutorCapabilityDiscovery);
         })
         .build_with_auto_env(&server)
         .await?;

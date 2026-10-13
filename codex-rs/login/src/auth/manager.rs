@@ -71,7 +71,6 @@ use crate::token_data::TokenData;
 use crate::token_data::parse_chatgpt_account_user_id;
 use crate::token_data::parse_chatgpt_jwt_claims;
 use crate::token_data::parse_jwt_expiration;
-use codex_config::ManagedAuthPolicy;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_http_client::HttpClient;
 use codex_http_client::HttpClientFactory;
@@ -222,9 +221,6 @@ pub enum RefreshTokenError {
     Permanent(#[from] RefreshTokenFailedError),
     #[error(transparent)]
     Transient(#[from] std::io::Error),
-    /// Denied by application policy; neither retry nor cache as a credential failure.
-    #[error(transparent)]
-    Policy(#[from] codex_http_client::NetworkPolicyDenied),
 }
 
 /// Error returned when constructing an [`AuthManager`] from resolved configuration.
@@ -298,17 +294,14 @@ impl RefreshTokenError {
     pub fn failed_reason(&self) -> Option<RefreshTokenFailedReason> {
         match self {
             Self::Permanent(error) => Some(error.reason),
-            Self::Transient(_) | Self::Policy(_) => None,
+            Self::Transient(_) => None,
         }
     }
 }
 
 impl From<codex_http_client::HttpError> for RefreshTokenError {
     fn from(error: codex_http_client::HttpError) -> Self {
-        match error {
-            codex_http_client::HttpError::Policy(denied) => Self::Policy(denied),
-            error => Self::Transient(std::io::Error::other(error)),
-        }
+        Self::Transient(std::io::Error::other(error))
     }
 }
 
@@ -317,9 +310,6 @@ impl From<RefreshTokenError> for std::io::Error {
         match err {
             RefreshTokenError::Permanent(failed) => std::io::Error::other(failed),
             RefreshTokenError::Transient(inner) => inner,
-            RefreshTokenError::Policy(error) => {
-                std::io::Error::new(std::io::ErrorKind::PermissionDenied, error)
-            }
         }
     }
 }
@@ -1187,13 +1177,12 @@ pub struct AuthConfig {
     pub forced_login_method: Option<ForcedLoginMethod>,
     pub chatgpt_base_url: Option<String>,
     pub forced_chatgpt_workspace_id: Option<Vec<String>>,
-    pub managed_auth_policy: ManagedAuthPolicy,
     pub auth_route_config: AuthRouteConfig,
 }
 
 impl AuthConfig {
     pub fn is_login_method_allowed(&self, method: ForcedLoginMethod) -> bool {
-        self.managed_auth_policy.allows_login_method(
+        login_method_allowed(
             method,
             self.forced_login_method,
             self.forced_chatgpt_workspace_id.as_deref(),
@@ -1201,8 +1190,7 @@ impl AuthConfig {
     }
 
     pub fn effective_chatgpt_workspaces(&self) -> Option<Vec<String>> {
-        self.managed_auth_policy
-            .effective_chatgpt_workspaces(self.forced_chatgpt_workspace_id.as_deref())
+        self.forced_chatgpt_workspace_id.clone()
     }
 
     pub fn validate(&self) -> std::io::Result<()> {
@@ -1249,11 +1237,32 @@ impl AuthConfig {
     }
 
     fn allowed_login_methods(&self) -> Vec<ForcedLoginMethod> {
-        self.managed_auth_policy.allowed_login_methods(
+        allowed_login_methods(
             self.forced_login_method,
             self.forced_chatgpt_workspace_id.as_deref(),
         )
     }
+}
+
+/// A ChatGPT login is only usable when the configured workspace restriction is non-empty.
+fn login_method_allowed(
+    method: ForcedLoginMethod,
+    forced_login_method: Option<ForcedLoginMethod>,
+    forced_workspaces: Option<&[String]>,
+) -> bool {
+    forced_login_method.is_none_or(|forced| forced == method)
+        && (method != ForcedLoginMethod::Chatgpt
+            || forced_workspaces.is_none_or(|workspaces| !workspaces.is_empty()))
+}
+
+fn allowed_login_methods(
+    forced_login_method: Option<ForcedLoginMethod>,
+    forced_workspaces: Option<&[String]>,
+) -> Vec<ForcedLoginMethod> {
+    [ForcedLoginMethod::Api, ForcedLoginMethod::Chatgpt]
+        .into_iter()
+        .filter(|method| login_method_allowed(*method, forced_login_method, forced_workspaces))
+        .collect()
 }
 
 fn auth_mode_is_allowed(
@@ -1649,9 +1658,6 @@ async fn request_chatgpt_token_refresh(
     {
         Ok(response) => Ok(response),
         Err(OAuthError::Rejected(rejection)) => {
-            if let Some(codex_http_client::HttpError::Policy(denied)) = rejection.body_read_error {
-                return Err(denied.into());
-            }
             let status = rejection.status;
             let detail = &rejection.detail;
             tracing::error!(%status, ?detail, "Failed to refresh token");
@@ -2051,7 +2057,6 @@ pub struct AuthManager {
     keyring_backend_kind: AuthKeyringBackendKind,
     forced_login_method: Option<ForcedLoginMethod>,
     forced_chatgpt_workspace_id: RwLock<Option<Vec<String>>>,
-    managed_auth_policy: ManagedAuthPolicy,
     chatgpt_base_url: Option<String>,
     agent_identity_authapi_base_url: Option<String>,
     refresh_lock: Semaphore,
@@ -2084,9 +2089,6 @@ pub trait AuthManagerConfig {
     /// Returns the workspace IDs that ChatGPT auth should be restricted to, if any.
     fn forced_chatgpt_workspace_id(&self) -> Option<Vec<String>>;
 
-    /// Returns administrator-managed authentication restrictions.
-    fn managed_auth_policy(&self) -> ManagedAuthPolicy;
-
     /// Returns the ChatGPT backend base URL used for first-party backend authorization.
     fn chatgpt_base_url(&self) -> String;
 
@@ -2094,7 +2096,7 @@ pub trait AuthManagerConfig {
     fn auth_route_config(&self) -> AuthRouteConfig;
 }
 
-/// Runtime storage and network policy shared by independent credential managers.
+/// Runtime storage and routing configuration shared by independent credential managers.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthRuntimeConfig {
     pub codex_home: PathBuf,
@@ -2117,7 +2119,6 @@ impl Debug for AuthManager {
                 "forced_chatgpt_workspace_id",
                 &self.forced_chatgpt_workspace_id,
             )
-            .field("managed_auth_policy", &self.managed_auth_policy)
             .field("chatgpt_base_url", &self.chatgpt_base_url)
             .field("auth_route_config", &self.auth_route_config)
             .field("has_external_auth", &self.has_external_auth())
@@ -2134,17 +2135,9 @@ fn default_agent_identity_authapi_base_url() -> Option<String> {
 }
 
 impl AuthManager {
-    /// Returns the application policy associated with this account owner.
-    pub fn application_network_policy(&self) -> codex_http_client::NetworkPolicy {
-        self.auth_route_config.application_network_policy().clone()
-    }
-
-    /// Creates content clients bound to the account currently owned by this manager.
+    /// Creates content clients using the application-resolved routing configuration.
     pub fn http_client_factory(&self) -> HttpClientFactory {
-        self.auth_route_config
-            .http_client_factory()
-            .clone()
-            .with_network_policy(self.application_network_policy().for_current_account())
+        self.auth_route_config.http_client_factory().clone()
     }
     /// Create a new manager loading the initial auth using the provided
     /// preferred auth method. Errors loading auth are swallowed; `auth()` will
@@ -2167,7 +2160,6 @@ impl AuthManager {
                 forced_login_method: None,
                 chatgpt_base_url,
                 forced_chatgpt_workspace_id,
-                managed_auth_policy: ManagedAuthPolicy::default(),
                 auth_route_config,
             },
             enable_codex_api_key_env,
@@ -2188,7 +2180,6 @@ impl AuthManager {
             forced_login_method,
             chatgpt_base_url,
             forced_chatgpt_workspace_id,
-            managed_auth_policy,
             auth_route_config,
         } = auth_config;
         let agent_identity_authapi_base_url =
@@ -2208,7 +2199,6 @@ impl AuthManager {
             keyring_backend_kind,
             forced_login_method,
             forced_chatgpt_workspace_id: RwLock::new(forced_chatgpt_workspace_id),
-            managed_auth_policy,
             chatgpt_base_url,
             agent_identity_authapi_base_url,
             refresh_lock: Semaphore::new(/*permits*/ 1),
@@ -2244,7 +2234,6 @@ impl AuthManager {
             keyring_backend_kind: AuthKeyringBackendKind::default(),
             forced_login_method: None,
             forced_chatgpt_workspace_id: RwLock::new(None),
-            managed_auth_policy: ManagedAuthPolicy::default(),
             chatgpt_base_url: None,
             agent_identity_authapi_base_url: default_agent_identity_authapi_base_url(),
             refresh_lock: Semaphore::new(/*permits*/ 1),
@@ -2274,7 +2263,6 @@ impl AuthManager {
             keyring_backend_kind: AuthKeyringBackendKind::default(),
             forced_login_method: None,
             forced_chatgpt_workspace_id: RwLock::new(None),
-            managed_auth_policy: ManagedAuthPolicy::default(),
             chatgpt_base_url: None,
             agent_identity_authapi_base_url: default_agent_identity_authapi_base_url(),
             refresh_lock: Semaphore::new(/*permits*/ 1),
@@ -2308,7 +2296,6 @@ impl AuthManager {
             keyring_backend_kind: AuthKeyringBackendKind::default(),
             forced_login_method: None,
             forced_chatgpt_workspace_id: RwLock::new(None),
-            managed_auth_policy: ManagedAuthPolicy::default(),
             chatgpt_base_url: None,
             agent_identity_authapi_base_url: Some(
                 agent_identity_authapi_base_url
@@ -2340,7 +2327,6 @@ impl AuthManager {
             keyring_backend_kind: AuthKeyringBackendKind::default(),
             forced_login_method: None,
             forced_chatgpt_workspace_id: RwLock::new(None),
-            managed_auth_policy: ManagedAuthPolicy::default(),
             chatgpt_base_url: None,
             agent_identity_authapi_base_url: default_agent_identity_authapi_base_url(),
             refresh_lock: Semaphore::new(/*permits*/ 1),
@@ -2592,7 +2578,6 @@ impl AuthManager {
                             cached_auth
                         }
                         RefreshTokenError::Transient(_) => None,
-                        RefreshTokenError::Policy(_) => cached_auth,
                     }
                 }
             };
@@ -2632,11 +2617,6 @@ impl AuthManager {
                 !Self::auths_equal_for_refresh(previous, new_auth.as_ref());
             let owner_changed =
                 auth_changed_for_refresh && !same_owner(previous, new_auth.as_ref());
-            if owner_changed {
-                self.auth_route_config
-                    .application_network_policy()
-                    .invalidate();
-            }
             if auth_changed_for_refresh {
                 guard.permanent_refresh_failure = None;
             }
@@ -2712,21 +2692,20 @@ impl AuthManager {
     }
 
     pub fn effective_chatgpt_workspaces(&self) -> Option<Vec<String>> {
-        self.managed_auth_policy
-            .effective_chatgpt_workspaces(self.forced_chatgpt_workspace_id().as_deref())
+        self.forced_chatgpt_workspace_id()
     }
 
     pub fn is_login_method_allowed(&self, method: ForcedLoginMethod) -> bool {
-        self.managed_auth_policy.allows_login_method(
+        login_method_allowed(
             method,
             self.forced_login_method,
             self.forced_chatgpt_workspace_id().as_deref(),
         )
     }
 
-    /// Returns the login methods permitted by the current effective authentication policy.
+    /// Returns the login methods permitted by the configured login restrictions.
     pub fn allowed_login_methods(&self) -> Vec<ForcedLoginMethod> {
-        self.managed_auth_policy.allowed_login_methods(
+        allowed_login_methods(
             self.forced_login_method,
             self.forced_chatgpt_workspace_id().as_deref(),
         )
@@ -3114,7 +3093,6 @@ fn auth_config_from(config: &impl AuthManagerConfig) -> AuthConfig {
         forced_login_method: config.forced_login_method(),
         chatgpt_base_url: Some(config.chatgpt_base_url()),
         forced_chatgpt_workspace_id: config.forced_chatgpt_workspace_id(),
-        managed_auth_policy: config.managed_auth_policy(),
         auth_route_config: config.auth_route_config(),
     }
 }

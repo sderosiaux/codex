@@ -7,9 +7,7 @@ use crate::session::tests::HeldStepTask;
 use crate::session::tests::make_session_and_context_with_rx;
 use crate::state::TaskKind;
 use crate::thread_startup_metadata::ThreadStartupMetadata;
-use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::protocol::AgentStatus;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::SessionConfiguredEvent;
 use codex_protocol::protocol::SessionSource;
 use pretty_assertions::assert_eq;
@@ -60,13 +58,8 @@ async fn interrupt_if_no_pending_input_handles_cancelled_submission() {
             model: "test".to_string(),
             model_provider_id: "test".to_string(),
             service_tier: None,
-            approval_policy: AskForApproval::Never,
-            approvals_reviewer: ApprovalsReviewer::User,
-            permission_profile: turn_context.permission_profile(),
-            active_permission_profile: None,
             cwd: turn_context.config.cwd.clone(),
             reasoning_effort: None,
-            network_proxy: None,
             rollout_path: None,
         }),
         /*rollout_path*/ None,

@@ -26,15 +26,12 @@ pub(super) fn apply_persistent_defaults(config: &mut Config) {
         return;
     }
 
-    // Apply defaults only to this turn; explicit settings and managed policy win.
-    if config.features.enable(Feature::CurrentTimeReminder).is_ok()
-        && config.features.enabled(Feature::CurrentTimeReminder)
-    {
-        config.current_time_reminder = Some(CurrentTimeReminderConfig {
-            sleep_tool: true,
-            ..CurrentTimeReminderConfig::default()
-        });
-    }
+    // Apply defaults only to this turn; explicit settings win.
+    config.features.enable(Feature::CurrentTimeReminder);
+    config.current_time_reminder = Some(CurrentTimeReminderConfig {
+        sleep_tool: true,
+        ..CurrentTimeReminderConfig::default()
+    });
 }
 
 #[derive(Default)]

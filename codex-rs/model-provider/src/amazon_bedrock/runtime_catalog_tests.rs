@@ -45,7 +45,7 @@ fn runtime_catalog_includes_supported_cross_region_models_in_priority_order() {
 }
 
 #[test]
-fn runtime_catalog_disables_web_search_without_overriding_review_models() {
+fn runtime_catalog_disables_web_search() {
     let catalog = static_runtime_model_catalog();
 
     assert_eq!(
@@ -54,7 +54,6 @@ fn runtime_catalog_disables_web_search_without_overriding_review_models() {
             .iter()
             .map(|model| (
                 model.slug.as_str(),
-                model.auto_review_model_override.as_deref(),
                 model.supports_search_tool,
                 model.multi_agent_version,
             ))
@@ -62,88 +61,50 @@ fn runtime_catalog_disables_web_search_without_overriding_review_models() {
         vec![
             (
                 "global.openai.gpt-6.1-sol",
-                None,
                 false,
                 Some(MultiAgentVersion::V2),
             ),
             (
                 "global.openai.gpt-6-astra",
-                None,
                 false,
                 Some(MultiAgentVersion::V2),
             ),
             (
                 "global.openai.gpt-6-sol",
-                None,
                 false,
                 Some(MultiAgentVersion::V2),
             ),
             (
                 "global.openai.gpt-6-luna",
-                None,
                 false,
                 Some(MultiAgentVersion::V2),
             ),
             (
                 "global.openai.gpt-5.6-sol",
-                None,
                 false,
                 Some(MultiAgentVersion::V2),
             ),
             (
                 "global.openai.gpt-5.6-terra",
-                None,
                 false,
                 Some(MultiAgentVersion::V2),
             ),
             (
                 "global.openai.gpt-5.6-luna",
-                None,
                 false,
                 Some(MultiAgentVersion::V1),
             ),
-            (
-                "us.openai.gpt-6.1-sol",
-                None,
-                false,
-                Some(MultiAgentVersion::V2),
-            ),
-            (
-                "us.openai.gpt-6-astra",
-                None,
-                false,
-                Some(MultiAgentVersion::V2),
-            ),
-            (
-                "us.openai.gpt-6-sol",
-                None,
-                false,
-                Some(MultiAgentVersion::V2),
-            ),
-            (
-                "us.openai.gpt-6-luna",
-                None,
-                false,
-                Some(MultiAgentVersion::V2),
-            ),
-            (
-                "us.openai.gpt-5.6-sol",
-                None,
-                false,
-                Some(MultiAgentVersion::V2),
-            ),
+            ("us.openai.gpt-6.1-sol", false, Some(MultiAgentVersion::V2),),
+            ("us.openai.gpt-6-astra", false, Some(MultiAgentVersion::V2),),
+            ("us.openai.gpt-6-sol", false, Some(MultiAgentVersion::V2),),
+            ("us.openai.gpt-6-luna", false, Some(MultiAgentVersion::V2),),
+            ("us.openai.gpt-5.6-sol", false, Some(MultiAgentVersion::V2),),
             (
                 "us.openai.gpt-5.6-terra",
-                None,
                 false,
                 Some(MultiAgentVersion::V2),
             ),
-            (
-                "us.openai.gpt-5.6-luna",
-                None,
-                false,
-                Some(MultiAgentVersion::V1),
-            ),
+            ("us.openai.gpt-5.6-luna", false, Some(MultiAgentVersion::V1),),
         ]
     );
 }

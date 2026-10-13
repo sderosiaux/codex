@@ -1,13 +1,11 @@
 //! Active settings keep environment selection and model changes scoped to the running turn.
 
 use super::*;
-use codex_config::test_support::CloudConfigBundleFixture;
 use codex_exec_server::CreateDirectoryOptions;
 use codex_extension_api::ExtensionDataInit;
 use codex_protocol::capabilities::CapabilityRootLocation;
 use codex_protocol::capabilities::EnvironmentCapabilityRoots;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
-use codex_protocol::models::PermissionProfileSnapshot;
 use codex_protocol::protocol::EnvironmentConfigState;
 use codex_protocol::protocol::TurnEnvironmentRequests;
 use codex_protocol::protocol::TurnEnvironmentSelection;
@@ -142,10 +140,6 @@ async fn model_update_preserves_active_environment_and_next_turn_uses_new_select
     .await;
     let test = direct_tool_settings_test()
         .with_config(|config| {
-            config
-                .permissions
-                .set_permission_profile(PermissionProfile::Disabled)
-                .expect("test permissions");
             for model in &mut config.model_catalog.as_mut().expect("models").models {
                 model.apply_patch_tool_type = Some(ApplyPatchToolType::Freeform);
             }
@@ -162,7 +156,6 @@ async fn model_update_preserves_active_environment_and_next_turn_uses_new_select
                 recursive: false,
                 follow_symlinks: true,
             },
-            /*sandbox*/ None,
         )
         .await?;
     let next_marker = next_environment.cwd.join("marker.txt")?;
@@ -207,14 +200,10 @@ async fn model_update_preserves_active_environment_and_next_turn_uses_new_select
     assert_eq!(
         (
             test.fs()
-                .read_file_text(
-                    &test.workspace_path_uri("marker.txt")?,
-                    Default::default(),
-                    /*sandbox*/ None,
-                )
+                .read_file_text(&test.workspace_path_uri("marker.txt")?, Default::default())
                 .await?,
             test.fs()
-                .read_file_text(&next_marker, Default::default(), /*sandbox*/ None)
+                .read_file_text(&next_marker, Default::default())
                 .await?,
         ),
         ("active step\n".to_string(), "next turn\n".to_string()),
@@ -245,12 +234,6 @@ async fn combined_active_model_and_environment_updates_apply_or_reject_together(
     )
     .await;
     let test = direct_tool_settings_test()
-        .with_config(|config| {
-            config
-                .permissions
-                .set_permission_profile(PermissionProfile::Disabled)
-                .expect("test permissions");
-        })
         .build_with_auto_env(&server)
         .await?;
     let original = test.executor_environment().selection().clone();
@@ -268,7 +251,6 @@ async fn combined_active_model_and_environment_updates_apply_or_reject_together(
                 recursive: false,
                 follow_symlinks: true,
             },
-            /*sandbox*/ None,
         )
         .await?;
     let next_marker = next_environment.cwd.join("marker.txt")?;
@@ -345,182 +327,9 @@ async fn combined_active_model_and_environment_updates_apply_or_reject_together(
     assert!(!context.iter().any(|text| text.contains(&rejected_cwd)));
     assert_eq!(
         test.fs()
-            .read_file_text(&next_marker, Default::default(), /*sandbox*/ None)
+            .read_file_text(&next_marker, Default::default())
             .await?,
         "selected B\n",
     );
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn active_updates_check_known_permissions_from_the_running_turn() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-
-    let server = start_mock_server().await;
-    mount_sse_sequence(
-        &server,
-        vec![
-            paused_response("pause-before-environment-policy", "pause"),
-            sse_completed("after-environment-policy"),
-        ],
-    )
-    .await;
-    let test = direct_tool_settings_test()
-        .with_cloud_config_bundle(
-            CloudConfigBundleFixture::loader_with_enterprise_requirement(format!(
-                "[auto_review]\nrequired_on_models = [\"{MODEL_A}\"]\n"
-            )),
-        )
-        .with_config(|config| {
-            config.approvals_reviewer = ApprovalsReviewer::AutoReview;
-            config
-                .permissions
-                .set_permission_profile(PermissionProfile::read_only())
-                .expect("set restricted thread permissions");
-            for feature in [Feature::GuardianApproval, Feature::DeferredExecutor] {
-                config
-                    .features
-                    .enable(feature)
-                    .expect("enable test feature");
-            }
-        })
-        .build_with_auto_env(&server)
-        .await?;
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    test.thread_manager
-        .environment_manager()
-        .upsert_environment(
-            "policy-secondary".to_string(),
-            format!("ws://{}", listener.local_addr()?),
-            /*connect_timeout*/ None,
-        )?;
-    let mut primary = test.executor_environment().selection().clone();
-    primary.config =
-        EnvironmentConfigState::Ready(environment_config_for_selection(&test.config, &primary));
-    let mut secondary = primary.clone();
-    secondary.environment_id = "policy-secondary".to_string();
-    let mut unrestricted = environment_config_for_selection(&test.config, &secondary);
-    unrestricted.permission_profile =
-        PermissionProfileSnapshot::legacy(PermissionProfile::Disabled);
-    let paused = start_paused_turn(&test.codex).await?;
-    let current_model = TurnSettingsUpdate {
-        model: Some(MODEL_A.to_string()),
-        ..Default::default()
-    };
-    apply_turn_settings(&test.codex, &paused.turn_id, current_model.clone()).await?;
-    secondary.config = EnvironmentConfigState::Ready(unrestricted.clone());
-    let supplied = submit_turn_settings(
-        &test.codex,
-        &paused.turn_id,
-        TurnSettingsUpdate {
-            environments: Some(vec![
-                primary.clone().into_request(),
-                secondary.clone().into_request(),
-            ]),
-            ..current_model.clone()
-        },
-    )
-    .await?;
-    let TurnSettingsUpdateOutcome::Rejected { reason } = supplied else {
-        anyhow::bail!("unrestricted secondary must reject the reviewed model: {supplied:?}");
-    };
-    assert!(reason.contains("you need to use auto review"), "{reason}");
-
-    secondary.config = EnvironmentConfigState::Pending;
-    apply_turn_settings(
-        &test.codex,
-        &paused.turn_id,
-        TurnSettingsUpdate {
-            environments: Some(vec![
-                primary.into_request(),
-                secondary.clone().into_request(),
-            ]),
-            ..Default::default()
-        },
-    )
-    .await?;
-    test.codex
-        .environment_ready(&secondary, unrestricted)
-        .await?;
-    // Its permissions are known even though the executor hasn't connected yet.
-    let without_selection =
-        submit_turn_settings(&test.codex, &paused.turn_id, current_model).await?;
-    assert_eq!(
-        without_selection,
-        TurnSettingsUpdateOutcome::Rejected { reason }
-    );
-    answer_paused_turn(&test.codex, &paused.turn_id).await?;
-    wait_for_event(&test.codex, |event| {
-        matches!(event, EventMsg::TurnComplete(_))
-    })
-    .await;
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn inherited_permission_update_applies_to_the_next_turn_not_the_next_step() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-
-    let server = start_mock_server().await;
-    let responses = mount_sse_sequence(
-        &server,
-        vec![
-            paused_response("before-permission-update", "pause"),
-            sse_completed("current-turn-done"),
-            sse_completed("next-turn-done"),
-        ],
-    )
-    .await;
-    let test = direct_tool_settings_test()
-        .with_config(|config| {
-            config
-                .permissions
-                .set_permission_profile(PermissionProfile::read_only())
-                .expect("set restricted thread permissions");
-        })
-        .build_with_auto_env(&server)
-        .await?;
-
-    let paused = start_paused_turn(&test.codex).await?;
-    submit_thread_settings(
-        &test.codex,
-        ThreadSettingsOverrides {
-            permission_profile: Some(PermissionProfile::Disabled),
-            ..Default::default()
-        },
-    )
-    .await?;
-    // Recreate the inherited selection after saving future permissions; it must use this turn's.
-    let mut inherited = test.executor_environment().selection().clone();
-    inherited.workspace_roots.clear();
-    apply_turn_settings(
-        &test.codex,
-        &paused.turn_id,
-        TurnSettingsUpdate {
-            environments: Some(vec![inherited.into_request()]),
-            ..Default::default()
-        },
-    )
-    .await?;
-    answer_paused_turn(&test.codex, &paused.turn_id).await?;
-    wait_for_event(&test.codex, |event| {
-        matches!(event, EventMsg::TurnComplete(_))
-    })
-    .await;
-    test.submit_text_turn("start the next turn").await?;
-
-    let unrestricted = responses
-        .requests()
-        .iter()
-        .map(|request| {
-            let filesystem = request
-                .message_input_texts("user")
-                .into_iter()
-                .rfind(|text| text.contains("<filesystem>"))
-                .expect("model request includes filesystem permissions");
-            filesystem.contains("<file_system type=\"unrestricted\"")
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(unrestricted, [false, false, true]);
     Ok(())
 }

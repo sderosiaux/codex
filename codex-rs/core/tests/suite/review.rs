@@ -2,28 +2,16 @@ use codex_core::CodexThread;
 use codex_core::REVIEW_PROMPT;
 use codex_core::TurnInputRequest;
 use codex_core::config::Config;
-use codex_core::config::Constrained;
-use codex_core::find_thread_path_by_id_str;
-use codex_exec_server::CreateDirectoryOptions;
 use codex_features::Feature;
 use codex_history::RolloutItem;
 use codex_login::CodexAuth;
-use codex_protocol::config_types::ApprovalsReviewer;
-use codex_protocol::config_types::CollaborationMode;
-use codex_protocol::config_types::ModeKind;
-use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::ServiceTier;
-use codex_protocol::config_types::Settings;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::ContentItem;
-use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelServiceTier;
-use codex_protocol::openai_models::ModelTokenBudgetConfig;
 use codex_protocol::openai_models::ReasoningEffort;
-use codex_protocol::openai_models::ReasoningEffortPreset;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::ENVIRONMENT_CONTEXT_OPEN_TAG;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExitedReviewModeEvent;
@@ -35,7 +23,6 @@ use codex_protocol::protocol::ReviewOutputEvent;
 use codex_protocol::protocol::ReviewRequest;
 use codex_protocol::protocol::ReviewTarget;
 use codex_protocol::protocol::ThreadSettingsOverrides;
-use codex_protocol::protocol::TurnEnvironmentRequests;
 use codex_protocol::review_format::render_review_output_text;
 use codex_protocol::user_input::UserInput;
 use core_test_support::PathBufExt;
@@ -620,236 +607,6 @@ async fn review_does_not_emit_agent_message_on_structured_output() {
     server.verify().await;
 }
 
-/// Reviews inherit current session settings without inheriting another model's defaults.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn review_uses_updated_turn_permissions_and_approval_policy() {
-    skip_if_no_network!();
-
-    fn model_defaults(guidance_message: &str) -> ModelTokenBudgetConfig {
-        ModelTokenBudgetConfig {
-            enabled: false,
-            use_history_notes_extension: false,
-            reminder_threshold_tokens: 6_144,
-            reminder_message_template: "Reminder: {n_remaining} tokens remain.".to_string(),
-            guidance_message: guidance_message.to_string(),
-            auto_compact_fallback_prompt: "Preserve the important context.".to_string(),
-            auto_compact_fallback_buffer_tokens: 16_384,
-        }
-    }
-
-    let (server, request_log) =
-        start_responses_server_with_sse(completed_sse(), /*expected_requests*/ 1).await;
-    let codex_home = Arc::new(TempDir::new().unwrap());
-    let test = test_codex()
-        .with_home(codex_home.clone())
-        .with_model_info_override("gpt-5.2", |model_info| {
-            model_info.service_tiers.clear();
-            model_info
-                .model_messages
-                .as_mut()
-                .expect("parent model should have model messages")
-                .token_budget = Some(model_defaults("PARENT MODEL ONLY"));
-        })
-        .with_model_info_override("gpt-5.4", |model_info| {
-            model_info.service_tiers = vec![ModelServiceTier {
-                id: ServiceTier::Fast.request_value().to_string(),
-                name: "Fast".to_string(),
-                description: "Priority processing".to_string(),
-            }];
-            model_info.supported_reasoning_levels = [
-                ReasoningEffort::Low,
-                ReasoningEffort::Medium,
-                ReasoningEffort::High,
-            ]
-            .into_iter()
-            .map(|effort| ReasoningEffortPreset {
-                description: effort.to_string(),
-                effort,
-            })
-            .collect();
-            model_info.default_reasoning_level = Some(ReasoningEffort::High);
-            model_info
-                .model_messages
-                .as_mut()
-                .expect("review model should have model messages")
-                .token_budget = Some(model_defaults("REVIEW MODEL ONLY"));
-        })
-        .with_model("gpt-5.2")
-        .with_config(|config| {
-            config.review_model = Some("gpt-5.4".to_string());
-            config.model_context_window = Some(128_000);
-            config.service_tier = Some(ServiceTier::Fast.request_value().to_string());
-            config
-                .features
-                .enable(Feature::FastMode)
-                .expect("enable FastMode");
-            config
-                .features
-                .enable(Feature::TokenBudget)
-                .expect("token budget should be available");
-            config.approvals_reviewer = ApprovalsReviewer::AutoReview;
-            config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
-            config
-                .permissions
-                .set_permission_profile(PermissionProfile::read_only())
-                .expect("initial permission profile should be valid");
-        })
-        .build_with_auto_env(&server)
-        .await
-        .expect("review conversation should be created");
-    let codex = Arc::clone(&test.codex);
-    let updated_cwd = test.config.cwd.join("updated-review-workspace");
-    let mut selection = test.executor_environment().selection().clone();
-    selection.cwd = selection
-        .cwd
-        .join("updated-review-workspace")
-        .expect("updated execution directory should be valid");
-    selection.workspace_roots = vec![selection.cwd.clone()];
-    test.fs()
-        .create_directory(
-            &selection.cwd,
-            CreateDirectoryOptions {
-                recursive: true,
-                follow_symlinks: true,
-            },
-            /*sandbox*/ None,
-        )
-        .await
-        .expect("updated review workspace should be created");
-
-    core_test_support::submit_thread_settings(
-        &codex,
-        ThreadSettingsOverrides {
-            environments: Some(TurnEnvironmentRequests::new(
-                updated_cwd.clone(),
-                vec![selection.into_request()],
-            )),
-            approval_policy: Some(AskForApproval::Never),
-            approvals_reviewer: Some(ApprovalsReviewer::User),
-            permission_profile: Some(PermissionProfile::Disabled),
-            personality: Some(Personality::Friendly),
-            collaboration_mode: Some(CollaborationMode {
-                mode: ModeKind::Plan,
-                settings: Settings {
-                    model: "gpt-5.2".to_string(),
-                    reasoning_effort: Some(ReasoningEffort::XHigh),
-                    developer_instructions: Some("Parent planning instructions".to_string()),
-                },
-            }),
-            ..Default::default()
-        },
-    )
-    .await
-    .expect("updated thread permissions should be accepted");
-
-    let stored_settings = codex.thread_settings_snapshot().await;
-    codex
-        .submit(Op::Review {
-            review_request: ReviewRequest {
-                target: ReviewTarget::Custom {
-                    instructions: "review current permissions".to_string(),
-                },
-                user_facing_hint: None,
-            },
-        })
-        .await
-        .expect("review should start");
-    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
-
-    assert_eq!(codex.thread_settings_snapshot().await, stored_settings);
-    let request = request_log.single_request();
-    assert_eq!(request.body_json()["reasoning"]["effort"], "medium");
-    assert_eq!(
-        request.body_json()["service_tier"],
-        ServiceTier::Fast.request_value()
-    );
-    assert!(
-        request
-            .message_input_texts("developer")
-            .iter()
-            .any(|text| text.contains("Approval policy is currently never")),
-        "review should use the updated approval policy"
-    );
-    assert!(
-        request
-            .message_input_texts("developer")
-            .iter()
-            .any(|text| text.contains("REVIEW MODEL ONLY")),
-        "review should use its own model's token-budget defaults"
-    );
-    assert!(
-        !request
-            .message_input_texts("developer")
-            .iter()
-            .any(|text| text.contains("PARENT MODEL ONLY")),
-        "review should not inherit the parent model's token-budget defaults"
-    );
-    assert!(
-        request
-            .message_input_texts("user")
-            .iter()
-            .any(|text| text.contains("<permission_profile type=\"disabled\">")),
-        "review should use the updated permission profile"
-    );
-    let review_thread_id = request.body_json()["client_metadata"]["thread_id"]
-        .as_str()
-        .expect("review request should include its thread ID")
-        .to_string();
-    let review_rollout_path = find_thread_path_by_id_str(
-        codex_home.path(),
-        &review_thread_id,
-        /*state_db_ctx*/ None,
-    )
-    .await
-    .expect("review rollout lookup should succeed")
-    .expect("review thread should have a rollout");
-    let review_rollout =
-        std::fs::read_to_string(review_rollout_path).expect("review rollout should be readable");
-    let review_session_cwd = review_rollout
-        .lines()
-        .find_map(|line| {
-            let rollout_line = codex_rollout::parse_rollout_line(line)
-                .expect("review rollout line should be valid");
-            match rollout_line.item {
-                RolloutItem::SessionMeta(session_meta) => Some(session_meta.meta.cwd),
-                _ => None,
-            }
-        })
-        .expect("review rollout should contain session metadata");
-    assert_eq!(review_session_cwd, updated_cwd.as_path());
-    let review_context = review_rollout
-        .lines()
-        .filter_map(|line| {
-            let rollout_line = codex_rollout::parse_rollout_line(line)
-                .expect("review rollout line should be valid");
-            match rollout_line.item {
-                RolloutItem::TurnContext(turn_context) => Some(turn_context),
-                _ => None,
-            }
-        })
-        .next_back()
-        .expect("review rollout should contain turn context");
-    assert_eq!(
-        review_context.approvals_reviewer,
-        Some(ApprovalsReviewer::User)
-    );
-    // The review delegate still starts in its own default mode, not the parent's Plan mode.
-    assert_eq!(
-        review_context.collaboration_mode,
-        Some(CollaborationMode {
-            mode: ModeKind::Default,
-            settings: Settings {
-                model: "gpt-5.4".to_string(),
-                reasoning_effort: Some(ReasoningEffort::Medium),
-                developer_instructions: None,
-            },
-        })
-    );
-
-    let _codex_home_guard = codex_home;
-    server.verify().await;
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn review_preserves_flex_tier_when_fast_mode_disabled() -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
@@ -864,10 +621,7 @@ async fn review_preserves_flex_tier_when_fast_mode_disabled() -> anyhow::Result<
             }];
         })
         .with_config(|config| {
-            config
-                .features
-                .disable(Feature::FastMode)
-                .expect("disable FastMode");
+            config.features.disable(Feature::FastMode);
         })
         .build_with_auto_env(&server)
         .await?;
@@ -1007,7 +761,6 @@ async fn review_uses_custom_review_model_from_config() {
         .find(|model| model.slug == "gpt-5.6-sol")
         .expect("bundled model should exist");
     model.slug = "custom-review-model".to_string();
-    model.node_repl_auto_review_required = true;
     model.node_repl_disabled = true;
     let models_mock = responses::mount_models_once(&server, models).await;
 

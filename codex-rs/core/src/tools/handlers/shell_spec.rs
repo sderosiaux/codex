@@ -8,7 +8,6 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CommandToolOptions {
     pub include_login_parameter: bool,
-    pub exec_permission_approvals_enabled: bool,
 }
 
 #[cfg(test)]
@@ -88,9 +87,6 @@ pub(crate) fn create_exec_command_tool_with_environment_id(
             )),
         );
     }
-    properties.extend(create_approval_parameters(
-        options.exec_permission_approvals_enabled,
-    ));
 
     ToolSpec::Function(ResponsesApiTool {
         name: "exec_command".to_string(),
@@ -158,43 +154,6 @@ pub fn create_write_stdin_tool() -> ToolSpec {
     })
 }
 
-pub fn create_request_permissions_tool(description: String) -> ToolSpec {
-    let properties = BTreeMap::from([
-        (
-            "reason".to_string(),
-            JsonSchema::string(Some(
-                "Optional short explanation for why additional permissions are needed.".to_string(),
-            )),
-        ),
-        (
-            "environment_id".to_string(),
-            JsonSchema::string(Some(
-                "Environment id from <environment_context>. Omit to use the primary environment."
-                    .to_string(),
-            )),
-        ),
-        ("permissions".to_string(), permission_profile_schema()),
-    ]);
-
-    ToolSpec::Function(ResponsesApiTool {
-        name: "request_permissions".to_string(),
-        description,
-        strict: false,
-        defer_loading: None,
-        parameters: JsonSchema::object(
-            properties,
-            Some(vec!["permissions".to_string()]),
-            Some(false.into()),
-        ),
-        output_schema: None,
-    })
-}
-
-pub fn request_permissions_tool_description() -> String {
-    "Request additional filesystem or network permissions from the user and wait for the client to grant a subset of the requested permission profile. Use environment_id to target a specific attached environment; omit it to use the primary environment. Relative filesystem paths resolve against the selected environment cwd. Granted permissions apply automatically to later shell-like commands in the current turn, or for the rest of the session if the client approves them at session scope."
-        .to_string()
-}
-
 fn unified_exec_output_schema() -> Value {
     json!({
         "type": "object",
@@ -227,113 +186,6 @@ fn unified_exec_output_schema() -> Value {
         "required": ["wall_time_seconds", "output"],
         "additionalProperties": false
     })
-}
-
-fn create_approval_parameters(
-    exec_permission_approvals_enabled: bool,
-) -> BTreeMap<String, JsonSchema> {
-    let mut sandbox_permission_values = vec![json!("use_default")];
-    if exec_permission_approvals_enabled {
-        sandbox_permission_values.push(json!("with_additional_permissions"));
-    }
-    sandbox_permission_values.push(json!("require_escalated"));
-    let sandbox_permissions_description = if exec_permission_approvals_enabled {
-        "Per-command sandbox override. Defaults to `use_default`; use `with_additional_permissions` with `additional_permissions`, or `require_escalated` for unsandboxed execution."
-    } else {
-        "Per-command sandbox override. Defaults to `use_default`; use `require_escalated` for unsandboxed execution."
-    };
-
-    let mut properties = BTreeMap::from([
-        (
-            "sandbox_permissions".to_string(),
-            JsonSchema::string_enum(
-                sandbox_permission_values,
-                Some(sandbox_permissions_description.to_string()),
-            ),
-        ),
-        (
-            "justification".to_string(),
-            JsonSchema::string(Some(
-                "User-facing approval question for `require_escalated`; omit otherwise.".to_string(),
-            )),
-        ),
-        (
-            "prefix_rule".to_string(),
-            JsonSchema::array(JsonSchema::string(/*description*/ None), Some(
-                    r#"Reusable approval prefix for `cmd`, only with `sandbox_permissions: "require_escalated"`; for example ["git", "pull"]."#.to_string(),
-                )),
-        ),
-    ]);
-
-    if exec_permission_approvals_enabled {
-        let mut additional_permissions = permission_profile_schema();
-        additional_permissions.description = Some(
-            "Sandboxed filesystem or network access for this command; only with `sandbox_permissions: \"with_additional_permissions\"`."
-                .to_string(),
-        );
-        properties.insert("additional_permissions".to_string(), additional_permissions);
-    }
-
-    properties
-}
-
-fn permission_profile_schema() -> JsonSchema {
-    let mut schema = JsonSchema::object(
-        BTreeMap::from([
-            ("network".to_string(), network_permissions_schema()),
-            ("file_system".to_string(), file_system_permissions_schema()),
-        ]),
-        /*required*/ None,
-        Some(false.into()),
-    );
-    schema.description = Some("Filesystem or network access request.".to_string());
-    schema
-}
-
-fn network_permissions_schema() -> JsonSchema {
-    let mut schema = JsonSchema::object(
-        BTreeMap::from([(
-            "enabled".to_string(),
-            JsonSchema::boolean(Some(
-                "True requests network access; false or omitted requests none.".to_string(),
-            )),
-        )]),
-        /*required*/ None,
-        Some(false.into()),
-    );
-    schema.description = Some("Network access request.".to_string());
-    schema
-}
-
-fn file_system_permissions_schema() -> JsonSchema {
-    let mut schema = JsonSchema::object(
-        BTreeMap::from([
-            (
-                "read".to_string(),
-                JsonSchema::array(
-                    JsonSchema::string(/*description*/ None),
-                    Some(
-                        "Absolute paths to grant read access; omit when none are needed."
-                            .to_string(),
-                    ),
-                ),
-            ),
-            (
-                "write".to_string(),
-                JsonSchema::array(
-                    JsonSchema::string(/*description*/ None),
-                    Some(
-                        "Absolute paths to grant write access; omit when none are needed."
-                            .to_string(),
-                    ),
-                ),
-            ),
-        ]),
-        /*required*/ None,
-        Some(false.into()),
-    );
-    schema.description = Some("Filesystem access request.".to_string());
-    schema
 }
 
 fn windows_shell_guidance() -> &'static str {

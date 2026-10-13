@@ -152,9 +152,7 @@ async fn load_skills_under_root(
     Vec<SkillError>,
 ) {
     let file_system = skill_root.file_system.as_ref();
-    // TODO(anp): Bind discovery to turn permissions when host skill roots accept an accessor;
-    // until then, keep using the same unrestricted filesystem that supplied the root.
-    let discovery_access = FileSystemEnvironmentAccessor::unrestricted(&skill_root.file_system);
+    let discovery_access = FileSystemEnvironmentAccessor::new(&skill_root.file_system);
     let plugin_identity = skill_root.plugin_identity();
     let plugin_root = match skill_root.plugin_root() {
         Some(plugin_root) => Some(canonicalize_for_skill_identity(file_system, plugin_root).await),
@@ -191,10 +189,7 @@ async fn load_skills_under_root(
     let resolved_plugin_root = plugin_root.as_ref();
     let resolved_skills = futures::stream::iter(skills)
         .map(|skill| async move {
-            let path_uri = match file_system
-                .canonicalize(&skill.path, /*sandbox*/ None)
-                .await
-            {
+            let path_uri = match file_system.canonicalize(&skill.path).await {
                 Ok(path) => path,
                 Err(error) if discovery_mode == SkillDiscoveryMode::DirectChildren => {
                     error!(
@@ -226,11 +221,7 @@ async fn load_skills_under_root(
                     return None;
                 }
                 match file_system
-                    .get_metadata(
-                        &path_uri,
-                        GetMetadataOptions::default(),
-                        /*sandbox*/ None,
-                    )
+                    .get_metadata(&path_uri, GetMetadataOptions::default())
                     .await
                 {
                     Ok(metadata) if metadata.is_file => {}
@@ -363,7 +354,7 @@ async fn parse_skill_file(
     }
     .unwrap_or(SkillMetadataDiscovery::Absent);
     let (contents, loaded_metadata) = tokio::join!(
-        file_system.read_file_text(path_uri, ReadFileOptions::default(), /*sandbox*/ None,),
+        file_system.read_file_text(path_uri, ReadFileOptions::default()),
         load_host_skill_metadata(file_system, path, &metadata, plugin_root),
     );
     let contents = contents.map_err(|error| format!("failed to read file: {error}"))?;
@@ -411,7 +402,7 @@ async fn canonicalize_for_skill_identity(
 ) -> AbsolutePathBuf {
     let path_uri = PathUri::from_abs_path(path);
     file_system
-        .canonicalize(&path_uri, /*sandbox*/ None)
+        .canonicalize(&path_uri)
         .await
         .and_then(|path| path.to_abs_path())
         .unwrap_or_else(|_| path.clone())

@@ -47,44 +47,6 @@ fn function_payloads_remain_function_outputs() {
 }
 
 #[test]
-fn mcp_code_mode_result_omits_private_metadata() {
-    let output = CallToolResult {
-        content: vec![serde_json::json!({
-            "type": "text",
-            "text": "ignored",
-        })],
-        structured_content: Some(serde_json::json!({
-            "threadId": "thread_123",
-            "content": "done",
-        })),
-        is_error: Some(false),
-        meta: Some(serde_json::json!({
-            "source": "mcp",
-        })),
-    };
-
-    let result = output.code_mode_result(&ToolPayload::Function {
-        arguments: "{}".to_string(),
-    });
-
-    assert_eq!(
-        result,
-        serde_json::json!({
-            "content": [{
-                "type": "text",
-                "text": "ignored",
-            }],
-            "structuredContent": {
-                "threadId": "thread_123",
-                "content": "done",
-            },
-            "isError": false,
-        })
-    );
-    assert_eq!(output.meta, Some(serde_json::json!({ "source": "mcp" })));
-}
-
-#[test]
 fn mcp_tool_output_response_item_includes_wall_time() {
     let output = McpToolOutput {
         result: CallToolResult {
@@ -97,7 +59,6 @@ fn mcp_tool_output_response_item_includes_wall_time() {
             meta: None,
         },
         tool_input: json!({}),
-        result_metadata_capture_allowed: false,
         wall_time: std::time::Duration::from_millis(1250),
         original_image_detail_supported: false,
         truncation_policy: TruncationPolicy::Bytes(1024),
@@ -144,7 +105,6 @@ fn mcp_tool_output_response_item_truncates_large_structured_content() {
             meta: None,
         },
         tool_input: json!({}),
-        result_metadata_capture_allowed: false,
         wall_time: std::time::Duration::from_millis(1250),
         original_image_detail_supported: false,
         truncation_policy: TruncationPolicy::Bytes(128),
@@ -195,7 +155,6 @@ fn mcp_tool_output_response_item_preserves_content_items() {
             meta: None,
         },
         tool_input: json!({}),
-        result_metadata_capture_allowed: false,
         wall_time: std::time::Duration::from_millis(500),
         original_image_detail_supported: false,
         truncation_policy: TruncationPolicy::Bytes(1024),
@@ -234,57 +193,6 @@ fn mcp_tool_output_response_item_preserves_content_items() {
         }
         other => panic!("expected FunctionCallOutput, got {other:?}"),
     }
-}
-
-#[test_case::test_case(TruncationPolicy::Bytes(64); "byte budget")]
-#[test_case::test_case(TruncationPolicy::Tokens(1); "token budget")]
-fn mcp_tool_output_code_mode_result_preserves_content_without_private_metadata(
-    truncation_policy: TruncationPolicy,
-) {
-    let large_content = "large structured value ".repeat(1_000);
-    let output = McpToolOutput {
-        result: CallToolResult {
-            content: vec![serde_json::json!({
-                "type": "text",
-                "text": "ignored",
-            })],
-            structured_content: Some(serde_json::json!({
-                "content": large_content,
-            })),
-            is_error: Some(false),
-            meta: Some(serde_json::json!({
-                "hive_dispatch_id": "private-dispatch-id",
-            })),
-        },
-        tool_input: json!({}),
-        result_metadata_capture_allowed: false,
-        wall_time: std::time::Duration::from_millis(1250),
-        original_image_detail_supported: false,
-        truncation_policy,
-    };
-
-    let payload = ToolPayload::Function {
-        arguments: "{}".to_string(),
-    };
-    let result = output.code_mode_result(&payload);
-
-    assert_eq!(
-        result,
-        serde_json::json!({
-            "content": [{
-                "type": "text",
-                "text": "ignored",
-            }],
-            "structuredContent": {
-                "content": "large structured value ".repeat(1_000),
-            },
-            "isError": false,
-        })
-    );
-    assert_eq!(
-        output.result.meta,
-        Some(serde_json::json!({ "hive_dispatch_id": "private-dispatch-id" }))
-    );
 }
 
 #[test]

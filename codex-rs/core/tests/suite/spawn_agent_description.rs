@@ -95,12 +95,8 @@ fn test_model_info(
         supports_experimental_context: false,
         use_responses_lite: false,
         supports_reasoning_effort_updates: false,
-        guardian: None,
-        node_repl_auto_review_required: false,
         node_repl_disabled: false,
-        auto_review_model_override: None,
         model_specialty: None,
-        tool_mode: None,
         multi_agent_version: None,
         multi_agent_reasoning_effort: None,
         priority: 1,
@@ -224,22 +220,13 @@ pub(super) async fn model_catalog_refresh_requests(
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
         .with_model("visible-model")
         .with_config(move |config| {
-            config
-                .features
-                .enable(Feature::Collab)
-                .expect("test config should allow feature update");
-            config
-                .features
-                .set_enabled(
-                    Feature::MultiAgentV2,
-                    multi_agent_version == MultiAgentVersion::V2,
-                )
-                .expect("set multi-agent version");
+            config.features.enable(Feature::Collab);
+            config.features.set_enabled(
+                Feature::MultiAgentV2,
+                multi_agent_version == MultiAgentVersion::V2,
+            );
             if model_catalog_in_context {
-                config
-                    .features
-                    .enable(Feature::ModelCatalogInContext)
-                    .expect("enable context catalogs");
+                config.features.enable(Feature::ModelCatalogInContext);
             }
             config.multi_agent_v2.hide_spawn_agent_metadata = false;
             config.base_instructions = Some("Test model instructions.".to_string());
@@ -410,20 +397,11 @@ async fn configured_agent_roles_control_spawn_agent_type(
     .await;
     let test = test_codex()
         .with_config(move |config| {
-            config
-                .features
-                .enable(Feature::Collab)
-                .expect("test config should allow feature update");
+            config.features.enable(Feature::Collab);
             if multi_agent_v2 {
-                config
-                    .features
-                    .enable(Feature::MultiAgentV2)
-                    .expect("test config should allow feature update");
+                config.features.enable(Feature::MultiAgentV2);
             } else {
-                config
-                    .features
-                    .disable(Feature::MultiAgentV2)
-                    .expect("test config should allow feature update");
+                config.features.disable(Feature::MultiAgentV2);
             }
             if has_agent_role {
                 config.agent_roles.insert(
@@ -465,10 +443,7 @@ async fn multi_agent_v2_wait_guidance_uses_overridable_developer_instructions(
     .await;
     let test = test_codex()
         .with_config(move |config| {
-            config
-                .features
-                .enable(Feature::MultiAgentV2)
-                .expect("test config should allow feature update");
+            config.features.enable(Feature::MultiAgentV2);
             if let Some(root_agent_usage_hint_text) = root_agent_usage_hint_text {
                 config.multi_agent_v2.root_agent_usage_hint_text = Some(root_agent_usage_hint_text);
             }

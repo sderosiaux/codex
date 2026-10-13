@@ -10,7 +10,6 @@ use codex_exec_server_protocol::DISCOVERABLE_PLUGIN_MANIFEST_PATHS;
 use codex_exec_server_protocol::DiscoveredPluginFiles;
 use codex_exec_server_protocol::DiscoveredSkillFiles;
 use codex_file_system::ExecutorFileSystem;
-use codex_file_system::FileSystemSandboxContext;
 use codex_file_system::WalkEntryKind;
 use codex_file_system::WalkOptions;
 use codex_utils_path_uri::PathUri;
@@ -65,8 +64,7 @@ pub(crate) async fn discover_root(
     file_system: &dyn ExecutorFileSystem,
     request: CapabilityRootDiscoverRequest,
 ) -> CapabilityRootDiscovery {
-    let CapabilityRootDiscoverRequest { id, path, sandbox } = request;
-    let sandbox = sandbox.as_ref();
+    let CapabilityRootDiscoverRequest { id, path } = request;
     let mut discovery = CapabilityRootDiscovery {
         id,
         path: path.clone(),
@@ -77,25 +75,7 @@ pub(crate) async fn discover_root(
         error: None,
     };
 
-    if let Some(sandbox) = sandbox
-        && let Err(error) = sandbox.validate_file_system_paths_for_current_host()
-    {
-        discovery.error = Some(format!("failed to inspect capability root {path}: {error}"));
-        return discovery;
-    }
-
-    #[cfg(target_os = "windows")]
-    if sandbox.is_some_and(|context| {
-        context.should_read_from_sandbox() && !context.windows_sandbox_is_requested()
-    }) {
-        discovery.error = Some("filesystem sandbox is unavailable on this executor".to_string());
-        return discovery;
-    }
-
-    match file_system
-        .get_metadata(&path, Default::default(), sandbox)
-        .await
-    {
+    match file_system.get_metadata(&path, Default::default()).await {
         Ok(metadata) if metadata.is_directory => {}
         Ok(_) => {
             discovery.error = Some(format!("capability root {path} is not a directory"));
@@ -117,7 +97,6 @@ pub(crate) async fn discover_root(
                 follow_directory_symlinks: true,
                 prune_hidden_directories: false,
             },
-            sandbox,
         )
         .await
     {
@@ -164,26 +143,14 @@ pub(crate) async fn discover_root(
     });
 
     let mut budget = BundleBudget::default();
-    let root_manifest = read_first_plugin_manifest(
-        file_system,
-        &path,
-        sandbox,
-        &mut budget,
-        &mut discovery.warnings,
-    )
-    .await;
+    let root_manifest =
+        read_first_plugin_manifest(file_system, &path, &mut budget, &mut discovery.warnings).await;
 
     let inherited_manifest = match root_manifest.as_ref() {
         Some(manifest) => Some(manifest.clone()),
         None => {
-            read_nearest_ancestor_manifest(
-                file_system,
-                &path,
-                sandbox,
-                &mut budget,
-                &mut discovery.warnings,
-            )
-            .await
+            read_nearest_ancestor_manifest(file_system, &path, &mut budget, &mut discovery.warnings)
+                .await
         }
     };
     let mut seen_namespace_roots = HashSet::new();
@@ -203,7 +170,6 @@ pub(crate) async fn discover_root(
         if let Some(manifest) = read_optional_text_file(
             file_system,
             manifest_path,
-            sandbox,
             &mut budget,
             &mut discovery.warnings,
         )
@@ -224,14 +190,8 @@ pub(crate) async fn discover_root(
         };
         let mcp_config = match mcp_path {
             Some(path) => {
-                read_optional_text_file(
-                    file_system,
-                    path,
-                    sandbox,
-                    &mut budget,
-                    &mut discovery.warnings,
-                )
-                .await
+                read_optional_text_file(file_system, path, &mut budget, &mut discovery.warnings)
+                    .await
             }
             None => None,
         };
@@ -240,14 +200,8 @@ pub(crate) async fn discover_root(
             .or_else(|| path.join(DEFAULT_APP_CONFIG_PATH).ok());
         let apps_config = match apps_path {
             Some(path) => {
-                read_optional_text_file(
-                    file_system,
-                    path,
-                    sandbox,
-                    &mut budget,
-                    &mut discovery.warnings,
-                )
-                .await
+                read_optional_text_file(file_system, path, &mut budget, &mut discovery.warnings)
+                    .await
             }
             None => None,
         };
@@ -262,7 +216,6 @@ pub(crate) async fn discover_root(
         let Some(instructions) = read_optional_text_file(
             file_system,
             skill_path.clone(),
-            sandbox,
             &mut budget,
             &mut discovery.warnings,
         )
@@ -278,7 +231,6 @@ pub(crate) async fn discover_root(
                 read_optional_text_file(
                     file_system,
                     metadata_path,
-                    sandbox,
                     &mut budget,
                     &mut discovery.warnings,
                 )
@@ -298,7 +250,6 @@ pub(crate) async fn discover_root(
 async fn read_first_plugin_manifest(
     file_system: &dyn ExecutorFileSystem,
     root: &PathUri,
-    sandbox: Option<&FileSystemSandboxContext>,
     budget: &mut BundleBudget,
     warnings: &mut Vec<String>,
 ) -> Option<CapabilityTextFile> {
@@ -306,9 +257,7 @@ async fn read_first_plugin_manifest(
         let Ok(path) = root.join(relative_path) else {
             continue;
         };
-        if let Some(manifest) =
-            read_optional_text_file(file_system, path, sandbox, budget, warnings).await
-        {
+        if let Some(manifest) = read_optional_text_file(file_system, path, budget, warnings).await {
             return Some(manifest);
         }
     }
@@ -318,14 +267,13 @@ async fn read_first_plugin_manifest(
 async fn read_nearest_ancestor_manifest(
     file_system: &dyn ExecutorFileSystem,
     root: &PathUri,
-    sandbox: Option<&FileSystemSandboxContext>,
     budget: &mut BundleBudget,
     warnings: &mut Vec<String>,
 ) -> Option<CapabilityTextFile> {
     let mut ancestor = root.parent();
     while let Some(path) = ancestor {
         if let Some(manifest) =
-            read_first_plugin_manifest(file_system, &path, sandbox, budget, warnings).await
+            read_first_plugin_manifest(file_system, &path, budget, warnings).await
         {
             return Some(manifest);
         }
@@ -337,14 +285,10 @@ async fn read_nearest_ancestor_manifest(
 async fn read_optional_text_file(
     file_system: &dyn ExecutorFileSystem,
     path: PathUri,
-    sandbox: Option<&FileSystemSandboxContext>,
     budget: &mut BundleBudget,
     warnings: &mut Vec<String>,
 ) -> Option<CapabilityTextFile> {
-    let metadata = match file_system
-        .get_metadata(&path, Default::default(), sandbox)
-        .await
-    {
+    let metadata = match file_system.get_metadata(&path, Default::default()).await {
         Ok(metadata) if metadata.is_file => metadata,
         Ok(_) => return None,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return None,
@@ -369,7 +313,7 @@ async fn read_optional_text_file(
         ));
         return None;
     }
-    let mut stream = match file_system.read_file_stream(&path, sandbox).await {
+    let mut stream = match file_system.read_file_stream(&path).await {
         Ok(stream) => stream,
         Err(error) => {
             warnings.push(format!("failed to read capability file {path}: {error}"));

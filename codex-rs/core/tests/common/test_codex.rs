@@ -15,9 +15,7 @@ use std::time::Duration;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
-use codex_analytics::AnalyticsEventsClient;
 use codex_attachment_store::AttachmentStore;
-use codex_config::CloudConfigBundleLoader;
 use codex_core::CodexThread;
 pub use codex_core::StartThreadOptions;
 use codex_core::ThreadManager;
@@ -28,7 +26,6 @@ use codex_core::resolve_installation_id;
 use codex_core::shell::Shell;
 use codex_core::shell::get_shell_by_model_provided_path;
 use codex_core::thread_store_from_config;
-use codex_core::windows_sandbox::WindowsSandboxLevelExt;
 use codex_exec_server::CreateDirectoryOptions;
 use codex_exec_server::ExecutorFileSystem;
 use codex_exec_server::RemoveOptions;
@@ -48,21 +45,15 @@ use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::Settings;
-use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::mcp::OPENAI_FORM_EXTENSION_ID;
-use codex_protocol::models::PermissionProfile;
-use codex_protocol::models::PermissionProfileSnapshot;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::openai_models::TruncationPolicyConfig;
 use codex_protocol::openai_models::WebSearchToolType;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EnvironmentConfig;
 use codex_protocol::protocol::EnvironmentConfigState;
 use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::RealtimeConversationVersion as RealtimeWsVersion;
-use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionConfiguredEvent;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::ThreadHistoryMode;
@@ -83,7 +74,6 @@ use wiremock::MockServer;
 use crate::TempDirExt;
 use crate::TestEnvironment;
 use crate::load_default_config_for_test;
-use crate::load_default_config_for_test_with_cloud_config_bundle;
 use crate::responses::WebSocketTestServer;
 use crate::responses::output_value_to_text;
 use crate::responses::start_mock_server;
@@ -143,32 +133,15 @@ pub fn local(cwd: AbsolutePathBuf) -> TurnEnvironmentSelection {
     TurnEnvironmentSelection::new(local_request(cwd), &[])
 }
 
-/// Builds explicit environment configuration with the test thread's permissions and shell settings.
+/// Builds explicit environment configuration with the test thread's shell settings.
 pub fn environment_config_for_selection(
     config: &Config,
     selection: &TurnEnvironmentSelection,
 ) -> EnvironmentConfig {
-    let permissions = &config.permissions;
-    let profile = permissions.permission_profile().clone();
-    let permission_profile = match permissions.active_permission_profile() {
-        Some(active) => PermissionProfileSnapshot::active_with_profile_workspace_roots(
-            profile,
-            active,
-            permissions.profile_workspace_roots().to_vec(),
-        ),
-        None => PermissionProfileSnapshot::legacy(profile),
-    };
     EnvironmentConfig {
-        allow_login_shell: permissions.allow_login_shell,
+        allow_login_shell: config.allow_login_shell,
         workspace_roots: selection.workspace_roots.clone(),
-        permission_profile,
-        shell_environment_policy: permissions.shell_environment_policy.clone(),
-        windows_sandbox_level: WindowsSandboxLevel::from_config(config),
-        windows_sandbox_type: permissions.windows_sandbox_type,
-        use_legacy_landlock: config.features.use_legacy_landlock(),
-        exec_policy: None,
-        mcp_policy: None,
-        network_policy: None,
+        shell_environment_policy: config.shell_environment_policy.clone(),
         selected_capability_roots: Vec::new(),
     }
 }
@@ -298,7 +271,6 @@ pub async fn test_env() -> Result<TestEnv> {
                         recursive: true,
                         follow_symlinks: true,
                     },
-                    /*sandbox*/ None,
                 )
                 .await?;
             let selection = TurnEnvironmentSelection {
@@ -375,17 +347,6 @@ pub enum ApplyPatchModelOutput {
     ExecCommandViaHeredoc,
 }
 
-/// Returns the permission fields required by test thread-settings overrides.
-pub fn turn_permission_fields(
-    permission_profile: PermissionProfile,
-    cwd: &Path,
-) -> (SandboxPolicy, Option<PermissionProfile>) {
-    let sandbox_policy = permission_profile
-        .to_legacy_sandbox_policy(cwd)
-        .unwrap_or_else(|_| SandboxPolicy::new_read_only_policy());
-    (sandbox_policy, Some(permission_profile))
-}
-
 enum TestAuth {
     Cached(CodexAuth),
     Manager(Arc<AuthManager>),
@@ -407,18 +368,15 @@ pub struct TestCodexBuilder {
     config_mutators: Vec<Box<ConfigMutator>>,
     thread_manager_configurer: Option<Box<dyn FnOnce(ThreadManager) -> ThreadManager + Send>>,
     auth: TestAuth,
-    analytics_events_client: Option<AnalyticsEventsClient>,
     pre_build_hooks: Vec<Box<PreBuildHook>>,
     workspace_setups: Vec<Box<WorkspaceSetup>>,
     home: Option<Arc<TempDir>>,
-    cloud_config_bundle: Option<CloudConfigBundleLoader>,
     user_shell_override: Option<Shell>,
     exec_server_url: Option<String>,
     extensions: Arc<ExtensionRegistry<Config>>,
     user_instructions_provider: Option<Arc<dyn UserInstructionsProvider>>,
     supports_openai_form_elicitation: bool,
     external_time_provider: Option<Arc<dyn TimeProvider>>,
-    code_mode_host_program: Option<PathBuf>,
     history_mode: Option<ThreadHistoryMode>,
     models_manager: Option<SharedModelsManager>,
     thread_store: Option<Arc<dyn ThreadStore>>,
@@ -454,14 +412,6 @@ impl TestCodexBuilder {
 
     pub fn with_auth_manager(mut self, auth_manager: Arc<AuthManager>) -> Self {
         self.auth = TestAuth::Manager(auth_manager);
-        self
-    }
-
-    pub fn with_analytics_events_client(
-        mut self,
-        analytics_events_client: AnalyticsEventsClient,
-    ) -> Self {
-        self.analytics_events_client = Some(analytics_events_client);
         self
     }
 
@@ -544,14 +494,6 @@ impl TestCodexBuilder {
         self
     }
 
-    pub fn with_cloud_config_bundle(
-        mut self,
-        cloud_config_bundle: CloudConfigBundleLoader,
-    ) -> Self {
-        self.cloud_config_bundle = Some(cloud_config_bundle);
-        self
-    }
-
     pub fn with_user_shell(mut self, user_shell: Shell) -> Self {
         self.user_shell_override = Some(user_shell);
         self
@@ -582,11 +524,6 @@ impl TestCodexBuilder {
 
     pub fn with_external_time_provider(mut self, provider: Arc<dyn TimeProvider>) -> Self {
         self.external_time_provider = Some(provider);
-        self
-    }
-
-    pub fn with_code_mode_host_program(mut self, host_program: PathBuf) -> Self {
-        self.code_mode_host_program = Some(host_program);
         self
     }
 
@@ -695,8 +632,6 @@ impl TestCodexBuilder {
         };
         self.config_mutators.push(Box::new(move |config| {
             config.model_provider.supports_websockets = true;
-            config.experimental_realtime_ws_model = Some("realtime-test-model".to_string());
-            config.realtime.version = RealtimeWsVersion::V1;
         }));
         let test_env = TestEnv::local().await?;
         Box::pin(self.build_with_home_and_base_url(
@@ -778,29 +713,11 @@ impl TestCodexBuilder {
             .exec_server_url
             .clone()
             .or_else(|| test_env.exec_server_url.clone());
-        #[cfg(target_os = "linux")]
-        let codex_linux_sandbox_exe = Some(
-            crate::find_codex_linux_sandbox_exe()
-                .context("should find binary for codex-linux-sandbox")?,
-        );
-        #[cfg(not(target_os = "linux"))]
-        let codex_linux_sandbox_exe = None;
-        let local_runtime_paths = codex_exec_server::ExecServerRuntimeOptions::new(
-            std::env::current_exe()?,
-            codex_linux_sandbox_exe,
-        )?;
         let environment_manager = Arc::new(if include_local_environment {
-            codex_exec_server::EnvironmentManager::create_for_tests_with_local(
-                exec_server_url,
-                local_runtime_paths,
-            )
-            .await
+            codex_exec_server::EnvironmentManager::create_for_tests_with_local(exec_server_url)
+                .await
         } else {
-            codex_exec_server::EnvironmentManager::create_for_tests(
-                exec_server_url,
-                Some(local_runtime_paths),
-            )
-            .await
+            codex_exec_server::EnvironmentManager::create_for_tests(exec_server_url).await
         });
         let file_system = test_env.environment().get_filesystem();
         let mut workspace_setups = vec![];
@@ -846,18 +763,9 @@ impl TestCodexBuilder {
             .models_manager
             .clone()
             .unwrap_or_else(|| codex_core::build_models_manager(&config, auth_manager.clone()));
-        let code_mode_host_program = self
-            .code_mode_host_program
-            .take()
-            .or_else(|| codex_utils_cargo_bin::cargo_bin("codex-code-mode-host").ok());
         let thread_manager = Arc::new_cyclic(|manager| {
             let mut extensions = self.extensions.to_builder();
             codex_core::install_agent_message_board(&mut extensions, manager.clone());
-            if config.features.enabled(Feature::GuardianV2) {
-                codex_guardian_v2::install(&mut extensions, auth_manager.clone(), manager.clone());
-            } else {
-                codex_guardian_v2::install_reviewer(&mut extensions, manager.clone());
-            }
             let thread_manager = ThreadManager::new(
                 &config,
                 auth_manager.clone(),
@@ -867,7 +775,6 @@ impl TestCodexBuilder {
                 Arc::clone(&environment_manager),
                 Arc::new(extensions.build()),
                 user_instructions_provider,
-                self.analytics_events_client.clone(),
                 Arc::clone(&self.image_store),
                 Arc::clone(&thread_store),
                 codex_core::local_agent_graph_store_from_state_db(state_db.as_ref()),
@@ -875,20 +782,9 @@ impl TestCodexBuilder {
                 /*attestation_provider*/ None,
                 /*external_time_provider*/ self.external_time_provider.clone(),
             );
-            let thread_manager = match self.thread_manager_configurer.take() {
+            match self.thread_manager_configurer.take() {
                 Some(configure) => configure(thread_manager),
                 None => thread_manager,
-            };
-            if config.features.enabled(Feature::CodeModeHost)
-                && let Some(code_mode_host_program) = code_mode_host_program
-            {
-                codex_core::test_support::with_code_mode_host_program(
-                    thread_manager,
-                    code_mode_host_program,
-                    &config,
-                )
-            } else {
-                thread_manager
             }
         });
         let user_shell_override = self.user_shell_override.clone();
@@ -989,32 +885,20 @@ impl TestCodexBuilder {
         for hook in self.pre_build_hooks.drain(..) {
             hook(home.path());
         }
-        let mut config = if let Some(cloud_config_bundle) = self.cloud_config_bundle.take() {
-            load_default_config_for_test_with_cloud_config_bundle(home, cloud_config_bundle).await
-        } else {
-            load_default_config_for_test(home).await
-        };
+        let mut config = load_default_config_for_test(home).await;
         // Keep generic tests stable when the bundled catalog default changes. Tests that need a
         // specific model can still override this with a config mutator.
         config.model = Some("gpt-5.5".to_string());
         config.cwd = cwd_override;
         config.model_provider = model_provider;
+        // `codex` dispatches `--codex-run-as-apply-patch` through arg0.
         if let Ok(path) = codex_utils_cargo_bin::cargo_bin("codex") {
-            config.codex_self_exe = Some(path);
-        } else if let Ok(path) = codex_utils_cargo_bin::cargo_bin("codex-exec") {
-            // `codex-exec` also supports `--codex-run-as-apply-patch`, so use it
-            // when the multitool binary is not available in test builds.
             config.codex_self_exe = Some(path);
         } else if let Ok(exe) = std::env::current_exe()
             && let Some(bin_dir) = exe.parent().and_then(|parent| parent.parent())
+            && bin_dir.join("codex").is_file()
         {
-            let codex = bin_dir.join("codex");
-            let codex_exec = bin_dir.join("codex-exec");
-            if codex.is_file() {
-                config.codex_self_exe = Some(codex);
-            } else if codex_exec.is_file() {
-                config.codex_self_exe = Some(codex_exec);
-            }
+            config.codex_self_exe = Some(bin_dir.join("codex"));
         }
 
         let mut mutators = vec![];
@@ -1115,8 +999,10 @@ impl TestCodex {
     }
 
     pub async fn submit_turn(&self, prompt: &str) -> Result<()> {
-        self.submit_turn_with_permission_profile(prompt, PermissionProfile::Disabled)
-            .await
+        self.submit_turn_with_context(
+            prompt, /*service_tier*/ None, /*environments*/ None,
+        )
+        .await
     }
 
     /// Submits a text turn without changing the current thread settings.
@@ -1132,74 +1018,14 @@ impl TestCodex {
         Ok(())
     }
 
-    pub async fn submit_turn_with_permission_profile(
-        &self,
-        prompt: &str,
-        permission_profile: PermissionProfile,
-    ) -> Result<()> {
-        self.submit_turn_with_approval_and_permission_profile(
-            prompt,
-            AskForApproval::Never,
-            permission_profile,
-        )
-        .await
-    }
-
-    pub async fn submit_turn_with_policy(
-        &self,
-        prompt: &str,
-        sandbox_policy: SandboxPolicy,
-    ) -> Result<()> {
-        self.submit_turn_with_policies(prompt, AskForApproval::Never, sandbox_policy)
-            .await
-    }
-
     pub async fn submit_turn_with_service_tier(
         &self,
         prompt: &str,
         service_tier: Option<&str>,
     ) -> Result<()> {
-        self.submit_turn_with_permission_profile_context(
-            prompt,
-            AskForApproval::Never,
-            PermissionProfile::Disabled,
-            Some(service_tier.map(str::to_string)),
-            /*environments*/ None,
-        )
-        .await
-    }
-
-    pub async fn submit_turn_with_policies(
-        &self,
-        prompt: &str,
-        approval_policy: AskForApproval,
-        sandbox_policy: SandboxPolicy,
-    ) -> Result<()> {
-        let permission_profile = PermissionProfile::from_legacy_sandbox_policy_for_cwd(
-            &sandbox_policy,
-            self.config.cwd.as_path(),
-        );
         self.submit_turn_with_context(
             prompt,
-            approval_policy,
-            permission_profile,
-            /*service_tier*/ None,
-            /*environments*/ None,
-        )
-        .await
-    }
-
-    pub async fn submit_turn_with_approval_and_permission_profile(
-        &self,
-        prompt: &str,
-        approval_policy: AskForApproval,
-        permission_profile: PermissionProfile,
-    ) -> Result<()> {
-        self.submit_turn_with_permission_profile_context(
-            prompt,
-            approval_policy,
-            permission_profile,
-            /*service_tier*/ None,
+            Some(service_tier.map(str::to_string)),
             /*environments*/ None,
         )
         .await
@@ -1210,44 +1036,16 @@ impl TestCodex {
         prompt: &str,
         environments: Option<Vec<TurnEnvironmentSelection>>,
     ) -> Result<()> {
-        self.submit_turn_with_permission_profile_context(
-            prompt,
-            AskForApproval::Never,
-            PermissionProfile::Disabled,
-            /*service_tier*/ None,
-            environments,
-        )
-        .await
-    }
-
-    async fn submit_turn_with_permission_profile_context(
-        &self,
-        prompt: &str,
-        approval_policy: AskForApproval,
-        permission_profile: PermissionProfile,
-        service_tier: Option<Option<String>>,
-        environments: Option<Vec<TurnEnvironmentSelection>>,
-    ) -> Result<()> {
-        self.submit_turn_with_context(
-            prompt,
-            approval_policy,
-            permission_profile,
-            service_tier,
-            environments,
-        )
-        .await
+        self.submit_turn_with_context(prompt, /*service_tier*/ None, environments)
+            .await
     }
 
     async fn submit_turn_with_context(
         &self,
         prompt: &str,
-        approval_policy: AskForApproval,
-        permission_profile: PermissionProfile,
         service_tier: Option<Option<String>>,
         environments: Option<Vec<TurnEnvironmentSelection>>,
     ) -> Result<()> {
-        let (sandbox_policy, permission_profile) =
-            turn_permission_fields(permission_profile, self.config.cwd.as_path());
         let session_model = self.session_configured.model.clone();
         let turn_environment_selections = environments.map(|environments| {
             TurnEnvironmentSelections::new(self.config.cwd.clone(), environments)
@@ -1261,9 +1059,6 @@ impl TestCodex {
                 .with_thread_settings(ThreadSettingsOverrides {
                     environments: turn_environment_selections
                         .map(TurnEnvironmentSelections::into_requests),
-                    approval_policy: Some(approval_policy),
-                    sandbox_policy: Some(sandbox_policy),
-                    permission_profile,
                     service_tier,
                     collaboration_mode: Some(CollaborationMode {
                         mode: ModeKind::Default,
@@ -1349,18 +1144,12 @@ impl TestCodexHarness {
                         recursive: true,
                         follow_symlinks: true,
                     },
-                    /*sandbox*/ None,
                 )
                 .await?;
         }
         self.test
             .fs()
-            .write_file(
-                &path_uri,
-                contents.as_ref().to_vec(),
-                Default::default(),
-                /*sandbox*/ None,
-            )
+            .write_file(&path_uri, contents.as_ref().to_vec(), Default::default())
             .await?;
         Ok(())
     }
@@ -1370,7 +1159,7 @@ impl TestCodexHarness {
         Ok(self
             .test
             .fs()
-            .read_file_text(&path_uri, Default::default(), /*sandbox*/ None)
+            .read_file_text(&path_uri, Default::default())
             .await?)
     }
 
@@ -1384,7 +1173,6 @@ impl TestCodexHarness {
                     recursive: true,
                     follow_symlinks: true,
                 },
-                /*sandbox*/ None,
             )
             .await?;
         Ok(())
@@ -1406,7 +1194,6 @@ impl TestCodexHarness {
                     force: true,
                     follow_symlinks: true,
                 },
-                /*sandbox*/ None,
             )
             .await?;
         Ok(())
@@ -1421,7 +1208,7 @@ impl TestCodexHarness {
         match self
             .test
             .fs()
-            .get_metadata(path_uri, Default::default(), /*sandbox*/ None)
+            .get_metadata(path_uri, Default::default())
             .await
         {
             Ok(_) => Ok(true),
@@ -1434,16 +1221,6 @@ impl TestCodexHarness {
         // Box the submit-and-wait path so callers do not inline the full turn
         // future into their own async state.
         Box::pin(self.test.submit_turn(prompt)).await
-    }
-
-    pub async fn submit_with_permission_profile(
-        &self,
-        prompt: &str,
-        permission_profile: PermissionProfile,
-    ) -> Result<()> {
-        self.test
-            .submit_turn_with_permission_profile(prompt, permission_profile)
-            .await
     }
 
     pub async fn request_bodies(&self) -> Vec<Value> {
@@ -1523,29 +1300,20 @@ pub fn test_codex() -> TestCodexBuilder {
     TestCodexBuilder {
         thread_manager_configurer: None,
         config_mutators: vec![Box::new(|config| {
-            config
-                .features
-                .disable(Feature::Apps)
-                .expect("test config should allow Apps override");
+            config.features.disable(Feature::Apps);
             // Snapshot tests opt in explicitly; avoid spawning login shells for every test.
-            config
-                .features
-                .disable(Feature::ShellSnapshot)
-                .expect("test config should allow ShellSnapshot override");
+            config.features.disable(Feature::ShellSnapshot);
         })],
         auth: TestAuth::Cached(CodexAuth::from_api_key("dummy")),
-        analytics_events_client: None,
         pre_build_hooks: vec![],
         workspace_setups: vec![],
         home: None,
-        cloud_config_bundle: None,
         user_shell_override: None,
         exec_server_url: None,
         extensions: empty_extension_registry(),
         user_instructions_provider: None,
         supports_openai_form_elicitation: false,
         external_time_provider: None,
-        code_mode_host_program: None,
         // These fixtures exercise legacy-only resume/fork helpers; store-default tests opt out.
         history_mode: Some(ThreadHistoryMode::Legacy),
         models_manager: None,

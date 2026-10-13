@@ -66,16 +66,13 @@ pub fn installed_connector_runtime<'a>(
             entry.0 = runtime_name;
         }
 
-        let policy_allows_tool = policy
-            .policy(AppToolPolicyInput {
-                connector_id: Some(connector_id),
-                link_id: None,
-                tool_name: tool.tool_name,
-                tool_title: tool.tool_title,
-                destructive_hint: tool.destructive_hint,
-                open_world_hint: tool.open_world_hint,
-            })
-            .enabled;
+        let policy_allows_tool = policy.tool_enabled(AppToolPolicyInput {
+            connector_id: Some(connector_id),
+            tool_name: tool.tool_name,
+            tool_title: tool.tool_title,
+            destructive_hint: tool.destructive_hint,
+            open_world_hint: tool.open_world_hint,
+        });
         entry.1 |= tool.model_visible && policy_allows_tool;
     }
 

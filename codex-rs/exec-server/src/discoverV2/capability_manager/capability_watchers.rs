@@ -14,7 +14,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
-use tokio::sync::Mutex;
+use tokio::sync::OnceCell;
 use tokio_util::task::AbortOnDropHandle;
 
 #[cfg(not(test))]
@@ -82,7 +82,7 @@ impl CapabilityManager {
         let next = Arc::new(LocationState {
             dirty: AtomicBool::new(false),
             locations: prewarmed.clone(),
-            sandbox_discoveries: Mutex::default(),
+            discovery: OnceCell::new(),
             _registration: registration,
         });
         let mut current_state = self.current_state.lock().await;
@@ -127,7 +127,7 @@ impl CapabilityManager {
             let next = Arc::new(LocationState {
                 dirty: AtomicBool::new(false),
                 locations,
-                sandbox_discoveries: Mutex::default(),
+                discovery: OnceCell::new(),
                 _registration: registration,
             });
             // Requests populate the new cache lazily; in-flight loads retain their old snapshot.

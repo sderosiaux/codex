@@ -60,7 +60,7 @@ async fn loads_nearest_plugin_namespaces_without_reading_unused_sibling_manifest
     let executor: Arc<dyn ExecutorFileSystem> = file_system.clone();
     let root_uri = PathUri::from_host_native_path(root.path()).expect("root URI");
     let outcome = load_environment_skills_from_root(
-        &FileSystemEnvironmentAccessor::unrestricted(&executor),
+        &FileSystemEnvironmentAccessor::new(&executor),
         &root_uri,
         /*restriction_product*/ None,
     )
@@ -143,7 +143,7 @@ async fn reuses_walk_inventory_for_missing_skill_metadata() {
     let executor: Arc<dyn ExecutorFileSystem> = file_system.clone();
     let root_uri = PathUri::from_host_native_path(root.path()).expect("root URI");
     let outcome = load_environment_skills_from_root(
-        &FileSystemEnvironmentAccessor::unrestricted(&executor),
+        &FileSystemEnvironmentAccessor::new(&executor),
         &root_uri,
         /*restriction_product*/ None,
     )
@@ -210,7 +210,7 @@ async fn reads_skill_files_while_resolving_plugin_namespaces() {
     let outcome = tokio::time::timeout(
         Duration::from_secs(5),
         load_environment_skills_from_root(
-            &FileSystemEnvironmentAccessor::unrestricted(&file_system),
+            &FileSystemEnvironmentAccessor::new(&file_system),
             &root_uri,
             /*restriction_product*/ None,
         ),

@@ -60,20 +60,10 @@ async fn config_read_timeout_keeps_stdio_connection_usable() {
     let params = EnvironmentConfigReadParams {
         cwd: cwd.clone(),
         config_paths: vec![vec!["features".to_string()]],
-        requirements_paths: Vec::new(),
     };
     let mut expected = EnvironmentConfigReadResponse {
-        user_home_dir: None,
-        codex_home_dir: cwd,
-        hostname: Some("original".to_string()),
-        config: EnvironmentConfigLayerStack {
-            layers: Vec::new(),
-            cloud_insertion_index: 0,
-        },
-        requirements: EnvironmentConfigLayerStack {
-            layers: Vec::new(),
-            cloud_insertion_index: 0,
-        },
+        user_home_dir: Some(cwd.join("original").expect("marker home URI")),
+        config: EnvironmentConfigLayerStack { layers: Vec::new() },
     };
 
     // Model inline dispatch by holding valid work while the timed read queues behind it.
@@ -118,7 +108,7 @@ async fn config_read_timeout_keeps_stdio_connection_usable() {
     let retry = client.read_environment_config_with_timeout(params, rpc_timeout);
     tokio::pin!(retry);
     assert!(futures::poll!(retry.as_mut()).is_pending());
-    for hostname in ["late", "fresh"] {
+    for marker in ["late", "fresh"] {
         let request = match read_jsonrpc_line(&mut lines).await {
             JSONRPCMessage::Request(request)
                 if request.method == ENVIRONMENT_CONFIG_READ_METHOD =>
@@ -127,7 +117,7 @@ async fn config_read_timeout_keeps_stdio_connection_usable() {
             }
             other => panic!("expected queued config read, got {other:?}"),
         };
-        expected.hostname = Some(hostname.to_string());
+        expected.user_home_dir = Some(cwd.join(marker).expect("marker home URI"));
         write_jsonrpc_line(
             &mut server_writer,
             JSONRPCMessage::Response(JSONRPCResponse {

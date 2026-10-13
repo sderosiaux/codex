@@ -18,7 +18,6 @@ use crate::ClientRouteClass;
 use crate::HttpClient;
 use crate::HttpClientBuilder;
 use crate::HttpClientFactory;
-use crate::NetworkPolicyDenied;
 use crate::OutboundProxyPolicy;
 use crate::OutboundProxyRoute;
 use crate::RequestBuilder;
@@ -86,8 +85,6 @@ pub enum RouteAwareClientPoolError {
 #[derive(Debug, thiserror::Error)]
 pub enum RouteAwareRequestError {
     #[error(transparent)]
-    Policy(#[from] NetworkPolicyDenied),
-    #[error(transparent)]
     Request(#[from] reqwest::Error),
     #[error(transparent)]
     Route(#[from] RouteAwareClientPoolError),
@@ -143,7 +140,6 @@ impl RouteAwareRequestError {
             }
             Self::Route(RouteAwareClientPoolError::BuildTask(_))
             | Self::Request(_)
-            | Self::Policy(_)
             | Self::Build(_)
             | Self::UnsupportedRedirectScheme(_)
             | Self::TooManyRedirects
@@ -155,7 +151,6 @@ impl RouteAwareRequestError {
         match self {
             Self::Request(error) => error.status(),
             Self::Route(_)
-            | Self::Policy(_)
             | Self::Build(_)
             | Self::UnsupportedRedirectScheme(_)
             | Self::TooManyRedirects
@@ -293,19 +288,6 @@ impl RouteAwareClientPool {
             client_build: Arc::default(),
             rustls_clients: None,
         }
-    }
-
-    /// Starts a new account-scoped operation while sharing the existing connection cache.
-    /// Capture this before resolving credentials or reading account-specific content.
-    pub fn for_current_account(&self) -> Self {
-        let mut pool = self.clone();
-        pool.http_client_factory = pool.http_client_factory.clone().with_network_policy(
-            pool.http_client_factory
-                .network_policy()
-                .clone()
-                .for_current_account(),
-        );
-        pool
     }
 
     /// Retries recognized TLS protocol-negotiation failures once using rustls.
@@ -549,7 +531,6 @@ impl RouteAwareClientPool {
         self.client_builder.follows_redirects()
             && (self.http_client_factory.outbound_proxy_policy()
                 == OutboundProxyPolicy::RespectSystemProxy
-                || self.http_client_factory.network_policy().is_managed()
                 || self.rustls_clients.is_some())
     }
 
@@ -574,7 +555,3 @@ mod tests;
 #[cfg(test)]
 #[path = "route_aware_tls_fallback_tests.rs"]
 mod tls_fallback_tests;
-
-#[cfg(test)]
-#[path = "route_aware_policy_tests.rs"]
-mod policy_tests;

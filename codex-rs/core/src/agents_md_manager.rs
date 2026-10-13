@@ -9,7 +9,6 @@ use crate::environment_selection::TurnEnvironmentSnapshot;
 use codex_extension_api::Instructions;
 use codex_extension_api::ThreadInstructionsProvider;
 use codex_extension_api::UserInstructionsProvider;
-use codex_protocol::config_types::TrustLevel;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::protocol::TurnEnvironmentSelection;
@@ -44,7 +43,6 @@ struct AgentsMdState {
 #[derive(Default)]
 struct AgentsMdCache {
     selections: Option<Vec<TurnEnvironmentSelection>>,
-    active_project_trust_level: Option<TrustLevel>,
     loaded: Option<Arc<LoadedAgentsMd>>,
 }
 
@@ -83,14 +81,12 @@ impl AgentsMdManager {
             .turn_environments()
             .map(|environment| environment.selection.clone())
             .collect::<Vec<_>>();
-        let active_project_trust_level = config.active_project.trust_level;
         let (mut instructions, cached, refresh_repository) = {
             let mut state = self.state.lock().await;
-            let refresh_repository = state.cache.selections.as_ref() != Some(&selections)
-                || state.cache.active_project_trust_level != active_project_trust_level;
+            let refresh_repository = state.cache.selections.as_ref() != Some(&selections);
             if refresh_repository {
-                // Tightened read permissions must not leave inaccessible instructions visible,
-                // even if discovery fails or the caller cancels the refresh.
+                // A changed selection must not leave the previous workspace's instructions
+                // visible, even if discovery fails or the caller cancels the refresh.
                 state.cache = AgentsMdCache::default();
             }
             (
@@ -139,7 +135,6 @@ impl AgentsMdManager {
             state.instructions = instructions;
             state.cache = AgentsMdCache {
                 selections: Some(selections),
-                active_project_trust_level,
                 loaded: loaded.clone(),
             };
             Ok(loaded)
@@ -150,23 +145,6 @@ impl AgentsMdManager {
 
     pub(crate) async fn get_loaded(&self) -> Option<Arc<LoadedAgentsMd>> {
         self.state.lock().await.cache.loaded.clone()
-    }
-
-    /// Captures even an empty result, but never attributes another environment's cache
-    /// to a turn-only reviewer that has no issuing step snapshot.
-    pub(crate) async fn project_snapshot(
-        &self,
-        config: &Config,
-        environments: &TurnEnvironmentSnapshot,
-    ) -> Option<Arc<LoadedAgentsMd>> {
-        let selections = environments
-            .turn_environments()
-            .map(|environment| environment.selection.clone())
-            .collect::<Vec<_>>();
-        let state = self.state.lock().await;
-        (state.cache.selections.as_ref() == Some(&selections)
-            && state.cache.active_project_trust_level == config.active_project.trust_level)
-            .then(|| state.cache.loaded.clone().unwrap_or_default())
     }
 
     pub(crate) async fn inherited_instructions(&self) -> SessionInstructions {

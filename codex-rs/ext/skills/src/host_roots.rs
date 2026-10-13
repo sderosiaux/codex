@@ -118,12 +118,7 @@ fn roots_from_layer_stack(
                     SkillScope::Admin,
                 ));
             }
-            ConfigLayerSource::PackagedDefaults { .. }
-            | ConfigLayerSource::Mdm { .. }
-            | ConfigLayerSource::EnterpriseManaged { .. }
-            | ConfigLayerSource::SessionFlags
-            | ConfigLayerSource::LegacyManagedConfigTomlFromFile { .. }
-            | ConfigLayerSource::LegacyManagedConfigTomlFromMdm => {}
+            ConfigLayerSource::PackagedDefaults { .. } | ConfigLayerSource::SessionFlags => {}
         }
     }
 
@@ -154,11 +149,7 @@ async fn repo_agents_skill_roots(
                 let agents_skills = directory.join(AGENTS_DIR_NAME).join(SKILLS_DIR_NAME);
                 let agents_skills_uri = PathUri::from_abs_path(&agents_skills);
                 let result = repository_file_system
-                    .get_metadata(
-                        &agents_skills_uri,
-                        GetMetadataOptions::default(),
-                        /*sandbox*/ None,
-                    )
+                    .get_metadata(&agents_skills_uri, GetMetadataOptions::default())
                     .await;
                 (agents_skills, result)
             }
@@ -222,11 +213,7 @@ async fn find_project_root(
         .map(|(ancestor, marker_path)| async move {
             let marker_path_uri = PathUri::from_abs_path(&marker_path);
             let result = repository_file_system
-                .get_metadata(
-                    &marker_path_uri,
-                    GetMetadataOptions::default(),
-                    /*sandbox*/ None,
-                )
+                .get_metadata(&marker_path_uri, GetMetadataOptions::default())
                 .await;
             (ancestor, marker_path, result)
         })

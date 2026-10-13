@@ -37,14 +37,9 @@ async fn test_unified_diff() {
         _ => panic!("Expected a single UpdateFile hunk"),
     };
     let path_uri = PathUri::from_host_native_path(&path).expect("absolute test path");
-    let diff = unified_diff_from_chunks(
-        &path_uri,
-        update_file_chunks,
-        LOCAL_FS.as_ref(),
-        /*sandbox*/ None,
-    )
-    .await
-    .unwrap();
+    let diff = unified_diff_from_chunks(&path_uri, update_file_chunks, LOCAL_FS.as_ref())
+        .await
+        .unwrap();
     let expected_diff = r#"@@ -1,4 +1,4 @@
  foo
 -bar
@@ -85,14 +80,9 @@ async fn test_unified_diff_first_line_replacement() {
     };
 
     let resolved_path = PathUri::from_host_native_path(&path).expect("absolute test path");
-    let diff = unified_diff_from_chunks(
-        &resolved_path,
-        chunks,
-        LOCAL_FS.as_ref(),
-        /*sandbox*/ None,
-    )
-    .await
-    .unwrap();
+    let diff = unified_diff_from_chunks(&resolved_path, chunks, LOCAL_FS.as_ref())
+        .await
+        .unwrap();
     let expected_diff = r#"@@ -1,2 +1,2 @@
 -foo
 +FOO
@@ -131,14 +121,9 @@ async fn test_unified_diff_last_line_replacement() {
     };
 
     let resolved_path = PathUri::from_host_native_path(&path).expect("absolute test path");
-    let diff = unified_diff_from_chunks(
-        &resolved_path,
-        chunks,
-        LOCAL_FS.as_ref(),
-        /*sandbox*/ None,
-    )
-    .await
-    .unwrap();
+    let diff = unified_diff_from_chunks(&resolved_path, chunks, LOCAL_FS.as_ref())
+        .await
+        .unwrap();
     let expected_diff = r#"@@ -2,2 +2,2 @@
  bar
 -baz
@@ -175,10 +160,9 @@ async fn test_unified_diff_insert_at_eof() {
     };
 
     let path_uri = PathUri::from_host_native_path(&path).expect("absolute test path");
-    let diff =
-        unified_diff_from_chunks(&path_uri, chunks, LOCAL_FS.as_ref(), /*sandbox*/ None)
-            .await
-            .unwrap();
+    let diff = unified_diff_from_chunks(&path_uri, chunks, LOCAL_FS.as_ref())
+        .await
+        .unwrap();
     let expected_diff = r#"@@ -3 +3,2 @@
  baz
 +quux
@@ -226,10 +210,9 @@ async fn test_unified_diff_interleaved_changes() {
     };
 
     let path_uri = PathUri::from_host_native_path(&path).expect("absolute test path");
-    let diff =
-        unified_diff_from_chunks(&path_uri, chunks, LOCAL_FS.as_ref(), /*sandbox*/ None)
-            .await
-            .unwrap();
+    let diff = unified_diff_from_chunks(&path_uri, chunks, LOCAL_FS.as_ref())
+        .await
+        .unwrap();
 
     let expected_diff = r#"@@ -1,6 +1,7 @@
  a
@@ -259,7 +242,6 @@ async fn test_unified_diff_interleaved_changes() {
         &mut stdout,
         &mut stderr,
         LOCAL_FS.as_ref(),
-        /*sandbox*/ None,
     )
     .await
     .unwrap();

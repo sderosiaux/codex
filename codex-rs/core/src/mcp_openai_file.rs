@@ -18,8 +18,6 @@ use codex_api::OPENAI_FILE_UPLOAD_LIMIT_BYTES;
 use codex_api::upload_openai_file;
 use codex_exec_server::GetMetadataOptions;
 use codex_login::CodexAuth;
-use codex_protocol::permissions::FileSystemAccessMode;
-use codex_sandboxing::policy_transforms::effective_file_system_sandbox_policy;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -161,36 +159,9 @@ async fn build_uploaded_argument_value(
         .cwd()
         .join(file_path)
         .map_err(|error| contextualize_error(error.to_string()))?;
-    let additional_permissions =
-        turn_context.granted_permissions(&turn_environment.selection.environment_id);
-    let file_system_policy = effective_file_system_sandbox_policy(
-        &turn_environment
-            .permission_profile()
-            .file_system_sandbox_policy(),
-        additional_permissions.as_ref(),
-    );
-    let requires_sandbox = !file_system_policy.has_full_disk_read_access()
-        || file_system_policy
-            .entries
-            .iter()
-            .any(|entry| entry.access == FileSystemAccessMode::Deny);
-    let sandbox =
-        requires_sandbox.then(|| turn_environment.sandbox_context(additional_permissions));
-    if sandbox.is_some() {
-        let environment_info = turn_environment
-            .environment
-            .info()
-            .await
-            .map_err(|error| contextualize_error(error.to_string()))?;
-        if !environment_info.capabilities.sandboxed_file_streaming {
-            return Err(contextualize_error(
-                "selected executor does not support sandboxed file streaming".to_string(),
-            ));
-        }
-    }
     let fs = turn_environment.environment.get_filesystem();
     let metadata = fs
-        .get_metadata(&path_uri, GetMetadataOptions::default(), sandbox.as_ref())
+        .get_metadata(&path_uri, GetMetadataOptions::default())
         .await
         .map_err(|error| contextualize_error(error.to_string()))?;
     if !metadata.is_file {
@@ -207,9 +178,9 @@ async fn build_uploaded_argument_value(
             OPENAI_FILE_UPLOAD_LIMIT_BYTES,
         )));
     }
-    // Keep the initial read permission check before allocating a remote file record.
+    // Open the file before allocating a remote file record.
     let mut first_contents = Some(
-        fs.read_file_stream(&path_uri, sandbox.as_ref())
+        fs.read_file_stream(&path_uri)
             .await
             .map_err(|error| contextualize_error(error.to_string()))?,
     );
@@ -228,11 +199,10 @@ async fn build_uploaded_argument_value(
         let first_contents = first_contents.take();
         let fs = Arc::clone(&fs);
         let path_uri = path_uri.clone();
-        let sandbox = sandbox.clone();
         async move {
             match first_contents {
                 Some(contents) => Ok(contents),
-                None => fs.read_file_stream(&path_uri, sandbox.as_ref()).await,
+                None => fs.read_file_stream(&path_uri).await,
             }
         }
     };
@@ -295,7 +265,11 @@ mod tests {
         };
         primary.selection.cwd = PathUri::from_abs_path(&cwd);
         primary.selection.workspace_roots.clear();
-        primary.config_mut().workspace_roots.clear();
+        if let codex_protocol::protocol::EnvironmentConfigState::Ready(config) =
+            &mut primary.selection.config
+        {
+            config.workspace_roots.clear();
+        }
     }
 
     #[tokio::test]
@@ -378,14 +352,10 @@ mod tests {
             .expect("ready primary environment");
         let selection = environment.selection();
         let environment_config = environment.config().clone();
-        let local_windows_sandbox_type = environment_config.windows_sandbox_type;
         let environments = crate::environment_selection::ThreadEnvironments::new(
             session.services.turn_environments.environment_manager(),
             crate::shell::default_user_shell(),
-            crate::session::ThreadEnvironmentDefaults::new(
-                environment_config,
-                local_windows_sandbox_type,
-            ),
+            crate::session::ThreadEnvironmentDefaults::new(environment_config),
             crate::shell_snapshot::ShellSnapshot::disabled(),
             Default::default(),
             /*non_blocking_snapshots*/ true,

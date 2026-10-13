@@ -17,7 +17,6 @@ use tokio::task::JoinSet;
 use tokio_util::task::AbortOnDropHandle;
 
 use super::*;
-use crate::ExecServerRuntimeOptions;
 use crate::NoiseChannelIdentity;
 use crate::ProcessId;
 use crate::noise_relay::stream_handler::NoiseOutboundMessage;
@@ -162,10 +161,7 @@ impl Executor {
         validator: Validator,
         identity: NoiseChannelIdentity,
     ) -> Result<Self> {
-        let processor = ConnectionProcessor::new(ExecServerRuntimeOptions::new(
-            std::env::current_exe()?,
-            /*codex_linux_sandbox_exe*/ None,
-        )?);
+        let processor = ConnectionProcessor::new();
         Self::start_with_processor(validator, identity, processor).await
     }
 
@@ -322,11 +318,8 @@ async fn registration_snapshot_changes_only_after_same_key_replacement_is_instal
     };
     let new = Executor::start_with_identity(validator.clone(), old.target.identity.clone()).await?;
     let (client, registry) = old.client()?;
-    let environment = crate::Environment::remote_with_client(
-        client.clone(),
-        /*local_runtime_paths*/ None,
-        ScopedSkillsConfig::default(),
-    );
+    let environment =
+        crate::Environment::remote_with_client(client.clone(), ScopedSkillsConfig::default());
     assert_eq!(environment.cached_executor_registration_id(), None);
     let original = client.get().await?;
     assert_eq!(
@@ -368,41 +361,28 @@ async fn registration_renewal_recovers_the_session_and_running_process() -> Resu
     )
     .await?;
     let (client, registry) = old.client()?;
-    let environment = crate::Environment::remote_with_client(
-        client.clone(),
-        /*local_runtime_paths*/ None,
-        ScopedSkillsConfig::default(),
-    );
+    let environment =
+        crate::Environment::remote_with_client(client.clone(), ScopedSkillsConfig::default());
     let original = client.get().await?;
     let session_id = original.session_id();
-    let process =
-        original
-            .start_process(
-                crate::protocol::ExecParams {
-                    metadata: Default::default(),
-                    process_id: ProcessId::from("renewed-process"),
-                    argv: vec![
-                        "/bin/sh".to_owned(),
-                        "-c".to_owned(),
-                        "IFS= read line; printf 'from-stdin:%s\\n' \"$line\"".to_owned(),
-                    ],
-                    cwd: codex_utils_path_uri::PathUri::from_host_native_path(
-                        std::env::current_dir()?,
-                    )?,
-                    shell_snapshot: None,
-                    env_policy: None,
-                    env: Default::default(),
-                    tty: false,
-                    pipe_stdin: true,
-                    arg0: None,
-                    sandbox: None,
-                    enforce_managed_network: false,
-                    managed_network: None,
-                    network_proxy: None,
-                },
-                /*network_policy_decider*/ None,
-            )
-            .await?;
+    let process = original
+        .start_process(crate::protocol::ExecParams {
+            metadata: Default::default(),
+            process_id: ProcessId::from("renewed-process"),
+            argv: vec![
+                "/bin/sh".to_owned(),
+                "-c".to_owned(),
+                "IFS= read line; printf 'from-stdin:%s\\n' \"$line\"".to_owned(),
+            ],
+            cwd: codex_utils_path_uri::PathUri::from_host_native_path(std::env::current_dir()?)?,
+            shell_snapshot: None,
+            env_policy: None,
+            env: Default::default(),
+            tty: false,
+            pipe_stdin: true,
+            arg0: None,
+        })
+        .await?;
     let mut events = process.subscribe_events();
     *registry.target.lock().unwrap() = renewed.target.clone();
     disconnect(&original).await;
@@ -457,11 +437,8 @@ async fn same_key_replacement_cannot_resume_a_missing_session() -> Result<()> {
     let replacement =
         Executor::start_with_identity(Validator::default(), old.target.identity.clone()).await?;
     let (client, registry) = old.client()?;
-    let environment = crate::Environment::remote_with_client(
-        client.clone(),
-        /*local_runtime_paths*/ None,
-        ScopedSkillsConfig::default(),
-    );
+    let environment =
+        crate::Environment::remote_with_client(client.clone(), ScopedSkillsConfig::default());
     let original = client.get().await?;
     let process = original
         .register_session(&ProcessId::from("old-process"))
@@ -498,11 +475,8 @@ async fn stale_refresh_lookup_does_not_retire_a_renewed_session() -> Result<()> 
     )
     .await?;
     let (client, registry) = old.client()?;
-    let environment = crate::Environment::remote_with_client(
-        client.clone(),
-        /*local_runtime_paths*/ None,
-        ScopedSkillsConfig::default(),
-    );
+    let environment =
+        crate::Environment::remote_with_client(client.clone(), ScopedSkillsConfig::default());
     let original = client.get().await?;
     let release = registry.block_next_lookup();
     let refreshing = client.refresh_connection();
@@ -675,7 +649,6 @@ async fn provisioned_environment_waits_for_offline_executor_on_the_same_handle()
             default: crate::environment_provider::EnvironmentDefault::Disabled,
             include_local: false,
         },
-        /*local_runtime_paths*/ None,
         HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
     )?;
     let environment = manager
@@ -732,7 +705,6 @@ async fn environment_refresh_preserves_environment_and_filesystem_handles() -> R
             default: crate::environment_provider::EnvironmentDefault::Disabled,
             include_local: false,
         },
-        /*local_runtime_paths*/ None,
         HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
     )?;
     let environment = manager
@@ -853,7 +825,6 @@ async fn retirement_rejects_pending_mutation_before_stream_cleanup() -> Result<(
             recursive: None,
             force: None,
             follow_symlinks: None,
-            sandbox: None,
         });
         tokio::pin!(call);
         assert!(futures::poll!(call.as_mut()).is_pending());
@@ -906,25 +877,18 @@ async fn retirement_rejects_pending_process_start_before_stream_cleanup() -> Res
     for response_queued in [false, true] {
         let mut rpc = controlled_rpc().await?;
         let process_id = ProcessId::from("retired-process");
-        let call = rpc.client.start_process(
-            crate::protocol::ExecParams {
-                metadata: Default::default(),
-                process_id: process_id.clone(),
-                argv: vec!["unused".to_owned()],
-                cwd: "file:///".parse()?,
-                shell_snapshot: None,
-                env_policy: None,
-                env: Default::default(),
-                tty: false,
-                pipe_stdin: false,
-                arg0: None,
-                sandbox: None,
-                enforce_managed_network: false,
-                managed_network: None,
-                network_proxy: None,
-            },
-            /*network_policy_decider*/ None,
-        );
+        let call = rpc.client.start_process(crate::protocol::ExecParams {
+            metadata: Default::default(),
+            process_id: process_id.clone(),
+            argv: vec!["unused".to_owned()],
+            cwd: "file:///".parse()?,
+            shell_snapshot: None,
+            env_policy: None,
+            env: Default::default(),
+            tty: false,
+            pipe_stdin: false,
+            arg0: None,
+        });
         tokio::pin!(call);
         assert!(futures::poll!(call.as_mut()).is_pending());
         let Some(JSONRPCMessage::Request(request)) = rpc.requests.recv().await else {
@@ -964,60 +928,5 @@ async fn retirement_rejects_pending_process_start_before_stream_cleanup() -> Res
         drop(streams);
         retirement.await;
     }
-    Ok(())
-}
-
-#[tokio::test]
-async fn application_policy_registry_denial_does_not_poison_later_noise_startup() -> Result<()> {
-    let _clock = freeze_clock();
-    let executor = Executor::start(Validator::default()).await?;
-    let registry = wiremock::MockServer::start().await;
-    wiremock::Mock::given(wiremock::matchers::method("POST"))
-        .and(wiremock::matchers::path(
-            "/cloud/environment/environment/connect",
-        ))
-        .respond_with(
-            wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "environment_id": "environment",
-                "url": executor.target.url,
-                "security_profile": "noise_hybrid_ik_v1",
-                "executor_registration_id": executor.target.registration,
-                "executor_public_key": executor.target.identity.public_key(),
-                "harness_key_authorization": "authorization",
-            })),
-        )
-        .expect(1)
-        .mount(&registry)
-        .await;
-    let controller = codex_http_client::NetworkPolicyController::default();
-    let policy = controller.policy();
-    let factory = HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault)
-        .with_network_policy(policy.clone());
-    let provider = crate::remote::NoiseRendezvousEnvironmentConfig::new(
-        registry.uri(),
-        "environment".into(),
-        "registry-token".into(),
-        /*chatgpt_account_id*/ None,
-    )?
-    .into_connect_provider(factory.clone())?;
-    let client = LazyRemoteExecServerClient::new(
-        ExecServerTransportParams::NoiseRendezvous {
-            provider,
-            identity: NoiseChannelIdentity::generate()?,
-        },
-        factory,
-    );
-    let error = client.get().await.err().unwrap();
-    assert_eq!(
-        error.application_network_policy_denial(),
-        Some(codex_http_client::NetworkPolicyDenied::Unavailable)
-    );
-    assert!(!crate::client::is_retryable_recovery_error(&error));
-    assert!(registry.received_requests().await.unwrap().is_empty());
-    controller.publish(
-        policy.revision(),
-        codex_http_client::DestinationPolicy::Unrestricted,
-    );
-    client.get().await?;
     Ok(())
 }

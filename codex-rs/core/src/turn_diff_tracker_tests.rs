@@ -20,13 +20,7 @@ fn git_blob_sha1_hex(data: &str) -> String {
 async fn apply_verified_patch(root: &Path, patch: &str) -> AppliedPatchDelta {
     let cwd = PathUri::from_host_native_path(root).expect("absolute tempdir path");
     let argv = vec!["apply_patch".to_string(), patch.to_string()];
-    match codex_apply_patch::maybe_parse_apply_patch_verified(
-        &argv,
-        &cwd,
-        LOCAL_FS.as_ref(),
-        /*sandbox*/ None,
-    )
-    .await
+    match codex_apply_patch::maybe_parse_apply_patch_verified(&argv, &cwd, LOCAL_FS.as_ref()).await
     {
         MaybeApplyPatchVerified::Body(_) => {}
         other => panic!("expected verified patch action, got {other:?}"),
@@ -34,16 +28,9 @@ async fn apply_verified_patch(root: &Path, patch: &str) -> AppliedPatchDelta {
 
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
-    codex_apply_patch::apply_patch(
-        patch,
-        &cwd,
-        &mut stdout,
-        &mut stderr,
-        LOCAL_FS.as_ref(),
-        /*sandbox*/ None,
-    )
-    .await
-    .expect("patch should apply")
+    codex_apply_patch::apply_patch(patch, &cwd, &mut stdout, &mut stderr, LOCAL_FS.as_ref())
+        .await
+        .expect("patch should apply")
 }
 
 fn tracker_with_root(root: &Path) -> TurnDiffTracker {

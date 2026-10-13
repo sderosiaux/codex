@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use codex_exec_server::EnvironmentManager;
-use codex_exec_server::ExecServerRuntimeOptions;
 use codex_extension_api::ExtensionRegistry;
 use codex_extension_api::UserInstructionsProvider;
 use codex_login::AuthManager;
@@ -37,11 +36,6 @@ pub async fn build_prompt_input(
             .await
             .map_err(|err| CodexErr::Fatal(err.to_string()))?;
 
-    let local_runtime_paths = ExecServerRuntimeOptions::from_optional_paths(
-        config.codex_self_exe.clone(),
-        config.codex_linux_sandbox_exe.clone(),
-    )?;
-
     let thread_store = thread_store_from_config(&config, state_db.clone());
     let installation_id = resolve_installation_id(&config.codex_home).await?;
     let thread_manager = ThreadManager::new(
@@ -53,7 +47,6 @@ pub async fn build_prompt_input(
         Arc::new(
             EnvironmentManager::from_codex_home(
                 config.codex_home.clone(),
-                Some(local_runtime_paths),
                 config.http_client_factory(),
             )
             .await
@@ -61,7 +54,6 @@ pub async fn build_prompt_input(
         ),
         extensions,
         user_instructions_provider,
-        /*analytics_events_client*/ None,
         crate::thread_manager::passthrough_image_store(),
         thread_store,
         crate::local_agent_graph_store_from_state_db(state_db.as_ref()),

@@ -2,7 +2,6 @@
 use super::*;
 use codex_extension_api::ToolDispatchInput;
 use codex_extension_api::ToolFinishInput;
-use codex_extension_api::ToolTimingBoundary;
 use codex_extension_api::ToolTimingInput;
 use codex_protocol::protocol::Op;
 use pretty_assertions::assert_eq;
@@ -47,14 +46,10 @@ impl ToolLifecycleContributor for Observations {
     }
 
     fn on_tool_timing(&self, input: ToolTimingInput<'_>) {
-        let boundary = match input.boundary {
-            ToolTimingBoundary::Handler => "handler",
-            ToolTimingBoundary::HostOperation => "host",
-        };
         self.events
             .lock()
             .expect("observation lock should not be poisoned")
-            .push((input.call_id.into(), boundary));
+            .push((input.call_id.into(), "handler"));
         self.timed.notify_one();
     }
 }
@@ -148,73 +143,5 @@ async fn cancelled_tool_still_reports_handler_timing() -> Result<()> {
             ("plan".into(), "handler"),
         ]
     );
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn code_mode_reports_host_timing_without_nested_dispatch_timing() -> Result<()> {
-    let server = responses::start_mock_server().await;
-    let requests = responses::mount_sse_sequence(
-        &server,
-        vec![
-            responses::sse(vec![
-                responses::ev_custom_tool_call(
-                    "exec",
-                    "exec",
-                    "text(await tools.test_sync_tool({sleep_after_ms: 1}));",
-                ),
-                responses::ev_completed("first"),
-            ]),
-            responses::sse(vec![
-                responses::ev_assistant_message("answer", "done"),
-                responses::ev_completed("last"),
-            ]),
-        ],
-    )
-    .await;
-    let observations = Arc::new(Observations::default());
-    let mut extensions = ExtensionRegistryBuilder::<Config>::new();
-    extensions.tool_lifecycle_contributor(observations.clone());
-    let test = test_codex()
-        .with_extensions(Arc::new(extensions.build()))
-        .with_model("test-gpt-5.1-codex")
-        .with_config(|config| {
-            config
-                .features
-                .enable(Feature::CodeMode)
-                .expect("code mode should be enabled");
-        })
-        .build_with_auto_env(&server)
-        .await?;
-    test.submit_text_turn("run the nested tool").await?;
-    let requests = requests.requests();
-    assert_eq!(requests.len(), 2);
-    let events = observations
-        .events
-        .lock()
-        .expect("observation lock should not be poisoned");
-    let outer = events
-        .iter()
-        .filter(|(id, _)| id == "exec")
-        .cloned()
-        .collect::<Vec<_>>();
-    assert_eq!(
-        outer,
-        vec![
-            ("exec".into(), "dispatch"),
-            ("exec".into(), "start"),
-            ("exec".into(), "host"),
-            ("exec".into(), "finish"),
-            ("exec".into(), "handler"),
-        ],
-        "tool output: {:?}",
-        requests[1].custom_tool_call_output("exec")
-    );
-    let nested = events
-        .iter()
-        .filter(|(id, _)| id != "exec")
-        .map(|(_, event)| *event)
-        .collect::<Vec<_>>();
-    assert_eq!(nested, vec!["start", "finish"]);
     Ok(())
 }

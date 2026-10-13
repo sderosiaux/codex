@@ -105,22 +105,15 @@ async fn native_stop_hook_uses_plugin_policy_refreshed_during_turn() -> Result<(
     let test = test_codex()
         .with_home(home)
         .with_config(move |config| {
-            config.bypass_hook_trust = true;
-            config
-                .features
-                .enable(Feature::DefaultModeRequestUserInput)
-                .expect("enable request_user_input");
-            config
-                .mcp_servers
-                .set(HashMap::from([(
-                    "hook_observer".to_string(),
-                    serde_json::from_value(json!({
-                        "url": format!("{}/api/codex/ps/mcp", observer.chatgpt_base_url),
-                        "environment_id": remote_aware_environment_id(),
-                    }))
-                    .expect("observer MCP configuration"),
-                )]))
-                .expect("configure independent hook observer");
+            config.features.enable(Feature::DefaultModeRequestUserInput);
+            config.mcp_servers = HashMap::from([(
+                "hook_observer".to_string(),
+                serde_json::from_value(json!({
+                    "url": format!("{}/api/codex/ps/mcp", observer.chatgpt_base_url),
+                    "environment_id": remote_aware_environment_id(),
+                }))
+                .expect("observer MCP configuration"),
+            )]);
         })
         .build_with_auto_env(&server)
         .await?;
@@ -154,15 +147,7 @@ async fn native_stop_hook_uses_plugin_policy_refreshed_during_turn() -> Result<(
         toml::from_str("[plugins._default]\nenabled = false")?,
     ));
     layers.sort_by_key(|layer| layer.name.precedence());
-    next_config.config_layer_stack = ConfigLayerStack::new(
-        layers,
-        current_config.config_layer_stack.requirements().clone(),
-        current_config
-            .config_layer_stack
-            .requirements_toml()
-            .clone(),
-    )
-    .expect("updated system layer");
+    next_config.config_layer_stack = ConfigLayerStack::new(layers).expect("updated system layer");
     assert_eq!(
         test.codex
             .refresh_mcp_config(current_config, next_config)

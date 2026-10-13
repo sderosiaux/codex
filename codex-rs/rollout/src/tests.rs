@@ -1192,36 +1192,6 @@ async fn test_list_threads_uses_goal_objective_as_preview() {
 }
 
 #[tokio::test]
-async fn test_guardian_rollout_uses_compact_preview() {
-    let temp = TempDir::new().unwrap();
-    let home = temp.path();
-
-    let uuid = Uuid::from_u128(/*v*/ 102);
-    let ts = "2025-05-03T10-30-00";
-    write_session_file(
-        home,
-        ts,
-        uuid,
-        /*num_records*/ 1,
-        Some(SessionSource::SubAgent(SubAgentSource::Other(
-            "guardian".to_string(),
-        ))),
-    )
-    .unwrap();
-
-    let path = home.join(format!("sessions/2025/05/03/rollout-{ts}-{uuid}.jsonl"));
-    let item = crate::read_thread_item_from_rollout(path)
-        .await
-        .expect("guardian rollout should produce a thread item");
-
-    assert_eq!(
-        item.preview.as_deref(),
-        Some(codex_state::GUARDIAN_THREAD_PREVIEW)
-    );
-    assert_eq!(item.first_user_message, None);
-}
-
-#[tokio::test]
 async fn test_goal_first_thread_reads_later_user_message() {
     let temp = TempDir::new().unwrap();
     let home = temp.path();

@@ -232,14 +232,8 @@ async fn subagent_usage_draws_from_the_shared_budget() -> Result<()> {
 
     let test = test_codex()
         .with_config(|config| {
-            config
-                .features
-                .enable(Feature::Collab)
-                .expect("test config should allow multi-agent tools");
-            config
-                .features
-                .enable(Feature::MultiAgentV2)
-                .expect("test config should allow multi-agent v2");
+            config.features.enable(Feature::Collab);
+            config.features.enable(Feature::MultiAgentV2);
             config.rollout_budget = Some(rollout_budget());
         })
         .build(&server)

@@ -16,10 +16,8 @@ workspace = true
 chardetng = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 codex-async-utils = { workspace = true }
-codex-execpolicy = { workspace = true }
 codex-extension-items = { workspace = true }
 codex-http-client = { workspace = true }
-codex-network-proxy = { workspace = true }
 codex-utils-absolute-path = { workspace = true }
 codex-utils-image = { workspace = true }
 codex-utils-path-uri = { workspace = true }
@@ -28,7 +26,6 @@ codex-utils-string = { workspace = true }
 derive_more = { workspace = true, features = ["debug"] }
 encoding_rs = { workspace = true }
 gix-url = { workspace = true }
-globset = { workspace = true }
 http = { workspace = true }
 icu_decimal = { workspace = true }
 icu_locale_core = { workspace = true }
@@ -51,10 +48,6 @@ ts-rs = { workspace = true, features = [
 ] }
 uuid = { workspace = true, features = ["serde", "v7", "v4"] }
 wildmatch = { workspace = true }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-landlock = { workspace = true }
-seccompiler = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }

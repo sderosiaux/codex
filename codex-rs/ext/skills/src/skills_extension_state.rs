@@ -89,7 +89,6 @@ impl CachedExecutorDiscoveryCatalog {
         discovery.is_some_and(|discovery| {
             self.roots == roots
                 && self.include_bundled_skills == include_bundled_skills
-                && self.discovery.sandbox_contexts() == discovery.sandbox_contexts()
                 && self.discovery.roots().len() == discovery.roots().len()
                 && self.discovery.roots().iter().zip(discovery.roots()).all(
                     |(previous, current)| {

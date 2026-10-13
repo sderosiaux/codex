@@ -21,7 +21,6 @@ use codex_http_client::ClientRouteClass;
 use codex_http_client::HttpClient;
 use codex_http_client::HttpClientBuilder;
 use codex_http_client::HttpClientFactory;
-use codex_http_client::HttpError;
 use codex_http_client::RouteAwareClientPool;
 use http_body_util::BodyExt;
 
@@ -83,7 +82,6 @@ impl HttpConnector for CredentialConnector {
                 None => request.body_stream(body.into_data_stream()),
             };
             let response = request.send().await.map_err(|error| match error {
-                HttpError::Policy(error) => ConnectorError::user(Box::new(error)),
                 error if error.is_timeout() => ConnectorError::timeout(Box::new(error)),
                 error if error.is_connect() => ConnectorError::io(Box::new(error)),
                 error => ConnectorError::user(Box::new(error)),

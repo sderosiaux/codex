@@ -32,8 +32,8 @@ mod startup_error;
 mod stdio_server_launcher;
 mod tool_input;
 mod trace_context;
-mod user_verification;
 mod utils;
+pub use utils::CUSTOM_CA_ENV_KEYS;
 mod www_authenticate;
 
 pub use auth_status::McpAuthState;
@@ -101,4 +101,3 @@ pub use startup_error::is_authentication_required_error;
 pub use stdio_server_launcher::ExecutorStdioServerLauncher;
 pub use stdio_server_launcher::LocalStdioServerLauncher;
 pub use stdio_server_launcher::StdioServerLauncher;
-pub use user_verification::UserVerificationReason;

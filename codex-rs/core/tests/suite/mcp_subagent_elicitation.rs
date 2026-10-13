@@ -1,17 +1,14 @@
-//! MCP server elicitations preserve approval policy and signal abandonment before shutdown.
+//! MCP server elicitations: confirmations are accepted automatically, forms reach the client,
+//! and pending forms are abandoned before shutdown.
 
 use anyhow::Result;
 use codex_core::StartThreadOptions;
 use codex_core::TurnInputRequest;
-use codex_protocol::approvals::ElicitationAction;
-use codex_protocol::config_types::ApprovalsReviewer;
-use codex_protocol::models::PermissionProfile;
-use codex_protocol::protocol::AskForApproval;
+use codex_protocol::elicitation::ElicitationAction;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
-use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::user_input::UserInput;
 use core_test_support::responses;
 use core_test_support::responses::ResponsesRequest;
@@ -24,7 +21,6 @@ use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
 use test_case::test_case;
-use wiremock::matchers::body_partial_json;
 
 const SERVER: &str = r#"
 import json
@@ -68,7 +64,6 @@ for line in sys.stdin:
 pub(super) enum Caller {
     Root,
     Subagent,
-    FullAccessSubagent,
 }
 
 #[derive(Clone, Copy)]
@@ -76,19 +71,15 @@ pub(super) enum RequestKind {
     BrowserAuth,
     FormInput,
     ShutdownFormInput,
-    Permission,
-    StrictReview,
+    Confirmation,
 }
 
-#[test_case(Caller::FullAccessSubagent, RequestKind::BrowserAuth; "full_access_subagent_preserves_automatic_approval")]
-#[test_case(Caller::Root, RequestKind::BrowserAuth; "root_browser_auth_remains_interactive")]
+#[test_case(Caller::Root, RequestKind::BrowserAuth; "root_browser_auth_confirmation_is_accepted")]
 #[test_case(Caller::Root, RequestKind::ShutdownFormInput; "pending_root_form_is_abandoned_before_shutdown")]
 #[test_case(Caller::Subagent, RequestKind::FormInput; "subagent_receives_form_input")]
-#[test_case(Caller::Subagent, RequestKind::Permission; "subagent_permission_remains_interactive")]
-#[test_case(Caller::FullAccessSubagent, RequestKind::Permission; "full_access_subagent_automatically_approves_permission")]
-#[test_case(Caller::Subagent, RequestKind::StrictReview; "subagent_keeps_strict_automatic_safety_review")]
+#[test_case(Caller::Subagent, RequestKind::Confirmation; "subagent_confirmation_is_accepted")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn mcp_server_elicitations_follow_approval_policy(
+async fn mcp_server_elicitations_reach_the_client_only_for_input(
     caller: Caller,
     request_kind: RequestKind,
 ) -> Result<()> {
@@ -123,28 +114,25 @@ pub(super) async fn mcp_server_elicitation_scenario(
         RequestKind::FormInput | RequestKind::ShutdownFormInput => {
             elicitation["requestedSchema"]["properties"] = json!({"answer": {"type": "string"}});
         }
-        RequestKind::Permission | RequestKind::StrictReview => {
+        RequestKind::Confirmation => {
             elicitation["_meta"] = json!({
-                "codex_request_type": "approval_request",
-                "codex_approval_kind": "mcp_tool_call",
-                "codex_strict_auto_review": matches!(request_kind, RequestKind::StrictReview),
-                "codex_sensitive_action": true,
                 "tool_name": "write_record",
                 "tool_params": {"value": 42}
             });
         }
     }
     let mut config = test.config.clone();
-    config.approvals_reviewer = ApprovalsReviewer::User;
-    config.mcp_servers.set(serde_json::from_value(json!({
+    config.mcp_servers = serde_json::from_value(json!({
         "elicitation": {
             "command": if cfg!(windows) { "python" } else { "python3" },
-            "args": ["-u", "-c", SERVER, elicitation.to_string()],
-            "default_tools_approval_mode": "approve"
+            "args": ["-u", "-c", SERVER, elicitation.to_string()]
         }
-    }))?)?;
-    let full_access = matches!(caller, Caller::FullAccessSubagent);
-    let expects_prompt = !full_access && !matches!(request_kind, RequestKind::StrictReview);
+    }))?;
+    // Forms with fields need the user; confirmation-only forms carry nothing to collect.
+    let expects_prompt = matches!(
+        request_kind,
+        RequestKind::FormInput | RequestKind::ShutdownFormInput
+    );
     let session_source = if matches!(caller, Caller::Root) {
         SessionSource::Exec
     } else {
@@ -179,28 +167,6 @@ pub(super) async fn mcp_server_elicitation_scenario(
         ]),
     )
     .await;
-    let guardian = if matches!(request_kind, RequestKind::StrictReview) {
-        Some(
-            responses::mount_sse_once_match(
-                &server,
-                body_partial_json(json!({"client_metadata": {"x-openai-subagent": "guardian"}})),
-                responses::sse(vec![
-                    responses::ev_assistant_message(
-                        "review-result",
-                        &json!({
-                            "risk_level": "low", "user_authorization": "high", "outcome": "allow",
-                            "rationale": "The user requested this action."
-                        })
-                        .to_string(),
-                    ),
-                    responses::ev_completed("guardian-review"),
-                ]),
-            )
-            .await,
-        )
-    } else {
-        None
-    };
     let follow_up = responses::mount_sse_once(
         &server,
         responses::sse(vec![
@@ -210,25 +176,10 @@ pub(super) async fn mcp_server_elicitation_scenario(
     )
     .await;
     thread
-        .start_or_steer_turn(
-            TurnInputRequest::user_input(vec![UserInput::Text {
-                text: "Run the input tool.".into(),
-                text_elements: Vec::new(),
-            }])
-            .with_thread_settings(ThreadSettingsOverrides {
-                approval_policy: Some(if full_access {
-                    AskForApproval::Never
-                } else {
-                    AskForApproval::OnRequest
-                }),
-                permission_profile: Some(if full_access {
-                    PermissionProfile::Disabled
-                } else {
-                    PermissionProfile::read_only()
-                }),
-                ..Default::default()
-            }),
-        )
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "Run the input tool.".into(),
+            text_elements: Vec::new(),
+        }]))
         .await?;
     let response_content = if matches!(request_kind, RequestKind::FormInput) {
         json!({"answer": "continue"})
@@ -271,7 +222,7 @@ pub(super) async fn mcp_server_elicitation_scenario(
             };
             assert_eq!(
                 abandoned,
-                codex_protocol::approvals::ElicitationAbandonedEvent {
+                codex_protocol::elicitation::ElicitationAbandonedEvent {
                     server_name: request.server_name,
                     id: request.id,
                 }
@@ -309,20 +260,9 @@ pub(super) async fn mcp_server_elicitation_scenario(
             .as_str()
             .expect("MCP response must reach the model"),
     )?;
-    let expected = if matches!(request_kind, RequestKind::StrictReview) {
-        json!({
-            "action": "accept", "content": {},
-            "_meta": {"approvals_reviewer": "auto_review"}
-        })
-    } else {
-        json!({"action": "accept", "content": response_content})
-    };
+    let expected = json!({"action": "accept", "content": response_content});
     assert_eq!(response, expected);
     let mut requests = tool_call.requests();
-    if let Some(guardian) = guardian {
-        assert!(guardian.single_request().body_contains_text("write_record"));
-        requests.extend(guardian.requests());
-    }
     requests.extend(follow_up.requests());
     thread.shutdown_and_wait().await?;
     test.codex.shutdown_and_wait().await?;

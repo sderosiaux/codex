@@ -76,10 +76,7 @@ fn add_ultra_reasoning(model_info: &mut ModelInfo) {
 }
 
 fn configure_multi_agent_v2(config: &mut Config) {
-    config
-        .features
-        .enable(Feature::MultiAgentV2)
-        .expect("test config should allow feature update");
+    config.features.enable(Feature::MultiAgentV2);
 }
 
 // Configuring a custom mode hint also enables multi-agent V2 for the test.

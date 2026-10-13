@@ -102,8 +102,4 @@ impl ToolExecutor<ToolInvocation> for SendMessageToUserAsyncHandler {
     }
 }
 
-impl CoreToolRuntime for SendMessageToUserAsyncHandler {
-    fn is_builtin_control_tool(&self) -> bool {
-        true
-    }
-}
+impl CoreToolRuntime for SendMessageToUserAsyncHandler {}

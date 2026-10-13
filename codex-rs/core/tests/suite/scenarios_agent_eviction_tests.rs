@@ -20,12 +20,9 @@ async fn idle_eviction_preserves_worker_context_for_followup() -> Result<()> {
         .with_extensions(Arc::new(extensions.build()))
         .with_config(|config| {
             configure_scenario_catalog(config);
-            config.features.enable(Feature::Collab).unwrap();
-            config.features.enable(Feature::MultiAgentV2).unwrap();
-            config
-                .features
-                .enable(Feature::MultiAgentV2DynamicTools)
-                .unwrap();
+            config.features.enable(Feature::Collab);
+            config.features.enable(Feature::MultiAgentV2);
+            config.features.enable(Feature::MultiAgentV2DynamicTools);
             config.multi_agent_v2.max_concurrent_threads_per_session = 2;
         })
         .build_with_auto_env(&server)

@@ -11,17 +11,12 @@ use codex_config::HookEventsToml;
 use codex_config::HookHandlerConfig;
 use codex_config::HookStateToml;
 use codex_config::HooksFile;
-use codex_config::ManagedHooksRequirementsToml;
 use codex_config::MatcherGroup;
-use codex_config::RequirementSource;
-use codex_config::TomlValue;
-use codex_config::version_for_toml;
 use codex_plugin::PluginHookSource;
 use codex_plugin::is_allowlisted_bundled_cleanup_hook;
 use codex_protocol::protocol::HookEventName;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use serde::Deserialize;
-use serde::Serialize;
 
 use super::ConfiguredHandler;
 use super::ConfiguredHandlerKind;
@@ -36,39 +31,20 @@ use crate::events::session_end::SESSION_END_MAX_TIMEOUT_SEC;
 use crate::output_spill::AdditionalContextLimit;
 use crate::output_spill::DEFAULT_HOOK_OUTPUT_TOKEN_LIMIT;
 use codex_protocol::protocol::HookSource;
-use codex_protocol::protocol::HookTrustStatus;
 
 pub(crate) struct DiscoveryResult {
     pub handlers: Vec<ConfiguredHandler>,
     pub hook_entries: Vec<HookListEntry>,
     pub warnings: Vec<String>,
-    pub required_load_errors: Vec<String>,
 }
 
 struct HookHandlerSource<'a> {
     path: &'a AbsolutePathBuf,
     key_source: String,
     source: HookSource,
-    is_managed: bool,
-    requirement: HookRequirement<'a>,
-    bypass_hook_trust: bool,
     hook_states: &'a HashMap<String, HookStateToml>,
     env: HashMap<String, String>,
     plugin_id: Option<String>,
-}
-
-enum HookRequirement<'a> {
-    Required(&'a mut Vec<String>),
-    Optional,
-}
-
-impl HookHandlerSource<'_> {
-    fn record_load_failure(&mut self, warning: String, warnings: &mut Vec<String>) {
-        if let HookRequirement::Required(required_load_errors) = &mut self.requirement {
-            required_load_errors.push(warning.clone());
-        }
-        warnings.push(warning);
-    }
 }
 
 struct NormalizedHandler {
@@ -79,70 +55,21 @@ struct NormalizedHandler {
     additional_context_limit: Option<usize>,
 }
 
-#[derive(Clone, Copy)]
-struct HookDiscoveryPolicy {
-    allow_managed_hooks_only: bool,
-    bypass_hook_trust: bool,
-}
-
-impl HookDiscoveryPolicy {
-    fn allows(self, source: &HookHandlerSource<'_>) -> bool {
-        !self.allow_managed_hooks_only || source.is_managed
-    }
-}
-
 pub(crate) fn discover_handlers(
     config_layer_stack: Option<&ConfigLayerStack>,
     plugin_hook_sources: Vec<PluginHookSource>,
     plugin_hook_load_warnings: Vec<String>,
-    bypass_hook_trust: bool,
 ) -> DiscoveryResult {
     let mut handlers = Vec::new();
     let mut hook_entries = Vec::new();
     let mut warnings = plugin_hook_load_warnings;
-    let mut required_load_errors = Vec::new();
     let mut display_order = 0_i64;
     let mut visited_json_hook_folders = HashSet::new();
     let hook_states = hook_states_from_stack(config_layer_stack);
-    let policy = HookDiscoveryPolicy {
-        allow_managed_hooks_only: config_layer_stack.is_some_and(|config_layer_stack| {
-            config_layer_stack
-                .requirements()
-                .allow_managed_hooks_only
-                .as_ref()
-                .is_some_and(|requirement| requirement.value)
-        }),
-        bypass_hook_trust,
-    };
 
     if let Some(config_layer_stack) = config_layer_stack {
-        required_load_errors = append_managed_requirement_handlers(
-            &mut handlers,
-            &mut hook_entries,
-            &mut warnings,
-            &mut display_order,
-            config_layer_stack,
-            &hook_states,
-            policy,
-        );
-
         for layer in config_layer_stack.layers_low_to_high() {
-            let (hook_source, is_managed) = hook_metadata_for_config_layer_source(&layer.name);
-            let policy_path = config_toml_source_path(layer);
-            let policy_source = HookHandlerSource {
-                path: &policy_path,
-                key_source: policy_path.display().to_string(),
-                source: hook_source,
-                is_managed,
-                requirement: HookRequirement::Optional,
-                bypass_hook_trust: false,
-                hook_states: &hook_states,
-                env: HashMap::new(),
-                plugin_id: None,
-            };
-            if !policy.allows(&policy_source) {
-                continue;
-            }
+            let hook_source = hook_source_for_config_layer_source(&layer.name);
             let json_hooks = match layer.hooks_config_folder() {
                 Some(config_folder) if visited_json_hook_folders.insert(config_folder.clone()) => {
                     load_hooks_json(Some(config_folder.as_path()), &mut warnings)
@@ -173,15 +100,11 @@ pub(crate) fn discover_handlers(
                         path: &source_path,
                         key_source: source_path.display().to_string(),
                         source: hook_source,
-                        is_managed,
-                        requirement: HookRequirement::Optional,
-                        bypass_hook_trust: policy.bypass_hook_trust,
                         hook_states: &hook_states,
                         env: HashMap::new(),
                         plugin_id: None,
                     },
                     hook_events,
-                    policy,
                 );
             }
         }
@@ -194,51 +117,13 @@ pub(crate) fn discover_handlers(
         &mut display_order,
         plugin_hook_sources,
         &hook_states,
-        policy,
     );
 
     DiscoveryResult {
         handlers,
         hook_entries,
         warnings,
-        required_load_errors,
     }
-}
-
-fn append_managed_requirement_handlers(
-    handlers: &mut Vec<ConfiguredHandler>,
-    hook_entries: &mut Vec<HookListEntry>,
-    warnings: &mut Vec<String>,
-    display_order: &mut i64,
-    config_layer_stack: &ConfigLayerStack,
-    hook_states: &HashMap<String, HookStateToml>,
-    policy: HookDiscoveryPolicy,
-) -> Vec<String> {
-    let Some(managed_hooks) = config_layer_stack.requirements().managed_hooks.as_ref() else {
-        return Vec::new();
-    };
-    let mut required_load_errors = Vec::new();
-    let source_path = managed_hooks_source_path(managed_hooks.get(), managed_hooks.source.as_ref());
-    append_hook_events(
-        handlers,
-        hook_entries,
-        warnings,
-        display_order,
-        HookHandlerSource {
-            path: &source_path,
-            key_source: source_path.display().to_string(),
-            source: hook_source_for_requirement_source(managed_hooks.source.as_ref()),
-            is_managed: true,
-            requirement: HookRequirement::Required(&mut required_load_errors),
-            bypass_hook_trust: false,
-            hook_states,
-            env: HashMap::new(),
-            plugin_id: None,
-        },
-        managed_hooks.get().hooks.clone(),
-        policy,
-    );
-    required_load_errors
 }
 
 fn append_plugin_hook_sources(
@@ -248,7 +133,6 @@ fn append_plugin_hook_sources(
     display_order: &mut i64,
     plugin_hook_sources: Vec<PluginHookSource>,
     hook_states: &HashMap<String, HookStateToml>,
-    policy: HookDiscoveryPolicy,
 ) {
     for source in plugin_hook_sources {
         let PluginHookSource {
@@ -281,58 +165,12 @@ fn append_plugin_hook_sources(
                     source_relative_path.as_str(),
                 ),
                 source: HookSource::Plugin,
-                is_managed: false,
-                requirement: HookRequirement::Optional,
-                bypass_hook_trust: policy.bypass_hook_trust,
                 hook_states,
                 env,
                 plugin_id: Some(plugin_id),
             },
             hooks,
-            policy,
         );
-    }
-}
-
-fn managed_hooks_source_path(
-    managed_hooks: &ManagedHooksRequirementsToml,
-    requirement_source: Option<&RequirementSource>,
-) -> AbsolutePathBuf {
-    if let Some(source_path) = managed_hooks.managed_dir_for_current_platform()
-        && source_path.is_absolute()
-        && let Ok(source_path) = AbsolutePathBuf::from_absolute_path(source_path)
-    {
-        return source_path;
-    }
-
-    fallback_managed_hooks_source_path(requirement_source)
-}
-
-fn fallback_managed_hooks_source_path(
-    requirement_source: Option<&RequirementSource>,
-) -> AbsolutePathBuf {
-    match requirement_source {
-        Some(RequirementSource::SystemRequirementsToml { file })
-        | Some(RequirementSource::LegacyManagedConfigTomlFromFile { file }) => file.clone(),
-        Some(RequirementSource::MdmManagedPreferences { domain, key }) => {
-            synthetic_layer_path(&format!("<mdm:{domain}:{key}>/requirements.toml"))
-        }
-        Some(RequirementSource::Composite { .. }) => {
-            synthetic_layer_path("<requirements-composition>/requirements.toml")
-        }
-        Some(RequirementSource::EnterpriseManaged { id, name }) => {
-            let name = escape_xml_text(name);
-            let id = escape_xml_text(id);
-            synthetic_layer_path(&format!(
-                "<enterprise-managed:{name}:{id}>/requirements.toml"
-            ))
-        }
-        Some(RequirementSource::LegacyManagedConfigTomlFromMdm) => {
-            synthetic_layer_path("<legacy-managed-config.toml-mdm>/managed_config.toml")
-        }
-        Some(RequirementSource::Unknown) | None => {
-            synthetic_layer_path("<managed-requirements>/requirements.toml")
-        }
     }
 }
 
@@ -403,21 +241,11 @@ fn config_toml_source_path(layer: &ConfigLayerEntry) -> AbsolutePathBuf {
     match &layer.name {
         ConfigLayerSource::PackagedDefaults { file }
         | ConfigLayerSource::System { file }
-        | ConfigLayerSource::User { file, .. }
-        | ConfigLayerSource::LegacyManagedConfigTomlFromFile { file } => file.clone(),
+        | ConfigLayerSource::User { file, .. } => file.clone(),
         ConfigLayerSource::Project { dot_codex_folder } => layer
             .hooks_config_folder()
             .unwrap_or_else(|| dot_codex_folder.clone())
             .join(CONFIG_TOML_FILE),
-        ConfigLayerSource::Mdm { domain, key } => {
-            synthetic_layer_path(&format!("<mdm:{domain}:{key}>/{CONFIG_TOML_FILE}"))
-        }
-        ConfigLayerSource::EnterpriseManaged { id, name } => synthetic_layer_path(&format!(
-            "<enterprise-managed:{name}:{id}>/{CONFIG_TOML_FILE}"
-        )),
-        ConfigLayerSource::LegacyManagedConfigTomlFromMdm => {
-            synthetic_layer_path("<legacy-managed-config.toml-mdm>/managed_config.toml")
-        }
         ConfigLayerSource::SessionFlags => synthetic_layer_path("<session-flags>/config.toml"),
     }
 }
@@ -434,41 +262,21 @@ fn synthetic_layer_path(path: &str) -> AbsolutePathBuf {
     }
 }
 
-fn escape_xml_text(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len());
-    for ch in value.chars() {
-        match ch {
-            '&' => escaped.push_str("&amp;"),
-            '<' => escaped.push_str("&lt;"),
-            '>' => escaped.push_str("&gt;"),
-            '"' => escaped.push_str("&quot;"),
-            '\'' => escaped.push_str("&apos;"),
-            _ => escaped.push(ch),
-        }
-    }
-    escaped
-}
-
 fn append_hook_events(
     handlers: &mut Vec<ConfiguredHandler>,
     hook_entries: &mut Vec<HookListEntry>,
     warnings: &mut Vec<String>,
     display_order: &mut i64,
-    mut source: HookHandlerSource<'_>,
+    source: HookHandlerSource<'_>,
     hook_events: HookEventsToml,
-    policy: HookDiscoveryPolicy,
 ) {
-    if !policy.allows(&source) {
-        return;
-    }
-
     for (event_name, groups) in hook_events.into_matcher_groups() {
         append_matcher_groups(
             handlers,
             hook_entries,
             warnings,
             display_order,
-            &mut source,
+            &source,
             event_name,
             groups,
         );
@@ -480,7 +288,7 @@ fn append_matcher_groups(
     hook_entries: &mut Vec<HookListEntry>,
     warnings: &mut Vec<String>,
     display_order: &mut i64,
-    source: &mut HookHandlerSource<'_>,
+    source: &HookHandlerSource<'_>,
     event_name: codex_protocol::protocol::HookEventName,
     groups: Vec<MatcherGroup>,
 ) {
@@ -494,11 +302,7 @@ fn append_matcher_groups(
                     "invalid matcher {matcher:?} in {}: {err}",
                     source.path.display()
                 );
-                if group.hooks.is_empty() {
-                    warnings.push(warning);
-                } else {
-                    source.record_load_failure(warning, warnings);
-                }
+                warnings.push(warning);
                 continue;
             }
         };
@@ -518,10 +322,10 @@ fn append_matcher_groups(
                         command
                     };
                     if command.trim().is_empty() {
-                        source.record_load_failure(
-                            format!("skipping empty hook command in {}", source.path.display()),
-                            warnings,
-                        );
+                        warnings.push(format!(
+                            "skipping empty hook command in {}",
+                            source.path.display()
+                        ));
                         continue;
                     }
                     let timeout_sec = normalize_command_hook(
@@ -589,24 +393,18 @@ fn append_matcher_groups(
                     status_message,
                 } => {
                     if event_name == HookEventName::SessionEnd {
-                        source.record_load_failure(
-                            format!(
-                                "skipping MCP tool hook in {}: {} MCP hooks are not supported",
-                                source.path.display(),
-                                hook_event_name_label(event_name),
-                            ),
-                            warnings,
-                        );
+                        warnings.push(format!(
+                            "skipping MCP tool hook in {}: {} MCP hooks are not supported",
+                            source.path.display(),
+                            hook_event_name_label(event_name),
+                        ));
                         continue;
                     }
                     if server.trim().is_empty() || tool.trim().is_empty() {
-                        source.record_load_failure(
-                            format!(
-                                "skipping MCP tool hook in {}: server and tool must not be empty",
-                                source.path.display()
-                            ),
-                            warnings,
-                        );
+                        warnings.push(format!(
+                            "skipping MCP tool hook in {}: server and tool must not be empty",
+                            source.path.display()
+                        ));
                         continue;
                     }
                     let timeout_sec = normalize_command_hook(
@@ -635,23 +433,17 @@ fn append_matcher_groups(
                     }
                 }
                 HookHandlerConfig::Prompt {} => {
-                    source.record_load_failure(
-                        format!(
-                            "skipping prompt hook in {}: prompt hooks are not supported yet",
-                            source.path.display()
-                        ),
-                        warnings,
-                    );
+                    warnings.push(format!(
+                        "skipping prompt hook in {}: prompt hooks are not supported yet",
+                        source.path.display()
+                    ));
                     continue;
                 }
                 HookHandlerConfig::Agent {} => {
-                    source.record_load_failure(
-                        format!(
-                            "skipping agent hook in {}: agent hooks are not supported yet",
-                            source.path.display()
-                        ),
-                        warnings,
-                    );
+                    warnings.push(format!(
+                        "skipping agent hook in {}: agent hooks are not supported yet",
+                        source.path.display()
+                    ));
                     continue;
                 }
             };
@@ -663,7 +455,6 @@ fn append_matcher_groups(
                 status_message,
                 additional_context_limit,
             } = normalized;
-            let current_hash = hook_hash(event_name, matcher, &group, &config);
             let key = crate::hook_key(&source.key_source, event_name, group_index, handler_index);
             let state = source.hook_states.get(&key);
             let builtin = source.plugin_id.as_deref().is_some_and(|plugin_id| {
@@ -675,10 +466,7 @@ fn append_matcher_groups(
                     /*app_connector_id*/ None,
                 )
             });
-            let enabled = hook_enabled(source.is_managed, builtin, state);
-            let trusted_hash = hook_trusted_hash(source.is_managed, state);
-            let trust_status =
-                hook_trust_status(source.is_managed, builtin, &current_hash, trusted_hash);
+            let enabled = builtin || state.and_then(|state| state.enabled) != Some(false);
             let handler = match &kind {
                 ConfiguredHandlerKind::Command {
                     command, r#async, ..
@@ -708,17 +496,8 @@ fn append_matcher_groups(
                 plugin_id: source.plugin_id.clone(),
                 display_order: *display_order,
                 enabled,
-                is_managed: source.is_managed,
-                current_hash,
-                trust_status,
             });
-            if enabled
-                && (source.bypass_hook_trust
-                    || matches!(
-                        trust_status,
-                        HookTrustStatus::Managed | HookTrustStatus::Trusted
-                    ))
-            {
+            if enabled {
                 handlers.push(ConfiguredHandler {
                     builtin,
                     event_name,
@@ -765,100 +544,13 @@ fn normalize_command_hook(
     }
 }
 
-/// Hash a normalized, config-derived identity instead of source text so equivalent
-/// hooks from config TOML and hooks.json converge on the same trust identity.
-#[derive(Serialize)]
-struct NormalizedHookIdentity {
-    event_name: &'static str,
-    #[serde(flatten)]
-    group: MatcherGroup,
-}
-
-fn hook_hash(
-    event_name: codex_protocol::protocol::HookEventName,
-    matcher: Option<&str>,
-    group: &MatcherGroup,
-    normalized_handler: &HookHandlerConfig,
-) -> String {
-    let mut group = group.clone();
-    group.matcher = matcher.map(ToOwned::to_owned);
-    group.hooks = vec![normalized_handler.clone()];
-    let identity = NormalizedHookIdentity {
-        event_name: crate::hook_event_key_label(event_name),
-        group,
-    };
-    let Ok(value) = TomlValue::try_from(identity) else {
-        unreachable!("normalized hook identity should serialize to TOML");
-    };
-    version_for_toml(&value)
-}
-
-fn hook_trust_status(
-    is_managed: bool,
-    is_builtin: bool,
-    current_hash: &str,
-    trusted_hash: Option<&str>,
-) -> HookTrustStatus {
-    if is_builtin {
-        HookTrustStatus::Trusted
-    } else if is_managed {
-        HookTrustStatus::Managed
-    } else {
-        match trusted_hash {
-            Some(trusted_hash) if trusted_hash == current_hash => HookTrustStatus::Trusted,
-            Some(_) => HookTrustStatus::Modified,
-            None => HookTrustStatus::Untrusted,
-        }
-    }
-}
-
-fn hook_enabled(is_managed: bool, is_builtin: bool, state: Option<&HookStateToml>) -> bool {
-    is_builtin || is_managed || state.and_then(|state| state.enabled) != Some(false)
-}
-
-fn hook_trusted_hash(is_managed: bool, state: Option<&HookStateToml>) -> Option<&str> {
-    (!is_managed)
-        .then(|| state.and_then(|state| state.trusted_hash.as_deref()))
-        .flatten()
-}
-
-fn hook_metadata_for_config_layer_source(source: &ConfigLayerSource) -> (HookSource, bool) {
+fn hook_source_for_config_layer_source(source: &ConfigLayerSource) -> HookSource {
     match source {
-        ConfigLayerSource::PackagedDefaults { .. } => (HookSource::Unknown, false),
-        ConfigLayerSource::System { .. } => (HookSource::System, true),
-        ConfigLayerSource::User { .. } => (HookSource::User, false),
-        ConfigLayerSource::Project { .. } => (HookSource::Project, false),
-        ConfigLayerSource::Mdm { .. } => (HookSource::Mdm, true),
-        ConfigLayerSource::EnterpriseManaged { .. } => (HookSource::CloudManagedConfig, true),
-        ConfigLayerSource::SessionFlags => (HookSource::SessionFlags, false),
-        ConfigLayerSource::LegacyManagedConfigTomlFromFile { .. } => {
-            (HookSource::LegacyManagedConfigFile, true)
-        }
-        ConfigLayerSource::LegacyManagedConfigTomlFromMdm => {
-            (HookSource::LegacyManagedConfigMdm, true)
-        }
-    }
-}
-
-fn hook_source_for_requirement_source(source: Option<&RequirementSource>) -> HookSource {
-    match source {
-        Some(RequirementSource::MdmManagedPreferences { .. }) => HookSource::Mdm,
-        Some(RequirementSource::SystemRequirementsToml { .. }) => HookSource::System,
-        Some(RequirementSource::LegacyManagedConfigTomlFromFile { .. }) => {
-            HookSource::LegacyManagedConfigFile
-        }
-        Some(RequirementSource::LegacyManagedConfigTomlFromMdm) => {
-            HookSource::LegacyManagedConfigMdm
-        }
-        Some(RequirementSource::Composite { sources }) => {
-            // Requirements hook composition preserves contributing sources in
-            // priority order, but discovery only carries one source for the
-            // whole merged hooks field. Use the primary contributor as the best
-            // available coarse attribution.
-            hook_source_for_requirement_source(sources.first())
-        }
-        Some(RequirementSource::EnterpriseManaged { .. }) => HookSource::CloudRequirements,
-        Some(RequirementSource::Unknown) | None => HookSource::Unknown,
+        ConfigLayerSource::PackagedDefaults { .. } => HookSource::Unknown,
+        ConfigLayerSource::System { .. } => HookSource::System,
+        ConfigLayerSource::User { .. } => HookSource::User,
+        ConfigLayerSource::Project { .. } => HookSource::Project,
+        ConfigLayerSource::SessionFlags => HookSource::SessionFlags,
     }
 }
 
@@ -868,7 +560,6 @@ mod tests {
     use codex_config::ConfigLayerEntry;
     use codex_config::ConfigLayerSource;
     use codex_config::HookEventsToml;
-    use codex_config::RequirementSource;
     use codex_protocol::protocol::HookEventName;
     use codex_protocol::protocol::HookExecutionMode;
     use codex_protocol::protocol::HookSource;
@@ -889,7 +580,6 @@ mod tests {
     use codex_config::HookStateToml;
     use codex_config::MatcherGroup;
     use codex_config::TomlValue;
-    use codex_protocol::protocol::HookTrustStatus;
 
     fn source_path() -> AbsolutePathBuf {
         test_path_buf("/tmp/hooks.json").abs()
@@ -907,66 +597,24 @@ mod tests {
             path,
             key_source: path.display().to_string(),
             source: hook_source(),
-            is_managed: true,
-            requirement: super::HookRequirement::Optional,
-            bypass_hook_trust: false,
             hook_states,
             env: std::collections::HashMap::new(),
             plugin_id: None,
         }
     }
 
-    fn unmanaged_hook_handler_source<'a>(
+    fn user_hook_handler_source<'a>(
         path: &'a AbsolutePathBuf,
         hook_states: &'a std::collections::HashMap<String, HookStateToml>,
-        bypass_hook_trust: bool,
     ) -> super::HookHandlerSource<'a> {
         super::HookHandlerSource {
             path,
             key_source: path.display().to_string(),
             source: HookSource::User,
-            is_managed: false,
-            requirement: super::HookRequirement::Optional,
-            bypass_hook_trust,
             hook_states,
             env: std::collections::HashMap::new(),
             plugin_id: None,
         }
-    }
-
-    #[test]
-    fn composite_requirement_hook_source_uses_primary_source() {
-        let source = RequirementSource::Composite {
-            sources: vec![
-                RequirementSource::SystemRequirementsToml {
-                    file: test_path_buf("/etc/codex/requirements.toml").abs(),
-                },
-                RequirementSource::EnterpriseManaged {
-                    id: "layer-1".to_string(),
-                    name: "Engineering".to_string(),
-                },
-            ],
-        };
-
-        assert_eq!(
-            super::hook_source_for_requirement_source(Some(&source)),
-            HookSource::System
-        );
-    }
-
-    #[test]
-    fn enterprise_managed_synthetic_path_escapes_display_fields() {
-        let source = RequirementSource::EnterpriseManaged {
-            id: "id<&>".to_string(),
-            name: "Name <Admin> & \"Ops\"".to_string(),
-        };
-
-        let source_path = super::fallback_managed_hooks_source_path(Some(&source));
-        let source_path = source_path.display().to_string();
-
-        assert!(source_path.contains("Name &lt;Admin&gt; &amp; &quot;Ops&quot;"));
-        assert!(source_path.contains("id&lt;&amp;&gt;"));
-        assert!(!source_path.contains("Name <Admin>"));
     }
 
     fn command_group(matcher: Option<&str>) -> MatcherGroup {
@@ -1018,7 +666,7 @@ mod tests {
             &mut entries,
             &mut warnings,
             &mut display_order,
-            &mut hook_handler_source(&source_path, &hook_states),
+            &hook_handler_source(&source_path, &hook_states),
             HookEventName::PostToolUse,
             vec![MatcherGroup {
                 matcher: Some("Write|Edit".to_string()),
@@ -1042,7 +690,6 @@ mod tests {
                 tool: "scan".to_string(),
             }
         );
-        assert!(entries[0].current_hash.starts_with("sha256:"));
     }
 
     #[test]
@@ -1059,7 +706,7 @@ mod tests {
             &mut entries,
             &mut warnings,
             &mut display_order,
-            &mut hook_handler_source(&source_path, &hook_states),
+            &hook_handler_source(&source_path, &hook_states),
             HookEventName::SessionEnd,
             vec![MatcherGroup {
                 matcher: None,
@@ -1098,7 +745,7 @@ mod tests {
             &mut entries,
             &mut warnings,
             &mut display_order,
-            &mut hook_handler_source(&source_path, &hook_states),
+            &hook_handler_source(&source_path, &hook_states),
             HookEventName::Interrupt,
             vec![MatcherGroup {
                 matcher: None,
@@ -1164,7 +811,7 @@ mod tests {
             &mut entries,
             &mut warnings,
             &mut display_order,
-            &mut hook_handler_source(&source_path, &hook_states),
+            &hook_handler_source(&source_path, &hook_states),
             event_name,
             vec![match additional_context_limit {
                 Some(limit) => command_group_with_additional_context_limit(limit),
@@ -1175,7 +822,7 @@ mod tests {
     }
 
     #[test]
-    fn supported_events_retain_per_handler_additional_context_limit_and_hash_it() {
+    fn supported_events_retain_per_handler_additional_context_limit() {
         for event_name in [
             HookEventName::PreToolUse,
             HookEventName::PostToolUse,
@@ -1183,8 +830,6 @@ mod tests {
             HookEventName::UserPromptSubmit,
             HookEventName::SubagentStart,
         ] {
-            let (_, default_entry, _) =
-                discover_command(event_name, /*additional_context_limit*/ None);
             let (explicit_default_handler, explicit_default_entry, _) = discover_command(
                 event_name,
                 /*additional_context_limit*/ Some(DEFAULT_HOOK_OUTPUT_TOKEN_LIMIT),
@@ -1199,7 +844,6 @@ mod tests {
                 AdditionalContextLimit::from_config(Some(20_000))
             );
             assert_eq!(custom_entry.additional_context_limit, Some(20_000));
-            assert_ne!(default_entry.current_hash, custom_entry.current_hash);
             assert_eq!(
                 explicit_default_handler.additional_context_limit,
                 AdditionalContextLimit::from_config(Some(DEFAULT_HOOK_OUTPUT_TOKEN_LIMIT))
@@ -1209,15 +853,10 @@ mod tests {
                 Some(DEFAULT_HOOK_OUTPUT_TOKEN_LIMIT)
             );
             assert_eq!(
-                default_entry.current_hash,
-                explicit_default_entry.current_hash
-            );
-            assert_eq!(
                 unlimited_handler.additional_context_limit,
                 AdditionalContextLimit::from_config(Some(0))
             );
             assert_eq!(unlimited_entry.additional_context_limit, Some(0));
-            assert_ne!(default_entry.current_hash, unlimited_entry.current_hash);
         }
     }
 
@@ -1248,7 +887,7 @@ mod tests {
             &mut Vec::new(),
             &mut warnings,
             &mut display_order,
-            &mut hook_handler_source(&source_path, &hook_states),
+            &hook_handler_source(&source_path, &hook_states),
             HookEventName::UserPromptSubmit,
             vec![command_group(Some("["))],
         );
@@ -1288,7 +927,7 @@ mod tests {
             &mut Vec::new(),
             &mut warnings,
             &mut display_order,
-            &mut hook_handler_source(&source_path, &hook_states),
+            &hook_handler_source(&source_path, &hook_states),
             HookEventName::PreToolUse,
             vec![command_group(Some("^Bash$"))],
         );
@@ -1329,7 +968,7 @@ mod tests {
             &mut hook_entries,
             &mut warnings,
             &mut display_order,
-            &mut hook_handler_source(&source_path, &hook_states),
+            &hook_handler_source(&source_path, &hook_states),
             HookEventName::SessionEnd,
             vec![MatcherGroup {
                 matcher: Some("other".to_string()),
@@ -1420,7 +1059,7 @@ mod tests {
             &mut hook_entries,
             &mut warnings,
             &mut display_order,
-            &mut hook_handler_source(&source_path, &hook_states),
+            &hook_handler_source(&source_path, &hook_states),
             HookEventName::Interrupt,
             vec![MatcherGroup {
                 matcher: Some("ignored".to_string()),
@@ -1476,7 +1115,7 @@ mod tests {
     }
 
     #[test]
-    fn bypass_hook_trust_allows_enabled_untrusted_handlers() {
+    fn enabled_user_hooks_register_without_trust_review() {
         let mut handlers = Vec::new();
         let mut hook_entries = Vec::new();
         let mut warnings = Vec::new();
@@ -1489,11 +1128,7 @@ mod tests {
             &mut hook_entries,
             &mut warnings,
             &mut display_order,
-            &mut unmanaged_hook_handler_source(
-                &source_path,
-                &hook_states,
-                /*bypass_hook_trust*/ true,
-            ),
+            &user_hook_handler_source(&source_path, &hook_states),
             HookEventName::PreToolUse,
             vec![command_group(Some("Bash"))],
         );
@@ -1501,12 +1136,11 @@ mod tests {
         assert_eq!(warnings, Vec::<String>::new());
         assert_eq!(handlers.len(), 1);
         assert_eq!(hook_entries.len(), 1);
-        assert_eq!(hook_entries[0].trust_status, HookTrustStatus::Untrusted);
         assert_eq!(hook_entries[0].enabled, true);
     }
 
     #[test]
-    fn bypass_hook_trust_respects_disabled_handlers() {
+    fn disabled_user_hooks_are_listed_but_not_registered() {
         let mut handlers = Vec::new();
         let mut hook_entries = Vec::new();
         let mut warnings = Vec::new();
@@ -1516,7 +1150,6 @@ mod tests {
             format!("{}:pre_tool_use:0:0", source_path.display()),
             HookStateToml {
                 enabled: Some(false),
-                trusted_hash: None,
             },
         )]);
 
@@ -1525,11 +1158,7 @@ mod tests {
             &mut hook_entries,
             &mut warnings,
             &mut display_order,
-            &mut unmanaged_hook_handler_source(
-                &source_path,
-                &hook_states,
-                /*bypass_hook_trust*/ true,
-            ),
+            &user_hook_handler_source(&source_path, &hook_states),
             HookEventName::PreToolUse,
             vec![command_group(Some("Bash"))],
         );
@@ -1537,7 +1166,6 @@ mod tests {
         assert_eq!(warnings, Vec::<String>::new());
         assert_eq!(handlers, Vec::<ConfiguredHandler>::new());
         assert_eq!(hook_entries.len(), 1);
-        assert_eq!(hook_entries[0].trust_status, HookTrustStatus::Untrusted);
         assert_eq!(hook_entries[0].enabled, false);
     }
 
@@ -1554,7 +1182,7 @@ mod tests {
             &mut Vec::new(),
             &mut warnings,
             &mut display_order,
-            &mut hook_handler_source(&source_path, &hook_states),
+            &hook_handler_source(&source_path, &hook_states),
             HookEventName::PreToolUse,
             vec![command_group(Some("*"))],
         );
@@ -1580,7 +1208,7 @@ mod tests {
             &mut Vec::new(),
             &mut warnings,
             &mut display_order,
-            &mut hook_handler_source(&source_path, &hook_states),
+            &hook_handler_source(&source_path, &hook_states),
             HookEventName::PostToolUse,
             vec![command_group(Some("Edit|Write"))],
         );
@@ -1641,7 +1269,7 @@ mod tests {
             &mut Vec::new(),
             &mut warnings,
             &mut display_order,
-            &mut hook_handler_source(&source_path, &hook_states),
+            &hook_handler_source(&source_path, &hook_states),
             HookEventName::PreToolUse,
             vec![MatcherGroup {
                 matcher: Some("^Bash$".to_string()),
@@ -1693,58 +1321,34 @@ mod tests {
     }
 
     #[test]
-    fn hook_metadata_for_config_layer_source_discards_source_details() {
+    fn hook_source_for_config_layer_source_discards_source_details() {
         let config_file = test_path_buf("/tmp/.codex/config.toml").abs();
         let dot_codex_folder = test_path_buf("/tmp/worktree/.codex").abs();
 
         assert_eq!(
-            super::hook_metadata_for_config_layer_source(&ConfigLayerSource::System {
-                file: config_file.clone(),
-            }),
-            (HookSource::System, true),
-        );
-        assert_eq!(
-            super::hook_metadata_for_config_layer_source(&ConfigLayerSource::User {
-                file: config_file.clone(),
-                profile: None,
-            }),
-            (HookSource::User, false),
-        );
-        assert_eq!(
-            super::hook_metadata_for_config_layer_source(&ConfigLayerSource::Project {
-                dot_codex_folder
-            }),
-            (HookSource::Project, false),
-        );
-        assert_eq!(
-            super::hook_metadata_for_config_layer_source(&ConfigLayerSource::Mdm {
-                domain: "com.openai.codex".to_string(),
-                key: "config".to_string(),
-            }),
-            (HookSource::Mdm, true),
-        );
-        assert_eq!(
-            super::hook_metadata_for_config_layer_source(&ConfigLayerSource::EnterpriseManaged {
-                id: "cfg_123".to_string(),
-                name: "Base policy".to_string(),
-            }),
-            (HookSource::CloudManagedConfig, true),
-        );
-        assert_eq!(
-            super::hook_metadata_for_config_layer_source(&ConfigLayerSource::SessionFlags),
-            (HookSource::SessionFlags, false),
-        );
-        assert_eq!(
-            super::hook_metadata_for_config_layer_source(
-                &ConfigLayerSource::LegacyManagedConfigTomlFromFile { file: config_file },
-            ),
-            (HookSource::LegacyManagedConfigFile, true),
-        );
-        assert_eq!(
-            super::hook_metadata_for_config_layer_source(
-                &ConfigLayerSource::LegacyManagedConfigTomlFromMdm,
-            ),
-            (HookSource::LegacyManagedConfigMdm, true),
+            [
+                super::hook_source_for_config_layer_source(&ConfigLayerSource::PackagedDefaults {
+                    file: config_file.clone(),
+                }),
+                super::hook_source_for_config_layer_source(&ConfigLayerSource::System {
+                    file: config_file.clone(),
+                }),
+                super::hook_source_for_config_layer_source(&ConfigLayerSource::User {
+                    file: config_file,
+                    profile: None,
+                }),
+                super::hook_source_for_config_layer_source(&ConfigLayerSource::Project {
+                    dot_codex_folder
+                }),
+                super::hook_source_for_config_layer_source(&ConfigLayerSource::SessionFlags),
+            ],
+            [
+                HookSource::Unknown,
+                HookSource::System,
+                HookSource::User,
+                HookSource::Project,
+                HookSource::SessionFlags,
+            ]
         );
     }
 }

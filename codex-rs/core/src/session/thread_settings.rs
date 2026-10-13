@@ -5,9 +5,9 @@ use super::session::Session;
 use super::session::SessionSettingsUpdate;
 use super::step_settings::StepSettingsUpdate;
 use crate::WithTurnExtensionData;
-use crate::config::ConstraintResult;
 use codex_history::RolloutItem;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
+use codex_protocol::error::Result as CodexResult;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ThreadSettingsAppliedEvent;
@@ -34,7 +34,7 @@ impl Session {
 pub(super) async fn update(
     session: &Session,
     overrides: impl Into<WithTurnExtensionData<ThreadSettingsOverrides>>,
-) -> ConstraintResult<ThreadSettingsSnapshot> {
+) -> CodexResult<ThreadSettingsSnapshot> {
     let updates = prepare_update(overrides, &session.services.selected_capability_roots);
     let commit = session.update_settings(updates).await?;
     // Standalone settings changes supersede a pending automatic continuation.
@@ -54,13 +54,6 @@ pub(super) fn prepare_update(
     let ThreadSettingsOverrides {
         environments: environment_requests,
         runtime_workspace_roots,
-        profile_workspace_roots,
-        approval_policy,
-        approvals_reviewer,
-        sandbox_policy,
-        permission_profile,
-        active_permission_profile,
-        windows_sandbox_level,
         model,
         effort,
         summary,
@@ -78,16 +71,9 @@ pub(super) fn prepare_update(
             reasoning_summary: summary,
             service_tier,
             personality,
-            approval_policy,
-            approvals_reviewer,
         },
         environments: environment_requests.map(|requests| requests.select(roots)),
         runtime_workspace_roots,
-        profile_workspace_roots,
-        sandbox_policy,
-        permission_profile,
-        active_permission_profile,
-        windows_sandbox_level,
         disabled_plugin_ids,
         ..Default::default()
     }
@@ -107,7 +93,7 @@ pub(super) async fn apply_update(
     session: &Session,
     submission_id: String,
     updates: SessionSettingsUpdate,
-) -> ConstraintResult<()> {
+) -> CodexResult<()> {
     let _settings_guard = acquire_persistence_lock(session).await;
     let commit = session.update_settings(updates).await?;
     emit_applied(session, submission_id, commit.snapshot).await;

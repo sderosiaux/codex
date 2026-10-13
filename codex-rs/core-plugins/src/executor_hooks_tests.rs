@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use codex_config::HookEventsToml;
@@ -47,11 +46,7 @@ fn snapshot_for_manifest(
         warnings: Vec::new(),
         error: None,
     };
-    ExecutorCapabilityDiscoverySnapshot::new(
-        &[selected_root],
-        vec![Ok(Arc::new(discovery))],
-        HashMap::new(),
-    )
+    ExecutorCapabilityDiscoverySnapshot::new(&[selected_root], vec![Ok(Arc::new(discovery))])
 }
 
 fn cleanup_hook_manifest() -> serde_json::Value {

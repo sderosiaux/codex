@@ -1,9 +1,9 @@
-//! MCP elicitation request tracking and policy handling.
+//! MCP elicitation request tracking.
 //!
 //! RMCP clients call into this module when a server asks Codex to elicit data
-//! from the user. It decides whether the request can be automatically accepted,
-//! must be declined by policy, or should be surfaced as a Codex protocol event
-//! and later resolved through the stored responder.
+//! from the user. Confirmation-only requests are accepted automatically; every
+//! request that needs input is surfaced as a Codex protocol event and later
+//! resolved through the stored responder.
 //! Explicit MCP elicitation requests can be surfaced by root and non-root agents.
 
 use std::collections::HashMap;
@@ -13,58 +13,25 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
-use crate::McpConfig;
-use crate::mcp::McpPermissionPromptAutoApproveContext;
-use crate::mcp::mcp_permission_prompt_is_auto_approved;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
 use async_channel::Sender;
-use codex_protocol::approvals::ElicitationAbandonedEvent;
-use codex_protocol::approvals::ElicitationRequest;
-use codex_protocol::approvals::ElicitationRequestEvent;
-use codex_protocol::mcp::ClientMcpExtensions;
-use codex_protocol::mcp::OPENAI_ELICITATION_EXTENSION_ID;
+use codex_protocol::elicitation::ElicitationAbandonedEvent;
+use codex_protocol::elicitation::ElicitationRequest;
+use codex_protocol::elicitation::ElicitationRequestEvent;
 use codex_protocol::mcp::RequestId as ProtocolRequestId;
-use codex_protocol::mcp_approval_meta::APPROVAL_KIND_KEY;
-use codex_protocol::mcp_approval_meta::APPROVAL_KIND_TOOL_SUGGESTION;
-use codex_protocol::mcp_approval_meta::APPROVALS_REVIEWER_KEY;
-use codex_protocol::mcp_approval_meta::STRICT_AUTO_REVIEW_KEY;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_rmcp_client::Elicitation;
 use codex_rmcp_client::ElicitationResponse;
 use codex_rmcp_client::SendElicitation;
-use futures::future::BoxFuture;
 use futures::future::FutureExt;
 use rmcp::model::ElicitationAction;
 use rmcp::model::RequestId;
-use serde_json::Value;
 use tokio::sync::oneshot;
 
 static NEXT_ELICITATION_REQUEST_ID: AtomicU64 = AtomicU64::new(0);
-
-const STRICT_AUTO_REVIEW_DECLINE_MESSAGE: &str = "Automated review of this operation failed. Do not proceed without asking the user for explicit approval.";
-
-#[path = "user_verification_elicitation.rs"]
-mod user_verification_elicitation;
-
-#[derive(Debug, Clone)]
-pub struct ElicitationReviewRequest {
-    pub server_name: String,
-    pub request_id: RequestId,
-    pub elicitation: Elicitation,
-}
-
-pub trait ElicitationReviewer: Send + Sync {
-    fn review(
-        &self,
-        request: ElicitationReviewRequest,
-    ) -> BoxFuture<'static, Result<Option<ElicitationResponse>>>;
-}
-
-pub type ElicitationReviewerHandle = Arc<dyn ElicitationReviewer>;
 
 /// Holds an owner-provided registration while an MCP elicitation is waiting for a response.
 #[derive(Clone)]
@@ -103,7 +70,6 @@ pub(crate) struct ElicitationRequestRouter {
     requests: Arc<StdMutex<PendingResponders>>,
     terminal_actions_finished: Arc<tokio::sync::Notify>,
     auto_deny: Arc<AtomicBool>,
-    full_access_form_input_enabled: Arc<AtomicBool>,
 }
 
 // Removes and abandons a published request when its native waiter is dropped.
@@ -250,15 +216,6 @@ impl ElicitationRequestRouter {
         self.auto_deny.store(auto_deny, Ordering::Relaxed);
     }
 
-    pub(crate) fn full_access_form_input_enabled(&self) -> bool {
-        self.full_access_form_input_enabled.load(Ordering::Acquire)
-    }
-
-    pub(crate) fn enable_full_access_form_input(&self) {
-        self.full_access_form_input_enabled
-            .store(true, Ordering::Release);
-    }
-
     pub(crate) async fn resolve(
         &self,
         server_name: String,
@@ -294,18 +251,8 @@ impl ElicitationRequestRouter {
         // and synchronously enqueue abandonment from Drop. Preserve bounded callers'
         // existing request-only behavior because they require asynchronous backpressure.
         let abandonment_events = events.capacity().is_none().then(|| events.clone());
-        let (delivery_context, response_context) =
-            if matches!(&request, ElicitationRequest::UserVerification { .. }) {
-                (
-                    "failed to deliver user-verification request",
-                    "user-verification response channel closed",
-                )
-            } else {
-                (
-                    "failed to deliver MCP elicitation request",
-                    "elicitation request channel closed unexpectedly",
-                )
-            };
+        let delivery_context = "failed to deliver MCP elicitation request";
+        let response_context = "elicitation request channel closed unexpectedly";
         let public_request_id = format!(
             "codex-mcp-elicitation-{}",
             NEXT_ELICITATION_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
@@ -380,8 +327,6 @@ impl ElicitationRequestRouter {
 
 #[derive(Clone)]
 pub(crate) struct ElicitationAuthority {
-    pub(crate) config: Arc<McpConfig>,
-    reviewer: Option<ElicitationReviewerHandle>,
     lifecycle: Option<ElicitationLifecycle>,
 }
 
@@ -393,35 +338,20 @@ pub(crate) struct ElicitationRequestManager {
 
 impl ElicitationRequestManager {
     pub(crate) fn new(
-        config: Arc<McpConfig>,
-        reviewer: Option<ElicitationReviewerHandle>,
         lifecycle: Option<ElicitationLifecycle>,
         router: ElicitationRequestRouter,
     ) -> Self {
         Self {
             router,
-            authority: Arc::new(StdMutex::new(Some(ElicitationAuthority {
-                config,
-                reviewer,
-                lifecycle,
-            }))),
+            authority: Arc::new(StdMutex::new(Some(ElicitationAuthority { lifecycle }))),
         }
     }
 
-    pub(crate) fn update(
-        &self,
-        config: Arc<McpConfig>,
-        reviewer: Option<ElicitationReviewerHandle>,
-        lifecycle: Option<ElicitationLifecycle>,
-    ) -> bool {
+    pub(crate) fn update(&self, lifecycle: Option<ElicitationLifecycle>) -> bool {
         let Ok(mut authority) = self.authority.lock() else {
             return false;
         };
-        *authority = Some(ElicitationAuthority {
-            config,
-            reviewer,
-            lifecycle,
-        });
+        *authority = Some(ElicitationAuthority { lifecycle });
         true
     }
 
@@ -429,157 +359,31 @@ impl ElicitationRequestManager {
         &self,
         server_name: String,
         tx_event: Option<Sender<Event>>,
-        client_mcp_extensions: &ClientMcpExtensions,
     ) -> SendElicitation {
-        // Event receivers such as codex mcp-server do not necessarily handle verification.
-        // Only wait for a response when trusted host activation enabled this exact route.
-        let user_verification_enabled = client_mcp_extensions
-            .get(OPENAI_ELICITATION_EXTENSION_ID)
-            .and_then(|settings| settings.get("userVerification"))
-            .is_some_and(Value::is_object);
         let router = self.router.clone();
         let authority = self.authority.clone();
-        Box::new(move |id, elicitation| {
+        Box::new(move |_id, elicitation| {
             let router = router.clone();
             let tx_event = tx_event.clone();
             let server_name = server_name.clone();
             let authority = authority.clone();
             async move {
-                let authority = authority
+                let decline = ElicitationResponse {
+                    action: ElicitationAction::Decline,
+                    content: None,
+                    meta: None,
+                };
+                if router.auto_deny() {
+                    return Ok(decline);
+                }
+                let Some(authority) = authority
                     .lock()
                     .ok()
-                    .and_then(|authority| authority.clone());
-                if let Elicitation::UserVerification {
-                    meta,
-                    title,
-                    description,
-                    challenge,
-                } = elicitation
-                {
-                    if !user_verification_enabled {
-                        return Ok(ElicitationResponse {
-                            action: ElicitationAction::Cancel,
-                            content: None,
-                            meta: Some(
-                                codex_rmcp_client::UserVerificationReason::ApprovalUnavailable
-                                    .into_meta(),
-                            ),
-                        });
-                    }
-                    return user_verification_elicitation::route(
-                        router,
-                        tx_event,
-                        authority,
-                        server_name,
-                        ElicitationRequest::UserVerification {
-                            meta,
-                            title,
-                            description,
-                            challenge,
-                        },
-                    )
-                    .await;
-                }
-                if router.auto_deny() {
-                    return Ok(ElicitationResponse {
-                        action: ElicitationAction::Decline,
-                        content: None,
-                        meta: None,
-                    });
-                }
-
-                if elicitation
-                    .meta()
-                    .and_then(|meta| meta.get(APPROVAL_KIND_KEY))
-                    .and_then(serde_json::Value::as_str)
-                    == Some(APPROVAL_KIND_TOOL_SUGGESTION)
-                {
-                    return Ok(ElicitationResponse {
-                        action: ElicitationAction::Decline,
-                        content: None,
-                        meta: None,
-                    });
-                }
-
-                let Some(authority) = authority else {
-                    return Ok(ElicitationResponse {
-                        action: ElicitationAction::Decline,
-                        content: None,
-                        meta: None,
-                    });
-                };
-                let ElicitationAuthority {
-                    config,
-                    reviewer,
-                    lifecycle,
-                    ..
-                } = &authority;
-                let approval_policy = config.approval_policy.value();
-                let Some(permission_profile) = config.permission_profile_for_server(&server_name)
+                    .and_then(|authority| authority.clone())
                 else {
-                    return Ok(ElicitationResponse {
-                        action: ElicitationAction::Decline,
-                        content: None,
-                        meta: None,
-                    });
+                    return Ok(decline);
                 };
-
-                match elicitation
-                    .meta()
-                    .and_then(|meta| meta.get(STRICT_AUTO_REVIEW_KEY))
-                {
-                    Some(Value::Bool(true)) => {
-                        if matches!(
-                            approval_policy,
-                            AskForApproval::Granular(config) if !config.allows_mcp_elicitations()
-                        ) {
-                            return Ok(strict_auto_review_decline());
-                        }
-                        let Some(reviewer) = reviewer.as_ref() else {
-                            return Ok(strict_auto_review_decline());
-                        };
-                        let _active_elicitation =
-                            lifecycle.as_ref().map(ElicitationLifecycle::start);
-                        return Ok(
-                            match reviewer
-                                .review(ElicitationReviewRequest {
-                                    server_name,
-                                    request_id: id,
-                                    elicitation,
-                                })
-                                .await
-                            {
-                                Ok(Some(response))
-                                    if (response.action == ElicitationAction::Accept
-                                        && response.content == Some(serde_json::json!({}))
-                                        || matches!(
-                                            response.action,
-                                            ElicitationAction::Decline | ElicitationAction::Cancel
-                                        ) && response.content.is_none())
-                                        && response
-                                            .meta
-                                            .as_ref()
-                                            .and_then(Value::as_object)
-                                            .and_then(|meta| meta.get(APPROVALS_REVIEWER_KEY))
-                                            .and_then(Value::as_str)
-                                            == Some("auto_review") =>
-                                {
-                                    response
-                                }
-                                Ok(Some(_)) | Ok(None) | Err(_) => strict_auto_review_decline(),
-                            },
-                        );
-                    }
-                    None | Some(Value::Bool(false)) => {}
-                    Some(_) => return Ok(strict_auto_review_decline()),
-                }
-
-                let permission_prompt_is_auto_approved = mcp_permission_prompt_is_auto_approved(
-                    approval_policy,
-                    permission_profile,
-                    McpPermissionPromptAutoApproveContext::default(),
-                );
-                if permission_prompt_is_auto_approved && can_auto_accept_elicitation(&elicitation) {
+                if can_auto_accept_elicitation(&elicitation) {
                     return Ok(ElicitationResponse {
                         action: ElicitationAction::Accept,
                         content: Some(serde_json::json!({})),
@@ -587,58 +391,7 @@ impl ElicitationRequestManager {
                     });
                 }
 
-                let should_surface_form_in_full_access = router.full_access_form_input_enabled()
-                    && permission_prompt_is_auto_approved
-                    && !elicitation
-                        .meta()
-                        .is_some_and(|meta| meta.contains_key(APPROVAL_KIND_KEY))
-                    && match &elicitation {
-                        Elicitation::Mcp(
-                            rmcp::model::ElicitRequestParams::FormElicitationParams {
-                                requested_schema,
-                                ..
-                            },
-                        ) => !requested_schema.properties.is_empty(),
-                        Elicitation::OpenAiElicitationForm {
-                            requested_schema, ..
-                        } => requested_schema
-                            .get("properties")
-                            .and_then(Value::as_object)
-                            .is_some_and(|properties| !properties.is_empty()),
-                        Elicitation::Mcp(_)
-                        | Elicitation::OpenAiForm { .. }
-                        | Elicitation::UserVerification { .. } => false,
-                    };
-
-                if !should_surface_form_in_full_access {
-                    if elicitation_is_rejected_by_policy(approval_policy) {
-                        return Ok(ElicitationResponse {
-                            action: ElicitationAction::Decline,
-                            content: None,
-                            meta: None,
-                        });
-                    }
-
-                    if let Some(reviewer) = reviewer {
-                        let request = ElicitationReviewRequest {
-                            server_name: server_name.clone(),
-                            request_id: id.clone(),
-                            elicitation: elicitation.clone(),
-                        };
-                        if let Some(response) = reviewer.review(request).await? {
-                            return Ok(response);
-                        }
-                    }
-                }
-
                 let request = match elicitation {
-                    Elicitation::UserVerification { .. } => {
-                        return Ok(ElicitationResponse {
-                            action: ElicitationAction::Cancel,
-                            content: None,
-                            meta: None,
-                        });
-                    }
                     Elicitation::Mcp(rmcp::model::ElicitRequestParams::FormElicitationParams {
                         meta,
                         message,
@@ -666,13 +419,7 @@ impl ElicitationRequestManager {
                         url,
                         elicitation_id,
                     },
-                    Elicitation::Mcp(_) => {
-                        return Ok(ElicitationResponse {
-                            action: ElicitationAction::Decline,
-                            content: None,
-                            meta: None,
-                        });
-                    }
+                    Elicitation::Mcp(_) => return Ok(decline),
                     Elicitation::OpenAiForm {
                         meta,
                         message,
@@ -701,25 +448,6 @@ impl ElicitationRequestManager {
     }
 }
 
-fn strict_auto_review_decline() -> ElicitationResponse {
-    ElicitationResponse {
-        action: ElicitationAction::Decline,
-        content: None,
-        meta: Some(serde_json::json!({
-            "message": STRICT_AUTO_REVIEW_DECLINE_MESSAGE,
-        })),
-    }
-}
-
-pub(crate) fn elicitation_is_rejected_by_policy(approval_policy: AskForApproval) -> bool {
-    match approval_policy {
-        AskForApproval::Never => true,
-        AskForApproval::OnRequest => false,
-        AskForApproval::UnlessTrusted => false,
-        AskForApproval::Granular(granular_config) => !granular_config.allows_mcp_elicitations(),
-    }
-}
-
 type ResponderMap = HashMap<(String, RequestId), ElicitationResponder>;
 
 fn can_auto_accept_elicitation(elicitation: &Elicitation) -> bool {
@@ -728,13 +456,12 @@ fn can_auto_accept_elicitation(elicitation: &Elicitation) -> bool {
             requested_schema,
             ..
         }) => {
-            // Auto-accept confirm/approval elicitations without schema requirements.
+            // Confirmation-only requests carry no input to collect, so accept them directly.
             requested_schema.properties.is_empty()
         }
         Elicitation::Mcp(_)
         | Elicitation::OpenAiForm { .. }
-        | Elicitation::OpenAiElicitationForm { .. }
-        | Elicitation::UserVerification { .. } => false,
+        | Elicitation::OpenAiElicitationForm { .. } => false,
     }
 }
 

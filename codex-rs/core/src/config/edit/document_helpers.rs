@@ -1,5 +1,4 @@
 use anyhow::Context;
-use codex_config::types::AppToolApproval;
 use codex_config::types::McpServerAuth;
 use codex_config::types::McpServerConfig;
 use codex_config::types::McpServerEnvVar;
@@ -135,14 +134,6 @@ fn serialize_mcp_server_table(config: &McpServerConfig) -> anyhow::Result<TomlTa
     if let Some(timeout) = config.tool_timeout_sec {
         entry["tool_timeout_sec"] = value(timeout.as_secs_f64());
     }
-    if let Some(approval_mode) = config.default_tools_approval_mode {
-        entry["default_tools_approval_mode"] = value(match approval_mode {
-            AppToolApproval::Auto => "auto",
-            AppToolApproval::Prompt => "prompt",
-            AppToolApproval::Writes => "writes",
-            AppToolApproval::Approve => "approve",
-        });
-    }
     if let Some(enabled_tools) = &config.enabled_tools
         && !enabled_tools.is_empty()
     {
@@ -203,14 +194,6 @@ fn serialize_mcp_server_table(config: &McpServerConfig) -> anyhow::Result<TomlTa
 fn serialize_mcp_server_tool(config: &McpServerToolConfig) -> anyhow::Result<TomlItem> {
     let mut entry = TomlTable::new();
     entry.set_implicit(false);
-    if let Some(approval_mode) = config.approval_mode {
-        entry["approval_mode"] = value(match approval_mode {
-            AppToolApproval::Auto => "auto",
-            AppToolApproval::Prompt => "prompt",
-            AppToolApproval::Writes => "writes",
-            AppToolApproval::Approve => "approve",
-        });
-    }
     if let Some(output_token_limit) = config.output_token_limit {
         entry["output_token_limit"] = value(
             i64::try_from(output_token_limit.get())

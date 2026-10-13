@@ -151,7 +151,7 @@ mod tests {
 
         assert_eq!(
             plugin_namespace_for_root_uri(
-                &FileSystemEnvironmentAccessor::unrestricted(&LOCAL_FS),
+                &FileSystemEnvironmentAccessor::new(&LOCAL_FS),
                 &PathUri::from_abs_path(&plugin_root.abs()),
             )
             .await,
@@ -174,7 +174,7 @@ mod tests {
 
         assert_eq!(
             plugin_namespace_for_root_uri(
-                &FileSystemEnvironmentAccessor::unrestricted(&LOCAL_FS),
+                &FileSystemEnvironmentAccessor::new(&LOCAL_FS),
                 &PathUri::from_abs_path(&plugin_root.abs()),
             )
             .await,
@@ -198,7 +198,7 @@ mod tests {
 
         assert_eq!(
             plugin_namespace_for_root_uri(
-                &FileSystemEnvironmentAccessor::unrestricted(&LOCAL_FS),
+                &FileSystemEnvironmentAccessor::new(&LOCAL_FS),
                 &PathUri::from_abs_path(&plugin_root.abs()),
             )
             .await,

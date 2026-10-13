@@ -26,7 +26,6 @@ use codex_protocol::openai_models::MultiAgentToolMessages;
 use codex_tools::FunctionCallError;
 use codex_tools::JsonToolOutput;
 use codex_tools::ToolCall;
-use codex_tools::ToolCallSource;
 use codex_tools::ToolExecutor;
 use codex_tools::ToolExecutorFuture;
 use codex_tools::ToolName;
@@ -378,13 +377,7 @@ impl BoardTool {
                         .into());
                     }
                 };
-                let invocation = match &call.source {
-                    ToolCallSource::Direct => call.call_id.clone(),
-                    ToolCallSource::CodeMode {
-                        cell_id,
-                        runtime_tool_call_id,
-                    } => format!("{cell_id}:{runtime_tool_call_id}"),
-                };
+                let invocation = &call.call_id;
                 encode(
                     board
                         .post(

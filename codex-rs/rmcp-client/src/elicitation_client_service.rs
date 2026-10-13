@@ -61,7 +61,6 @@ pub(crate) struct ElicitationClientService {
     handler: LoggingClientHandler,
     supports_openai_form: bool,
     supports_openai_elicitation_form: bool,
-    supports_user_verification: bool,
     send_elicitation: Arc<SendElicitation>,
     pause_state: ElicitationPauseState,
     pending_verifications: Arc<Mutex<VerificationCancellations>>,
@@ -112,13 +111,6 @@ impl ElicitationClientService {
             .and_then(|settings| settings.get("form"))
             .is_some_and(Value::is_object);
         let send_elicitation = Arc::new(send_elicitation);
-        let supports_user_verification = client_info
-            .capabilities
-            .extensions
-            .as_ref()
-            .and_then(|extensions| extensions.get(OPENAI_ELICITATION_EXTENSION_ID))
-            .and_then(|settings| settings.get("userVerification"))
-            .is_some_and(Value::is_object);
         Self {
             handler: LoggingClientHandler::new(
                 client_info,
@@ -126,7 +118,6 @@ impl ElicitationClientService {
             ),
             supports_openai_form,
             supports_openai_elicitation_form,
-            supports_user_verification,
             send_elicitation,
             pause_state,
             pending_verifications: Arc::default(),
@@ -140,7 +131,6 @@ impl ElicitationClientService {
     ) -> Result<ElicitationResponse, rmcp::ErrorData> {
         let RequestContext { id, meta, ct, .. } = context;
         let request = restore_context_meta(request, meta);
-        let user_verification = matches!(&request, Elicitation::UserVerification { .. });
         let (cancel_tx, cancel_rx) = oneshot::channel();
         let _pending = {
             let mut cancellations = self
@@ -151,14 +141,7 @@ impl ElicitationClientService {
                 return Ok(ElicitationResponse {
                     action: ElicitationAction::Cancel,
                     content: None,
-                    meta: user_verification.then(|| {
-                        if cancellations.saturated {
-                            crate::UserVerificationReason::ApprovalUnavailable
-                        } else {
-                            crate::UserVerificationReason::Interrupted
-                        }
-                        .into_meta()
-                    }),
+                    meta: None,
                 });
             }
             cancellations.pending.insert(id.clone(), cancel_tx);
@@ -174,24 +157,20 @@ impl ElicitationClientService {
                 return Ok(ElicitationResponse {
                     action: ElicitationAction::Cancel,
                     content: None,
-                    meta: user_verification.then(|| crate::UserVerificationReason::Interrupted.into_meta()),
+                    meta: None,
                 });
             }
             _ = cancel_rx => {
                 return Ok(ElicitationResponse {
                     action: ElicitationAction::Cancel,
                     content: None,
-                    meta: user_verification.then(|| crate::UserVerificationReason::Interrupted.into_meta()),
+                    meta: None,
                 });
             }
             response = (self.send_elicitation)(id, request) => response,
         }
         .map_err(|err| rmcp::ErrorData::internal_error(err.to_string(), None))?;
-        Ok(if user_verification {
-            crate::user_verification::validate_response(response)
-        } else {
-            response
-        })
+        Ok(response)
     }
 }
 
@@ -245,23 +224,6 @@ impl Service<RoleClient> for ElicitationClientService {
                 }
             }
             ServerRequest::CustomRequest(request)
-                if request.method == OPENAI_ELICITATION_METHOD
-                    && self.supports_user_verification
-                    && request
-                        .params
-                        .as_ref()
-                        .and_then(|params| params.get("mode"))
-                        .and_then(Value::as_str)
-                        == Some(crate::user_verification::MODE) =>
-            {
-                let response = self
-                    .create_elicitation(crate::user_verification::parse_request(request)?, context)
-                    .await?;
-                Ok(ClientResult::CustomResult(elicitation_response_result(
-                    response,
-                )?))
-            }
-            ServerRequest::CustomRequest(request)
                 if request.method == OPENAI_FORM_METHOD && self.supports_openai_form =>
             {
                 let response = self
@@ -281,15 +243,6 @@ impl Service<RoleClient> for ElicitationClientService {
                 Ok(ClientResult::CustomResult(elicitation_response_result(
                     response,
                 )?))
-            }
-            ServerRequest::CustomRequest(request)
-                if request.method == OPENAI_ELICITATION_METHOD
-                    && self.supports_user_verification =>
-            {
-                Err(rmcp::ErrorData::invalid_params(
-                    "invalid elicitation mode",
-                    /*data*/ None,
-                ))
             }
             request => {
                 <LoggingClientHandler as Service<RoleClient>>::handle_request(
@@ -392,9 +345,7 @@ fn restore_context_meta(
             .meta_mut()
             .get_or_insert_with(RequestMetaObject::new)
             .extend(context_meta),
-        Elicitation::OpenAiForm { meta, .. }
-        | Elicitation::OpenAiElicitationForm { meta, .. }
-        | Elicitation::UserVerification { meta, .. } => {
+        Elicitation::OpenAiForm { meta, .. } | Elicitation::OpenAiElicitationForm { meta, .. } => {
             let meta = meta
                 .get_or_insert_with(|| Value::Object(Map::new()))
                 .as_object_mut();
@@ -701,7 +652,3 @@ mod tests {
         RequestMetaObject::from(map)
     }
 }
-
-#[cfg(test)]
-#[path = "user_verification_dispatch_tests.rs"]
-mod user_verification_dispatch_tests;

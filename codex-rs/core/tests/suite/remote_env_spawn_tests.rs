@@ -72,10 +72,7 @@ pub(crate) async fn pending_subagent_scenario(
                 (Feature::EnableRequestCompression, false),
                 (Feature::MultiAgentV2, !v1),
             ] {
-                config
-                    .features
-                    .set_enabled(feature, enabled)
-                    .expect("configure subagent feature");
+                config.features.set_enabled(feature, enabled);
             }
             configure_scenario(config);
         })
@@ -177,10 +174,6 @@ pub(crate) async fn pending_subagent_scenario(
     assert_eq!(child.environment_selections().await, vec![pending.clone()]);
 
     let mut first = environment_config_for_selection(&test.config, &selection);
-    if test.config.permissions.permission_profile() != &PermissionProfile::read_only() {
-        first.permission_profile =
-            PermissionProfileSnapshot::legacy(PermissionProfile::read_only());
-    }
     if matches!(case, PendingSpawnCase::FirstResultOnly) {
         first.allow_login_shell = false;
     }

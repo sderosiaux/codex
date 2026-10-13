@@ -1,22 +1,14 @@
-use std::collections::BTreeMap;
-
-use codex_config::AppRequirementToml;
-use codex_config::AppsRequirementsToml;
+use codex_config::AbsolutePathBuf;
+use codex_config::CONFIG_TOML_FILE;
 use codex_config::ConfigLayerStack;
-use codex_config::ConfigRequirements;
-use codex_config::ConfigRequirementsToml;
+use codex_config::TomlValue;
 use pretty_assertions::assert_eq;
 
 use super::*;
 
 #[test]
 fn projection_deduplicates_apps_and_ignores_non_runtime_tools() {
-    let config = ConfigLayerStack::new(
-        Vec::new(),
-        ConfigRequirements::default(),
-        ConfigRequirementsToml::default(),
-    )
-    .expect("config layer stack");
+    let config = ConfigLayerStack::new(Vec::new()).expect("config layer stack");
     let apps = installed_connector_runtime(
         &config,
         [
@@ -43,21 +35,27 @@ fn projection_deduplicates_apps_and_ignores_non_runtime_tools() {
 }
 
 #[test]
-fn projection_applies_managed_app_policy_and_model_visibility() {
-    let requirements = ConfigRequirementsToml {
-        apps: Some(AppsRequirementsToml {
-            apps: BTreeMap::from([(
-                "disabled".to_string(),
-                AppRequirementToml {
-                    enabled: Some(false),
-                    tools: None,
-                },
-            )]),
-        }),
-        ..Default::default()
-    };
-    let config = ConfigLayerStack::new(Vec::new(), ConfigRequirements::default(), requirements)
-        .expect("config layer stack");
+fn projection_applies_app_config_and_model_visibility() {
+    let mut disabled_app = TomlValue::Table(Default::default());
+    disabled_app
+        .as_table_mut()
+        .expect("app table")
+        .insert("enabled".to_string(), TomlValue::Boolean(false));
+    let mut apps = TomlValue::Table(Default::default());
+    apps.as_table_mut()
+        .expect("apps table")
+        .insert("disabled".to_string(), disabled_app);
+    let mut user_config = TomlValue::Table(Default::default());
+    user_config
+        .as_table_mut()
+        .expect("user config table")
+        .insert("apps".to_string(), apps);
+    let config_toml_path = AbsolutePathBuf::try_from(std::env::temp_dir().join(CONFIG_TOML_FILE))
+        .expect("absolute config path");
+    let config = ConfigLayerStack::new(Vec::new())
+        .expect("config layer stack")
+        .with_user_config(&config_toml_path, user_config)
+        .expect("apps user config should be valid");
     let apps = installed_connector_runtime(
         &config,
         [

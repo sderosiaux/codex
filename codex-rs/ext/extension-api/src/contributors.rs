@@ -12,7 +12,6 @@ use codex_tools::ToolExecutor;
 use crate::ExtensionData;
 use crate::ExtensionMetrics;
 
-mod approval_review;
 mod context;
 mod mcp;
 mod prompt;
@@ -23,10 +22,6 @@ mod turn_input;
 mod turn_lifecycle;
 mod world_state;
 
-pub use approval_review::ApprovalDecision;
-pub use approval_review::ApprovalDecisionInput;
-pub use approval_review::GuardianV2Enabled;
-pub use approval_review::SynchronousApprovalReviewer;
 pub use context::TurnContextContributionInput;
 pub use mcp::McpServerContribution;
 pub use mcp::McpServerContributionContext;
@@ -53,7 +48,6 @@ pub use tool_lifecycle::ToolCallOutcome;
 pub use tool_lifecycle::ToolFinishInput;
 pub use tool_lifecycle::ToolLifecycleFuture;
 pub use tool_lifecycle::ToolStartInput;
-pub use tool_lifecycle::ToolTimingBoundary;
 pub use tool_lifecycle::ToolTimingInput;
 pub use turn_input::TurnInputContext;
 pub use turn_input::TurnInputEnvironment;
@@ -370,8 +364,8 @@ pub trait ToolContributor: Send + Sync {
 /// rewriting the invocation. Use `ToolContributor` for owning a tool implementation
 /// and hooks for policy that changes tool payloads.
 pub trait ToolLifecycleContributor: Send + Sync {
-    /// Observe direct calls before readiness, dispatch waiting, and hooks, including blocked calls.
-    /// Excludes nested code-mode calls. Observers must return promptly.
+    /// Observe calls before readiness, dispatch waiting, and hooks, including blocked calls.
+    /// Observers must return promptly.
     fn on_tool_dispatch(&self, _input: ToolDispatchInput<'_>) {}
 
     /// Called after pre-tool hooks finalize an invocation and before execution.
@@ -384,8 +378,7 @@ pub trait ToolLifecycleContributor: Send + Sync {
 
     /// Called for a resolved builtin command before attribution and execution.
     ///
-    /// This includes commands issued by code mode. It does not imply that
-    /// subsequent approval or process creation will succeed.
+    /// It does not imply that process creation will succeed.
     fn on_command_start<'a>(&'a self, _input: CommandStartInput<'a>) -> ToolLifecycleFuture<'a> {
         Box::pin(std::future::ready(()))
     }
@@ -403,21 +396,8 @@ pub trait ToolLifecycleContributor: Send + Sync {
         Box::pin(std::future::ready(()))
     }
 
-    /// Observe handler or remote host duration as defined by `ToolTimingBoundary`.
-    /// Handler timing includes cancellation. Observers must return promptly.
+    /// Observe handler duration, including cancellation. Observers must return promptly.
     fn on_tool_timing(&self, _input: ToolTimingInput<'_>) {}
-}
-
-/// Owns the complete approval decision, including whether to consult a reviewer.
-/// Returning `None` leaves the request to the next contributor.
-pub trait ApprovalReviewContributor: Send + Sync {
-    /// Claims one request, including a handoff to the user.
-    fn decide<'a>(
-        &'a self,
-        _input: &'a ApprovalDecisionInput<'_>,
-    ) -> ExtensionFuture<'a, Option<ApprovalDecision>> {
-        Box::pin(std::future::ready(None))
-    }
 }
 
 /// Ordered post-processing contribution for one parsed turn item.

@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use crate::ApprovalReviewContributor;
 use crate::ConfigContributor;
 use crate::ContextContributor;
 use crate::ExtensionEventSink;
@@ -33,7 +32,6 @@ impl<C: Sync> Default for ExtensionRegistryBuilder<C> {
                 config_contributors: Vec::new(),
                 token_usage_contributors: Vec::new(),
                 skill_invocation_contributors: Vec::new(),
-                approval_review_contributors: Vec::new(),
                 context_contributors: Vec::new(),
                 mcp_server_contributors: Vec::new(),
                 turn_input_contributors: Vec::new(),
@@ -67,11 +65,6 @@ impl<C: Sync> ExtensionRegistryBuilder<C> {
     /// Installs the host gate for turn-input submissions that start a new turn.
     pub fn turn_start_admission(&mut self, admission: Arc<dyn TurnStartAdmission>) {
         self.registry.turn_start_admission = Some(admission);
-    }
-
-    /// Registers one approval-review contributor.
-    pub fn approval_review_contributor(&mut self, contributor: Arc<dyn ApprovalReviewContributor>) {
-        self.registry.approval_review_contributors.push(contributor);
     }
 
     /// Registers one thread-lifecycle contributor.
@@ -166,7 +159,6 @@ pub struct ExtensionRegistry<C: Sync> {
     tool_lifecycle_contributors: Vec<Arc<dyn ToolLifecycleContributor>>,
     model_request_contributors: Vec<Arc<dyn ModelRequestContributor>>,
     turn_item_contributors: Vec<Arc<dyn TurnItemContributor>>,
-    approval_review_contributors: Vec<Arc<dyn ApprovalReviewContributor>>,
 }
 
 impl<C: Sync> ExtensionRegistry<C> {
@@ -188,7 +180,6 @@ impl<C: Sync> ExtensionRegistry<C> {
                 tool_lifecycle_contributors: self.tool_lifecycle_contributors.clone(),
                 model_request_contributors: self.model_request_contributors.clone(),
                 turn_item_contributors: self.turn_item_contributors.clone(),
-                approval_review_contributors: self.approval_review_contributors.clone(),
             },
         }
     }
@@ -241,19 +232,6 @@ impl<C: Sync> ExtensionRegistry<C> {
                 .skill_invocation_contributors
                 .iter()
                 .any(|contributor| contributor.requires_host_skill_discovery())
-    }
-
-    /// Returns the first claimed decision in registration order.
-    pub async fn decide_approval(
-        &self,
-        input: &crate::ApprovalDecisionInput<'_>,
-    ) -> Option<crate::ApprovalDecision> {
-        for contributor in &self.approval_review_contributors {
-            if let Some(decision) = contributor.decide(input).await {
-                return Some(decision);
-            }
-        }
-        None
     }
 
     /// Returns the registered prompt contributors.

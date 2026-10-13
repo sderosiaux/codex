@@ -24,7 +24,6 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::models::SearchToolCallParams;
 #[cfg(test)]
 use codex_protocol::openai_models::ModelInfo;
-use codex_protocol::openai_models::ToolMode;
 use codex_tools::DiscoverableTool;
 use codex_tools::ResponsesApiNamespaceTool;
 use codex_tools::ToolName;
@@ -38,10 +37,7 @@ use tracing::instrument;
 pub use crate::tools::context::ToolCallSource;
 
 const EXPOSURE_DIRECT: &str = "direct";
-const EXPOSURE_DIRECT_MODEL_ONLY: &str = "direct_model_only";
 const EXPOSURE_DEFERRED: &str = "deferred";
-const EXPOSURE_DEFERRED_MODEL_ONLY: &str = "deferred_model_only";
-const EXPOSURE_CODE_MODE_ONLY: &str = "code_mode_only";
 const EXPOSURE_HIDDEN: &str = "hidden";
 
 #[derive(Clone, Debug, PartialEq)]
@@ -85,8 +81,6 @@ pub(crate) fn tool_log_payload<'a>(
 pub struct ToolRouter {
     registry: ToolRegistry,
     model_visible_specs: Arc<[ToolSpec]>,
-    tool_mode: ToolMode,
-    code_mode_tool_names: BTreeMap<String, ToolName>,
     tool_namespaces_info: Option<TurnToolNamespacesInfo>,
     can_manage_children: bool,
 }
@@ -125,16 +119,12 @@ impl ToolRouter {
     pub(crate) fn from_parts(
         registry: ToolRegistry,
         model_visible_specs: Vec<ToolSpec>,
-        tool_mode: ToolMode,
-        code_mode_tool_names: BTreeMap<String, ToolName>,
         tool_namespaces_info: Option<TurnToolNamespacesInfo>,
         child_management_tools: &[ToolName],
     ) -> Self {
         let mut router = Self {
             registry,
             model_visible_specs: model_visible_specs.into(),
-            tool_mode,
-            code_mode_tool_names,
             tool_namespaces_info,
             can_manage_children: false,
         };
@@ -147,20 +137,6 @@ impl ToolRouter {
 
     pub(crate) fn model_visible_specs(&self) -> Arc<[ToolSpec]> {
         Arc::clone(&self.model_visible_specs)
-    }
-
-    pub(crate) fn tool_mode(&self) -> ToolMode {
-        self.tool_mode
-    }
-
-    /// Code Mode still needs its dispatcher when the nested tool set is empty.
-    pub(crate) fn requires_code_mode_worker(&self) -> bool {
-        matches!(self.tool_mode, ToolMode::CodeMode | ToolMode::CodeModeOnly)
-    }
-
-    /// The normalized nested identities chosen after exclusions and collisions.
-    pub(crate) fn code_mode_tool_names(&self) -> &BTreeMap<String, ToolName> {
-        &self.code_mode_tool_names
     }
 
     /// Optional request inventory for this exact plan, without publishing it to turn state.
@@ -181,27 +157,22 @@ impl ToolRouter {
         self.can_manage_children
     }
 
-    // Answers if the tool plan lets the model invoke the tool directly, through code mode, or deferred tool search.
+    // Answers if the tool plan lets the model invoke the tool directly or through deferred tool search.
     pub(crate) fn exposes_tool(&self, name: &ToolName) -> bool {
         let name = name.clone().with_default_namespace();
-        if self
-            .code_mode_tool_names
-            .values()
-            .any(|nested| nested.clone().with_default_namespace() == name)
-            || self.model_visible_specs.iter().any(|spec| match spec {
-                ToolSpec::Function(_) | ToolSpec::Freeform(_) => {
-                    name.is_default_namespace() && spec.name() == name.name
-                }
-                ToolSpec::Namespace(namespace) => {
-                    name.namespace.as_deref() == Some(namespace.name.as_str())
-                        && namespace.tools.iter().any(|tool| match tool {
-                            ResponsesApiNamespaceTool::Function(tool) => tool.name == name.name,
-                            ResponsesApiNamespaceTool::Custom(tool) => tool.name == name.name,
-                        })
-                }
-                ToolSpec::ToolSearch { .. } | ToolSpec::WebSearch { .. } => false,
-            })
-        {
+        if self.model_visible_specs.iter().any(|spec| match spec {
+            ToolSpec::Function(_) | ToolSpec::Freeform(_) => {
+                name.is_default_namespace() && spec.name() == name.name
+            }
+            ToolSpec::Namespace(namespace) => {
+                name.namespace.as_deref() == Some(namespace.name.as_str())
+                    && namespace.tools.iter().any(|tool| match tool {
+                        ResponsesApiNamespaceTool::Function(tool) => tool.name == name.name,
+                        ResponsesApiNamespaceTool::Custom(tool) => tool.name == name.name,
+                    })
+            }
+            ToolSpec::ToolSearch { .. } | ToolSpec::WebSearch { .. } => false,
+        }) {
             return true;
         }
         self.model_visible_specs
@@ -308,29 +279,6 @@ impl ToolRouter {
         }
     }
 
-    #[allow(dead_code)]
-    #[instrument(level = "trace", skip_all, err)]
-    pub async fn dispatch_tool_call_with_code_mode_result(
-        &self,
-        session: Arc<Session>,
-        step_context: Arc<StepContext>,
-        cancellation_token: CancellationToken,
-        tracker: SharedTurnDiffTracker,
-        call: ToolCall,
-        source: ToolCallSource,
-    ) -> Result<AnyToolResult, FunctionCallError> {
-        self.dispatch_tool_call_with_code_mode_result_inner(
-            session,
-            step_context,
-            cancellation_token,
-            tracker,
-            call,
-            source,
-            /*call_state*/ None,
-        )
-        .await
-    }
-
     #[instrument(level = "trace", skip_all, err)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn dispatch_tool_call_with_state(
@@ -342,29 +290,6 @@ impl ToolRouter {
         call: ToolCall,
         source: ToolCallSource,
         call_state: Arc<ToolCallState>,
-    ) -> Result<AnyToolResult, FunctionCallError> {
-        self.dispatch_tool_call_with_code_mode_result_inner(
-            session,
-            step_context,
-            cancellation_token,
-            tracker,
-            call,
-            source,
-            Some(call_state),
-        )
-        .await
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn dispatch_tool_call_with_code_mode_result_inner(
-        &self,
-        session: Arc<Session>,
-        step_context: Arc<StepContext>,
-        cancellation_token: CancellationToken,
-        tracker: SharedTurnDiffTracker,
-        call: ToolCall,
-        source: ToolCallSource,
-        call_state: Option<Arc<ToolCallState>>,
     ) -> Result<AnyToolResult, FunctionCallError> {
         let ToolCall {
             tool_name,
@@ -388,7 +313,7 @@ impl ToolRouter {
         };
 
         self.registry
-            .dispatch_any_with_state(invocation, call_state)
+            .dispatch_any_with_state(invocation, Some(call_state))
             .await
     }
 }
@@ -397,40 +322,26 @@ impl ToolRouter {
 /// Registrations do not imply model visibility or reachability; hosted tools are excluded.
 pub(crate) fn record_registration_metrics(router: &ToolRouter, telemetry: &SessionTelemetry) {
     let mut direct = 0usize;
-    let mut direct_model_only = 0usize;
     let mut deferred = 0usize;
-    let mut deferred_model_only = 0usize;
-    let mut code_mode_only = 0usize;
     let mut hidden = 0usize;
     for tool in router.registry.entries() {
         match tool.exposure {
             ToolExposure::Direct => direct += 1,
-            ToolExposure::DirectModelOnly => direct_model_only += 1,
             ToolExposure::Deferred => deferred += 1,
-            ToolExposure::DeferredModelOnly => deferred_model_only += 1,
-            ToolExposure::CodeModeOnly => code_mode_only += 1,
             ToolExposure::Hidden => hidden += 1,
         }
     }
 
-    let tool_mode = match router.tool_mode {
-        ToolMode::Direct => "direct",
-        ToolMode::CodeMode => "code_mode",
-        ToolMode::CodeModeOnly => "code_mode_only",
-    };
     for (exposure, count) in [
         (EXPOSURE_DIRECT, direct),
-        (EXPOSURE_DIRECT_MODEL_ONLY, direct_model_only),
         (EXPOSURE_DEFERRED, deferred),
-        (EXPOSURE_DEFERRED_MODEL_ONLY, deferred_model_only),
-        (EXPOSURE_CODE_MODE_ONLY, code_mode_only),
         (EXPOSURE_HIDDEN, hidden),
     ] {
         telemetry.histogram_with_boundaries(
             TOOL_REGISTRATIONS_METRIC,
             i64::try_from(count).unwrap_or(i64::MAX),
             TOOL_REGISTRATIONS_METRIC_BUCKETS,
-            &[("exposure", exposure), ("tool_mode", tool_mode)],
+            &[("exposure", exposure)],
         );
     }
 }

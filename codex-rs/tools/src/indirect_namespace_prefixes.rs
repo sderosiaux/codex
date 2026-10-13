@@ -3,13 +3,8 @@
 //! Direct specifications, search indexes, and cached definitions remain unchanged.
 
 use crate::LoadableToolSpec;
-use crate::ToolName;
-use codex_code_mode::ToolDefinition;
-use codex_code_mode::ToolNamespaceDescription;
-use codex_protocol::DEFAULT_FUNCTION_NAMESPACE;
 use codex_protocol::openai_models::IndirectDescriptionPrefixes;
 use std::collections::BTreeMap;
-use std::collections::BTreeSet;
 use std::collections::btree_map::Entry;
 
 /// Conflicting catalog selectors for the same namespace, without including their prompt text.
@@ -76,65 +71,6 @@ impl<'a> IndirectNamespacePrefixes<'a> {
         })
     }
 
-    /// ALL_TOOLS is flat, so each entry carries its namespace's guidance.
-    /// Its eventual model-visible output is subject to normal tool-output truncation.
-    pub fn apply_code_mode(&self, tools: &mut [ToolDefinition]) {
-        if self.prefixes.is_empty() {
-            return;
-        }
-        for tool in tools {
-            self.apply_code_mode_description(&tool.tool_name, &mut tool.description);
-        }
-    }
-
-    /// Adds guidance to one owned description without copying the tool's schemas.
-    pub fn apply_code_mode_description(&self, tool_name: &ToolName, description: &mut String) {
-        if let Some(prefix) = self.prefix(namespace_name(tool_name)) {
-            prepend(prefix, description);
-        }
-    }
-
-    /// Adds one prefix per namespace actually embedded in the exec description.
-    pub fn apply_exec_prompt(
-        &self,
-        tools: &mut [ToolDefinition],
-        namespaces: &mut BTreeMap<String, ToolNamespaceDescription>,
-    ) {
-        if self.prefixes.is_empty() {
-            return;
-        }
-        let mut has_default_prefix = false;
-        let rendered_namespaces = tools
-            .iter()
-            .map(|tool| namespace_name(&tool.tool_name))
-            .collect::<BTreeSet<_>>();
-        for name in rendered_namespaces {
-            if let Some(prefix) = self.prefix(name) {
-                let namespace = namespaces.entry(name.to_string()).or_insert_with(|| {
-                    ToolNamespaceDescription {
-                        name: name.to_string(),
-                        description: String::new(),
-                    }
-                });
-                prepend(prefix, &mut namespace.description);
-                has_default_prefix |= name == DEFAULT_FUNCTION_NAMESPACE;
-            }
-        }
-        if has_default_prefix {
-            // Only temporary prompt definitions join this group; runtime names stay unchanged.
-            for tool in tools {
-                if tool
-                    .tool_name
-                    .namespace
-                    .as_deref()
-                    .is_none_or(str::is_empty)
-                {
-                    tool.tool_name.namespace = Some(DEFAULT_FUNCTION_NAMESPACE.to_string());
-                }
-            }
-        }
-    }
-
     /// Applies prefixes after search ranking and namespace coalescing.
     pub fn apply_search(&self, tools: &mut [LoadableToolSpec]) {
         if self.prefixes.is_empty() {
@@ -160,13 +96,6 @@ fn prepend(prefix: &str, description: &mut String) {
     } else {
         format!("{prefix}\n\n{description}")
     };
-}
-
-fn namespace_name(name: &ToolName) -> &str {
-    name.namespace
-        .as_deref()
-        .filter(|namespace| !namespace.is_empty())
-        .unwrap_or(DEFAULT_FUNCTION_NAMESPACE)
 }
 
 #[cfg(test)]

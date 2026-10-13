@@ -74,7 +74,7 @@ async fn regular_responses_turn_honors_respect_system_proxy() -> Result<()> {
 
         let mut command = Command::new(std::env::current_exe()?);
         command.arg("--exact").arg(TEST_NAME);
-        for &key in codex_network_proxy::PROXY_ENV_KEYS {
+        for &key in core_test_support::proxy_env::PROXY_ENV_KEYS {
             command.env_remove(key);
         }
         // Keep the test harness's loopback HTTP and WebSocket traffic out of the proxy. The fake
@@ -83,8 +83,14 @@ async fn regular_responses_turn_honors_respect_system_proxy() -> Result<()> {
             .env(SYSTEM_PROXY_TEST_SUBPROCESS_ENV_VAR, "1")
             .env("HTTP_PROXY", &proxy_url)
             .env("http_proxy", proxy_url)
-            .env("NO_PROXY", codex_network_proxy::DEFAULT_NO_PROXY_VALUE)
-            .env("no_proxy", codex_network_proxy::DEFAULT_NO_PROXY_VALUE);
+            .env(
+                "NO_PROXY",
+                core_test_support::proxy_env::DEFAULT_NO_PROXY_VALUE,
+            )
+            .env(
+                "no_proxy",
+                core_test_support::proxy_env::DEFAULT_NO_PROXY_VALUE,
+            );
 
         let output = command.output().await?;
         if !output.status.success() {
@@ -110,10 +116,7 @@ async fn regular_responses_turn_honors_respect_system_proxy() -> Result<()> {
         config.model_catalog =
             Some(bundled_models_response().expect("bundled models.json should parse"));
         config.model_provider.base_url = Some("http://responses-proxy.invalid/v1".to_string());
-        config
-            .features
-            .enable(Feature::RespectSystemProxy)
-            .expect("test config should allow feature update");
+        config.features.enable(Feature::RespectSystemProxy);
         config.respect_system_proxy = true;
     });
     let test = builder.build_with_auto_env(&server).await?;

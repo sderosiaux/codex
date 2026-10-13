@@ -89,14 +89,8 @@ async fn api_key_subagent_uses_session_id_as_prompt_cache_key() -> Result<()> {
     let mut builder = test_codex()
         .with_auth(CodexAuth::from_api_key("dummy"))
         .with_config(|config| {
-            config
-                .features
-                .enable(Feature::Collab)
-                .expect("test config should allow feature update");
-            config
-                .features
-                .enable(Feature::MultiAgentV2)
-                .expect("test config should allow feature update");
+            config.features.enable(Feature::Collab);
+            config.features.enable(Feature::MultiAgentV2);
         });
     let test = builder.build(&server).await?;
     let expected_session_id = test.session_configured.session_id.to_string();

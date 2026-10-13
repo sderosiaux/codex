@@ -22,8 +22,7 @@ async fn reads_file_larger_than_tokio_buffer(follow_symlinks: bool) -> anyhow::R
         LOCAL_FS
             .read_file(
                 &PathUri::from_host_native_path(&path)?,
-                ReadFileOptions { follow_symlinks },
-                /*sandbox*/ None,
+                ReadFileOptions { follow_symlinks }
             )
             .await?,
         contents,
@@ -42,7 +41,6 @@ async fn rejects_oversized_file(follow_symlinks: bool) -> anyhow::Result<()> {
         .read_file(
             &PathUri::from_host_native_path(&path)?,
             ReadFileOptions { follow_symlinks },
-            /*sandbox*/ None,
         )
         .await
         .expect_err("oversized file must be rejected before allocation");

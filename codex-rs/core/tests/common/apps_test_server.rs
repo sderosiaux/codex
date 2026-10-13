@@ -78,7 +78,6 @@ impl McpServerContributor<Config> for HostedMessagingServer {
                 config: Box::new(
                     serde_json::from_value(json!({
                         "url": self.0,
-                        "default_tools_approval_mode": "approve",
                         "supports_parallel_tool_calls": true
                     }))
                     .expect("host-owned messaging MCP config"),
@@ -304,10 +303,7 @@ pub fn configure_search_capable_model(config: &mut Config) {
 }
 
 fn configure_apps(config: &mut Config, apps_base_url: &str) {
-    config
-        .features
-        .enable(Feature::Apps)
-        .expect("test config should allow feature update");
+    config.features.enable(Feature::Apps);
     config.chatgpt_base_url = apps_base_url.to_string();
 }
 

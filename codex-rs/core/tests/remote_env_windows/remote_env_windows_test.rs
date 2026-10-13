@@ -6,8 +6,6 @@ use codex_exec_server::REMOTE_ENVIRONMENT_ID;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
-use codex_protocol::models::PermissionProfile;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EnvironmentConfigState;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExecCommandStatus;
@@ -25,7 +23,6 @@ use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::test_codex::TurnInputRequest;
 use core_test_support::test_codex::test_codex;
-use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
 use serde_json::json;
@@ -98,8 +95,6 @@ async fn windows_exec_server_runs_with_native_shell_and_cwd() -> Result<()> {
                 .with_model("gpt-5.2")
                 .with_exec_server_url(exec_server_url);
             let test = builder.build(&server).await?;
-            let (sandbox_policy, permission_profile) =
-                turn_permission_fields(PermissionProfile::Disabled, test.config.cwd.as_path());
             let environments = TurnEnvironmentSelections::new(
                 test.config.cwd.clone(),
                 vec![{
@@ -120,9 +115,6 @@ async fn windows_exec_server_runs_with_native_shell_and_cwd() -> Result<()> {
                         text_elements: Vec::new(),
                     }]).with_thread_settings(ThreadSettingsOverrides {
                         environments: Some(environments.into_requests()),
-                        approval_policy: Some(AskForApproval::Never),
-                        sandbox_policy: Some(sandbox_policy),
-                        permission_profile,
                         collaboration_mode: Some(CollaborationMode {
                             mode: ModeKind::Default,
                             settings: Settings {

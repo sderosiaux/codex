@@ -18,8 +18,7 @@ use super::SNAPSHOT_RETRY_BACKOFF;
 use super::ShellSnapshotCache;
 use super::SnapshotReplay;
 use super::parse_snapshot;
-use crate::process_sandbox::prepare_exec_request_with_telemetry;
-use crate::process_telemetry::ProcessTelemetry;
+use crate::exec_request::prepare_exec_request;
 use crate::protocol::ExecEnvPolicy;
 use crate::protocol::ExecParams;
 use crate::protocol::ProcessId;
@@ -70,10 +69,6 @@ async fn snapshot_failure_retries_are_bounded_and_single_flight(
         tty: false,
         pipe_stdin: false,
         arg0: None,
-        sandbox: None,
-        enforce_managed_network: false,
-        managed_network: None,
-        network_proxy: None,
     };
     let cache = ShellSnapshotCache::default();
     let metrics = MetricsClient::new(
@@ -95,26 +90,10 @@ async fn snapshot_failure_retries_are_bounded_and_single_flight(
                 "printf x >> \"$HOME/captures\"\nprofile_helper() { printf recovered; }\n",
             )?;
         }
-        let mut prepared = prepare_exec_request_with_telemetry(
-            &params,
-            params.env.clone(),
-            /*runtime_paths*/ None,
-            /*network_policy_decider*/ None,
-            /*network_policy_audit_observer*/ None,
-            &ProcessTelemetry::default(),
-        )
-        .await
-        .expect("prepare capture");
-        let mut concurrent = prepare_exec_request_with_telemetry(
-            &params,
-            params.env.clone(),
-            /*runtime_paths*/ None,
-            /*network_policy_decider*/ None,
-            /*network_policy_audit_observer*/ None,
-            &ProcessTelemetry::default(),
-        )
-        .await
-        .expect("prepare concurrent capture");
+        let mut prepared =
+            prepare_exec_request(&params, params.env.clone()).expect("prepare capture");
+        let mut concurrent =
+            prepare_exec_request(&params, params.env.clone()).expect("prepare concurrent capture");
         let prewarming = prewarm_fails_first && attempt == 1;
         let purpose = if prewarming {
             CapturePurpose::Prewarm
@@ -267,7 +246,6 @@ async fn snapshot_failure_retries_are_bounded_and_single_flight(
             ("purpose".to_string(), purpose.to_string()),
             ("attempt".to_string(), attempt.to_string()),
             ("shell".to_string(), "bash".to_string()),
-            ("sandbox".to_string(), "none".to_string()),
         ]);
         if !success {
             tags.insert("failure_reason".to_string(), "nonzero_exit".to_string());
@@ -372,36 +350,26 @@ fn snapshot_preserves_profile_exports_with_restrictive_inheritance() {
 }
 
 #[test]
-fn snapshot_caches_only_unmanaged_proxy_state() {
-    for (exports, expected) in [
-        (
-            "PROFILE_ALLOWED=profile\0HTTP_PROXY=http://127.0.0.1:4321\0CODEX_NETWORK_PROXY_ACTIVE=1\0CODEX_NETWORK_PROXY_CREDENTIAL_BROKER_ACTIVE=1\0",
-            HashMap::from([("PROFILE_ALLOWED".to_string(), "profile".to_string())]),
-        ),
-        (
-            "PROFILE_ALLOWED=profile\0HTTP_PROXY=http://user-proxy.example\0",
-            HashMap::from([
-                ("PROFILE_ALLOWED".to_string(), "profile".to_string()),
-                (
-                    "HTTP_PROXY".to_string(),
-                    "http://user-proxy.example".to_string(),
-                ),
-            ]),
-        ),
-    ] {
-        let output = format!(
-            "# Snapshot file\n\0\0\0{exports}CODEX_THREAD_ID=capture-thread\0CODEX_TOOL_CALL_ID=profile-call\0"
-        );
-        let snapshot = parse_snapshot(
-            ShellType::Bash,
-            output.as_bytes(),
-            /*env_policy*/ None,
-            SnapshotReplay::Environment,
-        )
-        .expect("snapshot should parse");
+fn snapshot_caches_user_proxy_state() {
+    let output = "# Snapshot file\n\0\0\0PROFILE_ALLOWED=profile\0HTTP_PROXY=http://user-proxy.example\0CODEX_THREAD_ID=capture-thread\0CODEX_TOOL_CALL_ID=profile-call\0";
+    let snapshot = parse_snapshot(
+        ShellType::Bash,
+        output.as_bytes(),
+        /*env_policy*/ None,
+        SnapshotReplay::Environment,
+    )
+    .expect("snapshot should parse");
 
-        assert_eq!(snapshot.environment, expected);
-    }
+    assert_eq!(
+        snapshot.environment,
+        HashMap::from([
+            ("PROFILE_ALLOWED".to_string(), "profile".to_string()),
+            (
+                "HTTP_PROXY".to_string(),
+                "http://user-proxy.example".to_string(),
+            ),
+        ])
+    );
 }
 
 use codex_shell_command::shell_detect::ShellType;

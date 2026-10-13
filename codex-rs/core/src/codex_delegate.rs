@@ -4,7 +4,6 @@ use crate::session::Submission;
 use async_channel::Receiver;
 use async_channel::Sender;
 use codex_async_utils::OrCancelExt;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
@@ -19,14 +18,12 @@ use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::Config;
-use crate::config::Constrained;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::session::ForkPersistence;
 use crate::session::GitEnrichmentPolicy;
 use crate::session::SUBMISSION_CHANNEL_CAPACITY;
 use crate::session::SessionIo;
 use crate::session::SessionSpawnArgs;
-use crate::session::emit_subagent_session_started;
 use crate::session::session::Session;
 use crate::session::startup::SessionStartup;
 use crate::session::startup::SessionStartupGuard;
@@ -47,7 +44,7 @@ use crate::session::completed_session_loop_termination;
 
 /// Start an interactive sub-Codex thread and return its runtime and IO channels.
 ///
-/// Delegates never request approvals, and the returned IO yields their public events.
+/// The returned IO yields the delegate's public events.
 /// Its submission channel accepts additional `Op`s for the sub-agent.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_codex_thread_interactive(
@@ -62,18 +59,11 @@ pub(crate) async fn run_codex_thread_interactive(
     isolation: codex_extension_api::SessionIsolation,
     initial_history: Option<InitialHistory>,
     git_enrichment_policy: GitEnrichmentPolicy,
-    windows_sandbox_proxy_settings_mode: codex_sandboxing::WindowsSandboxProxySettingsMode,
 ) -> Result<(Arc<Session>, SessionIo), CodexErr> {
-    if config.permissions.approval_policy.value() != AskForApproval::Never {
-        return Err(CodexErr::InvalidRequest(
-            "Codex delegates require approval policy `never`".to_string(),
-        ));
-    }
     // Do not let admission or a ready startup error win over prior cancellation.
     if cancel_token.is_cancelled() {
         return Err(CodexErr::TurnAborted);
     }
-    config.permissions.approval_policy = Constrained::allow_only(AskForApproval::Never);
     config.model_provider.supports_websockets &= parent_session
         .services
         .model_client
@@ -93,8 +83,7 @@ pub(crate) async fn run_codex_thread_interactive(
     startup.hold_membership(runtime.admit_start()?);
     let startup_guard = SessionStartupGuard::new(Arc::clone(&startup));
     let instructions = parent_session.inherited_instructions().await;
-    let session_source = SessionSource::SubAgent(subagent_source.clone());
-    let is_guardian_reviewer = crate::guardian::is_basic_session_source(&session_source);
+    let session_source = SessionSource::SubAgent(subagent_source);
     let extensions = if isolation == codex_extension_api::SessionIsolation::Isolated {
         codex_extension_api::empty_extension_registry()
     } else {
@@ -118,7 +107,6 @@ pub(crate) async fn run_codex_thread_interactive(
         skills_service: Arc::clone(&parent_session.services.skills_service),
         plugins_manager: Arc::clone(&parent_session.services.plugins_manager),
         mcp_manager: Arc::clone(&parent_session.services.mcp_manager),
-        code_mode_session_provider: parent_session.services.code_mode_service.session_provider(),
         extensions,
         conversation_history,
         history_initialization,
@@ -129,11 +117,7 @@ pub(crate) async fn run_codex_thread_interactive(
         session_source,
         forked_from_thread_id,
         parent_thread_id: Some(parent_session.thread_id),
-        thread_source: Some(if is_guardian_reviewer {
-            ThreadSource::GuardianReview
-        } else {
-            ThreadSource::Subagent
-        }),
+        thread_source: Some(ThreadSource::Subagent),
         originator: parent_ctx.originator.clone(),
         agent_control: crate::agent::control::AgentControlInit::Provided {
             control: Arc::clone(&parent_session.services.agent_control),
@@ -143,8 +127,6 @@ pub(crate) async fn run_codex_thread_interactive(
         metrics_service_name: None,
         user_shell_override: None,
         inherited_environments: Some(parent_environments.clone()),
-        inherited_exec_policy: Some(Arc::clone(&parent_session.services.exec_policy)),
-        parent_rollout_thread_trace: codex_rollout_trace::ThreadTraceContext::disabled(),
         parent_trace: None,
         environment_requests: parent_environments
             .to_selections()
@@ -155,14 +137,12 @@ pub(crate) async fn run_codex_thread_interactive(
         turn_extension_init: Default::default(),
         client_mcp_extensions: parent_session.services.client_mcp_extensions.clone(),
         reserved_thread_id: None,
-        analytics_events_client: Some(parent_session.services.analytics_events_client.clone()),
         image_store: Arc::clone(&parent_session.services.image_store),
         thread_store: Arc::clone(&parent_session.services.thread_store),
         attestation_provider: parent_session.services.attestation_provider.clone(),
         external_time_provider: Some(Arc::clone(&parent_session.services.time_provider)),
         inherited_multi_agent_version: Some(MultiAgentVersion::Disabled),
         git_enrichment_policy,
-        windows_sandbox_proxy_settings_mode,
     })
     .or_cancel(&cancel_token)
     .await;
@@ -177,18 +157,6 @@ pub(crate) async fn run_codex_thread_interactive(
             return Err(error.into());
         }
     };
-    let thread_config = session.thread_config_snapshot().await;
-    let client_metadata = parent_session.app_server_client_metadata().await;
-    emit_subagent_session_started(
-        &session.services.analytics_events_client,
-        client_metadata,
-        session.session_id(),
-        session.thread_id(),
-        Some(parent_session.thread_id),
-        thread_config,
-        subagent_source,
-        /*resumed_created_at*/ None,
-    );
     let caller_io = forward_session_io(Arc::new(io), cancel_token);
     startup.release_membership();
     startup_guard.disarm();
@@ -257,7 +225,6 @@ pub(crate) async fn run_codex_thread_one_shot(
         codex_extension_api::SessionIsolation::Inherit,
         initial_history,
         GitEnrichmentPolicy::Fresh,
-        codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
     ))
     .await?;
 

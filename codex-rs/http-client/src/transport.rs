@@ -119,9 +119,7 @@ impl ReqwestTransport {
 
     fn map_error(err: crate::HttpError) -> TransportError {
         let err = err.without_url();
-        if let crate::HttpError::Policy(denied) = err {
-            TransportError::Policy(denied)
-        } else if err.is_connect() {
+        if err.is_connect() {
             TransportError::Connection(err.without_url())
         } else if err.is_timeout() {
             TransportError::Timeout
@@ -132,7 +130,6 @@ impl ReqwestTransport {
 
     fn map_route_aware_error(error: RouteAwareRequestError) -> TransportError {
         match error.without_url() {
-            RouteAwareRequestError::Policy(denied) => TransportError::Policy(denied),
             RouteAwareRequestError::Request(error) => Self::map_error(error.into()),
             RouteAwareRequestError::Timeout => TransportError::Timeout,
             RouteAwareRequestError::Route(error) => TransportError::Build(error.to_string()),
@@ -188,9 +185,7 @@ impl HttpTransport for ReqwestTransport {
         if !status.is_success() {
             let body = match bytes {
                 Ok(bytes) => String::from_utf8(bytes.to_vec()).ok(),
-                Err(
-                    error @ (TransportError::ResponseTooLarge { .. } | TransportError::Policy(_)),
-                ) => return Err(error),
+                Err(error @ TransportError::ResponseTooLarge { .. }) => return Err(error),
                 // Keep bounded diagnostic-body failures from hiding HTTP auth/retry status.
                 Err(_) if response_body_limit_bytes.is_some() => None,
                 // TODO(anp): Preserve retry advice on body failures without changing their
@@ -231,17 +226,11 @@ impl HttpTransport for ReqwestTransport {
                         *buffered.headers_mut() = headers.clone();
                         reqwest::Response::from(buffered).text().await.ok()
                     }
-                    Err(
-                        error @ (TransportError::ResponseTooLarge { .. }
-                        | TransportError::Policy(_)),
-                    ) => return Err(error),
+                    Err(error @ TransportError::ResponseTooLarge { .. }) => return Err(error),
                     // A failed diagnostic body must not hide HTTP auth or retry semantics.
                     Err(_) => None,
                 },
-                None => match resp.text().await {
-                    Err(crate::HttpError::Policy(denied)) => return Err(denied.into()),
-                    body => body.ok(),
-                },
+                None => resp.text().await.ok(),
             };
             return Err(TransportError::Http {
                 status,

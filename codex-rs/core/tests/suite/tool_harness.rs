@@ -9,9 +9,7 @@ use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
 use codex_protocol::items::TurnItem;
-use codex_protocol::models::PermissionProfile;
 use codex_protocol::plan_tool::StepStatus;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::user_input::UserInput;
@@ -29,7 +27,6 @@ use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::test_codex;
-use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
 use serde_json::Value;
 use serde_json::json;
@@ -96,8 +93,6 @@ async fn exec_command_tool_executes_command_and_streams_output() -> anyhow::Resu
 
     let session_model = session_configured.model.clone();
     let cwd_path = cwd.abs();
-    let (sandbox_policy, permission_profile) =
-        turn_permission_fields(PermissionProfile::Disabled, cwd_path.as_path());
 
     codex
         .start_or_steer_turn(
@@ -107,9 +102,6 @@ async fn exec_command_tool_executes_command_and_streams_output() -> anyhow::Resu
             }])
             .with_thread_settings(ThreadSettingsOverrides {
                 environments: Some(local_requests(cwd_path)),
-                approval_policy: Some(AskForApproval::Never),
-                sandbox_policy: Some(sandbox_policy),
-                permission_profile,
                 collaboration_mode: Some(CollaborationMode {
                     mode: ModeKind::Default,
                     settings: Settings {
@@ -174,8 +166,6 @@ async fn update_plan_tool_emits_plan_update_event() -> anyhow::Result<()> {
 
     let session_model = session_configured.model.clone();
     let cwd_path = cwd.abs();
-    let (sandbox_policy, permission_profile) =
-        turn_permission_fields(PermissionProfile::Disabled, cwd_path.as_path());
 
     codex
         .start_or_steer_turn(
@@ -185,9 +175,6 @@ async fn update_plan_tool_emits_plan_update_event() -> anyhow::Result<()> {
             }])
             .with_thread_settings(ThreadSettingsOverrides {
                 environments: Some(local_requests(cwd_path)),
-                approval_policy: Some(AskForApproval::Never),
-                sandbox_policy: Some(sandbox_policy),
-                permission_profile,
                 collaboration_mode: Some(CollaborationMode {
                     mode: ModeKind::Default,
                     settings: Settings {
@@ -262,8 +249,6 @@ async fn update_plan_tool_rejects_malformed_payload() -> anyhow::Result<()> {
 
     let session_model = session_configured.model.clone();
     let cwd_path = cwd.abs();
-    let (sandbox_policy, permission_profile) =
-        turn_permission_fields(PermissionProfile::Disabled, cwd_path.as_path());
 
     codex
         .start_or_steer_turn(
@@ -273,9 +258,6 @@ async fn update_plan_tool_rejects_malformed_payload() -> anyhow::Result<()> {
             }])
             .with_thread_settings(ThreadSettingsOverrides {
                 environments: Some(local_requests(cwd_path)),
-                approval_policy: Some(AskForApproval::Never),
-                sandbox_policy: Some(sandbox_policy),
-                permission_profile,
                 collaboration_mode: Some(CollaborationMode {
                     mode: ModeKind::Default,
                     settings: Settings {
@@ -360,8 +342,6 @@ async fn apply_patch_tool_executes_and_emits_patch_events() -> anyhow::Result<()
 
     let session_model = session_configured.model.clone();
     let cwd_path = cwd.abs();
-    let (sandbox_policy, permission_profile) =
-        turn_permission_fields(PermissionProfile::Disabled, cwd_path.as_path());
 
     codex
         .start_or_steer_turn(
@@ -371,9 +351,6 @@ async fn apply_patch_tool_executes_and_emits_patch_events() -> anyhow::Result<()
             }])
             .with_thread_settings(ThreadSettingsOverrides {
                 environments: Some(local_requests(cwd_path)),
-                approval_policy: Some(AskForApproval::Never),
-                sandbox_policy: Some(sandbox_policy),
-                permission_profile,
                 collaboration_mode: Some(CollaborationMode {
                     mode: ModeKind::Default,
                     settings: Settings {
@@ -495,8 +472,6 @@ async fn apply_patch_reports_parse_diagnostics() -> anyhow::Result<()> {
 
     let session_model = session_configured.model.clone();
     let cwd_path = cwd.abs();
-    let (sandbox_policy, permission_profile) =
-        turn_permission_fields(PermissionProfile::Disabled, cwd_path.as_path());
 
     codex
         .start_or_steer_turn(
@@ -506,9 +481,6 @@ async fn apply_patch_reports_parse_diagnostics() -> anyhow::Result<()> {
             }])
             .with_thread_settings(ThreadSettingsOverrides {
                 environments: Some(local_requests(cwd_path)),
-                approval_policy: Some(AskForApproval::Never),
-                sandbox_policy: Some(sandbox_policy),
-                permission_profile,
                 collaboration_mode: Some(CollaborationMode {
                     mode: ModeKind::Default,
                     settings: Settings {

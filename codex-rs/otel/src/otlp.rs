@@ -1,4 +1,5 @@
 use crate::config::OtelTlsConfig;
+use bytes::Bytes;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use http::Uri;
 use opentelemetry_otlp::OTEL_EXPORTER_OTLP_TIMEOUT;
@@ -14,9 +15,11 @@ use reqwest::header::HeaderValue;
 use std::env;
 use std::error::Error;
 use std::fs;
+use std::future::Future;
 use std::io;
 use std::io::ErrorKind;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::time::Duration;
 
 pub(crate) fn build_header_map(headers: &std::collections::HashMap<String, String>) -> HeaderMap {
@@ -149,7 +152,7 @@ pub(crate) fn build_async_http_client(
     factory: &codex_http_client::HttpClientFactory,
     tls: Option<&OtelTlsConfig>,
     timeout_var: &str,
-) -> Result<crate::network_policy::RuntimeHttpClient, Box<dyn Error>> {
+) -> Result<RuntimeHttpClient, Box<dyn Error>> {
     let mut config = codex_http_client::HttpClientTlsConfig::default();
 
     if let Some(tls) = tls {
@@ -189,7 +192,7 @@ pub(crate) fn build_async_http_client(
         }
     }
 
-    Ok(crate::network_policy::RuntimeHttpClient {
+    Ok(RuntimeHttpClient {
         client: codex_http_client::HttpClientBuilder::new()
             .without_request_logging()
             .build_with_tls(factory, codex_http_client::ClientRouteClass::Other, config),
@@ -273,5 +276,61 @@ mod tests {
         });
 
         assert!(client.is_ok());
+    }
+}
+
+/// Keeps blocking SDK worker threads from performing uncancellable HTTP I/O.
+#[derive(Debug)]
+pub(crate) struct RuntimeHttpClient {
+    pub(crate) client: codex_http_client::HttpClient,
+    pub(crate) timeout: Duration,
+    pub(crate) runtime: tokio::runtime::Handle,
+}
+
+impl opentelemetry_http::HttpClient for RuntimeHttpClient {
+    fn send_bytes<'client, 'request>(
+        &'client self,
+        request: http::Request<Bytes>,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<http::Response<Bytes>, opentelemetry_http::HttpError>>
+                + Send
+                + 'request,
+        >,
+    >
+    where
+        'client: 'request,
+        Self: 'request,
+    {
+        Box::pin(async move {
+            let client = self.client.clone();
+            let timeout = self.timeout;
+            let mut requests = tokio::task::JoinSet::new();
+            requests.spawn_on(
+                async move {
+                    let (parts, body) = request.into_parts();
+                    let response = client
+                        .request(parts.method, parts.uri.to_string())
+                        .version(parts.version)
+                        .headers(parts.headers)
+                        .body(body)
+                        .timeout(timeout)
+                        .send()
+                        .await?
+                        .error_for_status()?;
+                    let mut builder = http::Response::builder().status(response.status());
+                    if let Some(headers) = builder.headers_mut() {
+                        *headers = response.headers().clone();
+                    }
+                    Ok::<_, opentelemetry_http::HttpError>(builder.body(response.bytes().await?)?)
+                },
+                &self.runtime,
+            );
+            // Dropping the SDK export future drops this set and aborts the HTTP request.
+            requests
+                .join_next()
+                .await
+                .ok_or("telemetry request task disappeared")??
+        })
     }
 }

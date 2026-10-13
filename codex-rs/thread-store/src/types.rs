@@ -4,16 +4,13 @@ use std::sync::Arc;
 use chrono::DateTime;
 use chrono::Utc;
 use codex_app_server_protocol::CodexErrorInfo;
-use codex_app_server_protocol::ThreadTimelineEntry;
 use codex_protocol::SanitizedGitUrl;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::models::BaseInstructions;
-use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ReasoningEffort;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::GitInfo;
 use codex_protocol::protocol::HistoryPosition;
 use codex_protocol::protocol::MultiAgentVersion;
@@ -553,22 +550,6 @@ pub struct ItemPage {
     pub backwards_cursor: Option<String>,
 }
 
-/// Parameters for reading a bounded mixed thread timeline.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ListTimelineParams {
-    pub thread_id: ThreadId,
-    pub cursor: Option<String>,
-    pub page_size: usize,
-}
-
-/// Ordinary items, realtime facts, and the session state preceding their page.
-#[derive(Clone, Debug, PartialEq)]
-pub struct TimelinePage {
-    pub items: Vec<ThreadTimelineEntry>,
-    pub next_cursor: Option<String>,
-    pub active_realtime_session_at_page_start: Option<String>,
-}
-
 /// Parameters for searching visible message occurrences within one paginated thread.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SearchThreadOccurrencesParams {
@@ -673,10 +654,6 @@ pub struct StoredThread {
     pub agent_path: Option<String>,
     /// Optional Git metadata captured for the thread.
     pub git_info: Option<GitInfo>,
-    /// Approval mode captured for the thread.
-    pub approval_mode: AskForApproval,
-    /// Canonical runtime permissions captured for the thread.
-    pub permission_profile: PermissionProfile,
     /// Last observed token usage.
     pub token_usage: Option<TokenUsage>,
     /// First user message observed for this thread, if any.
@@ -809,10 +786,6 @@ pub struct ThreadMetadataPatch {
     pub cwd: Option<PathBuf>,
     /// CLI version that created the thread.
     pub cli_version: Option<String>,
-    /// Approval mode.
-    pub approval_mode: Option<AskForApproval>,
-    /// Canonical runtime permissions.
-    pub permission_profile: Option<PermissionProfile>,
     /// Last observed token usage.
     pub token_usage: Option<TokenUsage>,
     /// First user message observed for this thread.
@@ -899,12 +872,6 @@ impl ThreadMetadataPatch {
         if next.cli_version.is_some() {
             self.cli_version = next.cli_version;
         }
-        if next.approval_mode.is_some() {
-            self.approval_mode = next.approval_mode;
-        }
-        if next.permission_profile.is_some() {
-            self.permission_profile = next.permission_profile;
-        }
         if next.token_usage.is_some() {
             self.token_usage = next.token_usage;
         }
@@ -951,8 +918,6 @@ impl ThreadMetadataPatch {
             && self.agent_path.is_none()
             && self.cwd.is_none()
             && self.cli_version.is_none()
-            && self.approval_mode.is_none()
-            && self.permission_profile.is_none()
             && self.token_usage.is_none()
             && self.first_user_message.is_none()
             && self.git_info.is_none()

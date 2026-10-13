@@ -1,9 +1,7 @@
 use anyhow::Result;
-use codex_config::Constrained;
 use codex_core::EnvironmentConfig;
 use codex_core::TurnInputRequest;
 use codex_core::config::Config;
-use codex_core::windows_sandbox::WindowsSandboxLevelExt;
 use codex_extension_api::ExtensionFuture;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_extension_api::McpServerContribution;
@@ -18,10 +16,6 @@ use codex_mcp::CodexAppsResourceListParams;
 use codex_mcp::McpResourceClient;
 use codex_protocol::capabilities::CapabilityRootLocation;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
-use codex_protocol::config_types::WindowsSandboxLevel;
-use codex_protocol::models::PermissionProfile;
-use codex_protocol::models::PermissionProfileSnapshot;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SessionSource;
@@ -32,6 +26,7 @@ use codex_protocol::user_input::UserInput;
 use core_test_support::apps_test_server::AppsTestServer;
 use core_test_support::apps_test_server::SEARCH_CALENDAR_CREATE_TOOL;
 use core_test_support::apps_test_server::SEARCH_CALENDAR_NAMESPACE;
+use core_test_support::apps_test_server::apps_enabled_builder;
 use core_test_support::apps_test_server::search_capable_apps_builder;
 use core_test_support::context_snapshot;
 use core_test_support::context_snapshot::ContextSnapshotOptions;
@@ -144,7 +139,6 @@ impl McpServerContributor<Config> for CoalescingMcpContributor {
             let marker = context
                 .config()
                 .mcp_servers
-                .get()
                 .keys()
                 .next()
                 .cloned()
@@ -243,10 +237,7 @@ fn format_labeled_requests_snapshot(
 fn enable_deferred_tool_world_state_without_agents(config: &mut Config) {
     config.update_plan_enabled = true;
     config.agents_enabled = false;
-    config
-        .features
-        .enable(Feature::DeferredToolWorldState)
-        .expect("test config should allow feature update");
+    config.features.enable(Feature::DeferredToolWorldState);
 }
 
 fn tools_state_sections(request: &ResponsesRequest) -> Vec<String> {
@@ -294,10 +285,7 @@ fn config_with_mcp_marker(base: &Config, marker: &str) -> Config {
         "enabled": false,
     }))
     .expect("test MCP server config");
-    config
-        .mcp_servers
-        .set(HashMap::from([(marker.to_string(), server)]))
-        .expect("test config should allow MCP servers");
+    config.mcp_servers = HashMap::from([(marker.to_string(), server)]);
     config
 }
 
@@ -504,16 +492,10 @@ async fn root_reconciliation_reuses_pending_apps_startup() -> Result<()> {
         url: format!("{}/api/codex/ps/mcp", gated_apps_server.chatgpt_base_url),
         root_resolved: Some(Arc::clone(&root_resolved)),
     }));
-    let mut builder = search_capable_apps_builder(apps_server.chatgpt_base_url)
-        .with_extensions(Arc::new(extensions.build()))
-        .with_config(|config| {
-            config
-                .features
-                .enable(Feature::CodeModeOnly)
-                .expect("test config should allow feature update");
-            config.code_mode.direct_only_tool_namespaces =
-                vec![SEARCH_CALENDAR_NAMESPACE.to_string()];
-        });
+    // Without tool search, Apps namespaces are exposed directly to the model.
+    let mut builder = apps_enabled_builder(apps_server.chatgpt_base_url)
+        .with_model_info_override("gpt-5.5", |model| model.supports_search_tool = false)
+        .with_extensions(Arc::new(extensions.build()));
     let test = builder.build_with_auto_env(&server).await?;
     tokio::time::timeout(Duration::from_secs(5), async {
         while startup_control.initialize_attempts() == 0 {
@@ -536,16 +518,7 @@ async fn root_reconciliation_reuses_pending_apps_startup() -> Result<()> {
             EnvironmentConfig {
                 allow_login_shell: false,
                 workspace_roots: selection.workspace_roots.clone(),
-                permission_profile: PermissionProfileSnapshot::legacy(
-                    test.config.permissions.permission_profile().clone(),
-                ),
                 shell_environment_policy: Default::default(),
-                windows_sandbox_level: WindowsSandboxLevel::from_config(&test.config),
-                windows_sandbox_type: test.config.permissions.windows_sandbox_type,
-                use_legacy_landlock: test.config.features.use_legacy_landlock(),
-                exec_policy: None,
-                mcp_policy: None,
-                network_policy: None,
                 selected_capability_roots: vec![SelectedCapabilityRoot {
                     id: "calendar-root".to_string(),
                     location: CapabilityRootLocation::Environment {
@@ -624,24 +597,19 @@ async fn timeout_refresh_replaces_pending_startup_and_reuses_ready_connection() 
         AppsTestServer::mount_with_startup_control(&ready_mock).await?;
     let test = core_test_support::test_codex::test_codex()
         .with_config(move |config| {
-            config
-                .mcp_servers
-                .set(
-                    [("pending", pending_server), ("ready", ready_server)]
-                        .into_iter()
-                        .map(|(name, server)| {
-                            (
-                                name.to_string(),
-                                serde_json::from_value(json!({
-                                    "url": format!("{}/api/codex/ps/mcp", server.chatgpt_base_url),
-                                    "startup_timeout_sec": 60,
-                                }))
-                                .expect("valid MCP config"),
-                            )
-                        })
-                        .collect(),
-                )
-                .expect("test config should allow MCP servers");
+            config.mcp_servers = [("pending", pending_server), ("ready", ready_server)]
+                .into_iter()
+                .map(|(name, server)| {
+                    (
+                        name.to_string(),
+                        serde_json::from_value(json!({
+                            "url": format!("{}/api/codex/ps/mcp", server.chatgpt_base_url),
+                            "startup_timeout_sec": 60,
+                        }))
+                        .expect("valid MCP config"),
+                    )
+                })
+                .collect();
         })
         .build_with_auto_env(&server)
         .await?;
@@ -664,11 +632,11 @@ async fn timeout_refresh_replaces_pending_startup_and_reuses_ready_connection() 
 
     let current_config = test.codex.config().await;
     let mut refresh_config = test.config.clone();
-    let mut servers = refresh_config.mcp_servers.get().clone();
+    let mut servers = refresh_config.mcp_servers.clone();
     for config in servers.values_mut() {
         config.startup_timeout_sec = None;
     }
-    refresh_config.mcp_servers.set(servers)?;
+    refresh_config.mcp_servers = servers;
     let _ = test
         .codex
         .refresh_mcp_config(current_config, refresh_config)
@@ -897,10 +865,7 @@ startup_timeout_sec = 0.1
         .map(HashMap::<String, codex_config::types::McpServerConfig>::deserialize)
         .transpose()?
         .expect("test config should define MCP servers");
-    refresh_config
-        .mcp_servers
-        .set(refreshed_servers)
-        .expect("test config should allow MCP servers");
+    refresh_config.mcp_servers = refreshed_servers;
     refresh_config.config_layer_stack = refresh_config
         .config_layer_stack
         .with_user_config(&user_config_path, user_config)?;
@@ -1019,73 +984,6 @@ async fn elevated_apps_catalog_limit_requires_host_owned_registration() -> Resul
         );
         test.codex.shutdown_and_wait().await?;
     }
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn code_mode_only_exposes_direct_model_only_mcp_namespaces() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-
-    let server = responses::start_mock_server().await;
-    let apps_server = AppsTestServer::mount_searchable(&server).await?;
-    let response = responses::mount_sse_once(
-        &server,
-        sse(vec![
-            ev_response_created("resp-1"),
-            ev_assistant_message("msg-1", "done"),
-            ev_completed("resp-1"),
-        ]),
-    )
-    .await;
-
-    let mut builder = search_capable_apps_builder(apps_server.chatgpt_base_url.clone())
-        .with_config(move |config| {
-            config
-                .features
-                .enable(Feature::CodeModeOnly)
-                .expect("test config should allow feature update");
-            config.code_mode.direct_only_tool_namespaces =
-                vec![SEARCH_CALENDAR_NAMESPACE.to_string()];
-        });
-    let test = builder.build(&server).await?;
-    test.submit_turn("inspect directly exposed MCP tools")
-        .await?;
-    let body = response.single_request().body_json();
-    let tools = body
-        .get("tools")
-        .and_then(Value::as_array)
-        .expect("request should contain tools");
-
-    assert!(
-        namespace_child_tool(
-            &body,
-            SEARCH_CALENDAR_NAMESPACE,
-            SEARCH_CALENDAR_CREATE_TOOL,
-        )
-        .is_some(),
-        "configured MCP namespace should remain top-level: {body}"
-    );
-    assert!(
-        !tools.iter().any(|tool| {
-            tool.get("name")
-                .or_else(|| tool.get("type"))
-                .and_then(Value::as_str)
-                == Some("tool_search")
-        }),
-        "configured MCP namespace should not be deferred: {body}"
-    );
-    let exec_description = tools.iter().find_map(|tool| {
-        (tool.get("name").and_then(Value::as_str) == Some("exec"))
-            .then(|| tool.get("description").and_then(Value::as_str))
-            .flatten()
-    });
-    assert!(
-        exec_description.is_some_and(|description| {
-            !description.contains("mcp__codex_apps__calendar_create_event(args:")
-        }),
-        "direct-model-only MCP namespace should not be available through exec: {body}"
-    );
 
     Ok(())
 }
@@ -1398,14 +1296,8 @@ async fn apps_guidance_and_deferred_namespace_appear_after_recovery_within_a_tur
         .with_extensions(Arc::new(extensions.build()))
         .with_config(|config| {
             config.update_plan_enabled = true;
-            config
-                .features
-                .enable(Feature::DefaultModeRequestUserInput)
-                .expect("test config should allow feature update");
-            config
-                .features
-                .enable(Feature::DeferredToolWorldState)
-                .expect("test config should allow feature update");
+            config.features.enable(Feature::DefaultModeRequestUserInput);
+            config.features.enable(Feature::DeferredToolWorldState);
         });
     let test = builder.build(&server).await?;
 
@@ -1559,20 +1451,9 @@ async fn later_follow_up_uses_background_recovered_apps_after_mid_thread_startup
     )
     .await;
 
-    let mut builder = search_capable_apps_builder(apps_server.chatgpt_base_url.clone())
-        .with_config(move |config| {
-            config.permissions.approval_policy = Constrained::allow_any(AskForApproval::Never);
-            config
-                .permissions
-                .set_permission_profile(PermissionProfile::Disabled)
-                .expect("test config should allow disabled permissions");
-            config
-                .features
-                .enable(Feature::CodeModeOnly)
-                .expect("test config should allow feature update");
-            config.code_mode.direct_only_tool_namespaces =
-                vec![SEARCH_CALENDAR_NAMESPACE.to_string()];
-        });
+    // Without tool search, Apps namespaces are exposed directly to the model.
+    let mut builder = apps_enabled_builder(apps_server.chatgpt_base_url.clone())
+        .with_model_info_override("gpt-5.5", |model| model.supports_search_tool = false);
     let test = builder.build(&server).await?;
     wait_for_mcp_server(&test.codex, CODEX_APPS_MCP_SERVER_NAME).await?;
     test.submit_turn("use Calendar before refreshing MCP")

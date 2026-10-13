@@ -20,10 +20,8 @@ use codex_protocol::models::ContentItem;
 use codex_protocol::models::DEFAULT_IMAGE_DETAIL;
 use codex_protocol::models::ImageDetail;
 use codex_protocol::models::ImageReference;
-use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ThreadHistoryMode;
@@ -45,7 +43,6 @@ use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::local_requests;
 use core_test_support::test_codex::test_codex;
-use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_match;
 use image::GenericImageView;
@@ -172,8 +169,6 @@ async fn copy_paste_local_image_persists_rollout_request_shape() -> anyhow::Resu
     responses::mount_sse_once(&server, response).await;
 
     let session_model = session_configured.model.clone();
-    let (sandbox_policy, permission_profile) =
-        turn_permission_fields(PermissionProfile::Disabled, cwd.path());
 
     codex
         .start_or_steer_turn(
@@ -189,9 +184,6 @@ async fn copy_paste_local_image_persists_rollout_request_shape() -> anyhow::Resu
             ])
             .with_thread_settings(ThreadSettingsOverrides {
                 environments: Some(local_requests(cwd.abs())),
-                approval_policy: Some(AskForApproval::Never),
-                sandbox_policy: Some(sandbox_policy),
-                permission_profile,
                 collaboration_mode: Some(CollaborationMode {
                     mode: ModeKind::Default,
                     settings: Settings {
@@ -270,8 +262,6 @@ async fn drag_drop_image_persists_rollout_request_shape() -> anyhow::Result<()> 
     responses::mount_sse_once(&server, response).await;
 
     let session_model = session_configured.model.clone();
-    let (sandbox_policy, permission_profile) =
-        turn_permission_fields(PermissionProfile::Disabled, cwd.path());
 
     codex
         .start_or_steer_turn(
@@ -289,9 +279,6 @@ async fn drag_drop_image_persists_rollout_request_shape() -> anyhow::Result<()> 
             ])
             .with_thread_settings(ThreadSettingsOverrides {
                 environments: Some(local_requests(cwd.abs())),
-                approval_policy: Some(AskForApproval::Never),
-                sandbox_policy: Some(sandbox_policy),
-                permission_profile,
                 collaboration_mode: Some(CollaborationMode {
                     mode: ModeKind::Default,
                     settings: Settings {

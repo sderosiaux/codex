@@ -81,7 +81,6 @@ use crate::ListThreadAttachmentThreadsParams;
 use crate::ListThreadAttachmentsParams;
 use crate::ListThreadSectionsParams;
 use crate::ListThreadsParams;
-use crate::ListTimelineParams;
 use crate::ListTurnsParams;
 use crate::LoadThreadHistoryParams;
 use crate::MoveProjectParams;
@@ -116,7 +115,6 @@ use crate::ThreadStore;
 use crate::ThreadStoreError;
 use crate::ThreadStoreFuture;
 use crate::ThreadStoreResult;
-use crate::TimelinePage;
 use crate::TurnPage;
 use crate::UpdateProjectParams;
 use crate::UpdateThreadMetadataParams;
@@ -460,14 +458,6 @@ impl LocalThreadStore {
         thread_history::list_items(self, params).await
     }
 
-    /// Lists bounded ordinary and realtime items from the rollout projection.
-    pub async fn list_timeline(
-        &self,
-        params: ListTimelineParams,
-    ) -> ThreadStoreResult<TimelinePage> {
-        thread_history::list_timeline(self, params).await
-    }
-
     /// Searches projection-backed visible messages within one paginated thread.
     pub async fn search_thread_occurrences(
         &self,
@@ -739,10 +729,6 @@ impl ThreadStore for LocalThreadStore {
         Box::pin(LocalThreadStore::list_items(self, params))
     }
 
-    fn list_timeline(&self, params: ListTimelineParams) -> ThreadStoreFuture<'_, TimelinePage> {
-        Box::pin(LocalThreadStore::list_timeline(self, params))
-    }
-
     fn search_threads(
         &self,
         params: SearchThreadsParams,
@@ -827,10 +813,8 @@ mod tests {
     use codex_protocol::models::MessagePhase;
     use codex_protocol::models::ResponseItem;
     use codex_protocol::protocol::AgentMessageEvent;
-    use codex_protocol::protocol::AskForApproval;
     use codex_protocol::protocol::EventMsg;
     use codex_protocol::protocol::ItemCompletedEvent;
-    use codex_protocol::protocol::SandboxPolicy;
     use codex_protocol::protocol::SessionSource;
     use codex_protocol::protocol::ThreadHistoryMode;
     use codex_protocol::protocol::ThreadMemoryMode;
@@ -1071,23 +1055,16 @@ mod tests {
         let mut params = create_thread_params(thread_id);
         params.history_mode = ThreadHistoryMode::Paginated;
         let cwd = std::env::current_dir().expect("current directory");
-        let turn_context = |model: &str, approval_policy| {
+        let turn_context = |model: &str| {
             RolloutItem::TurnContext(TurnContextItem {
                 turn_id: Some("turn-1".to_string()),
                 root_turn_id: None,
                 disabled_plugin_ids: None,
                 cwd: serde_json::from_value(serde_json::json!(cwd)).expect("absolute cwd"),
-                approval_policy,
-                approvals_reviewer: None,
-                sandbox_policy: SandboxPolicy::DangerFullAccess,
-                permission_profile: None,
-                active_permission_profile: None,
-                file_system_sandbox_policy: None,
                 model: model.to_string(),
                 comp_hash: None,
                 collaboration_mode: None,
                 multi_agent_version: None,
-                realtime_active: None,
                 cyber_access_program: None,
                 effort: None,
                 summary: Some(ReasoningSummary::Auto),
@@ -1098,7 +1075,7 @@ mod tests {
         let live_thread = LiveThread::create_with_inherited_model_context(
             store,
             params,
-            &[turn_context("parent-model", AskForApproval::Never)],
+            &[turn_context("parent-model")],
             &mut guard,
         )
         .await
@@ -1116,7 +1093,7 @@ mod tests {
         assert_eq!(inherited_metadata.model, None);
 
         live_thread
-            .append_items(&[turn_context("child-model", AskForApproval::OnRequest)])
+            .append_items(&[turn_context("child-model")])
             .await
             .expect("append child context");
         let child_metadata = runtime
@@ -1125,7 +1102,6 @@ mod tests {
             .expect("sqlite metadata read")
             .expect("sqlite metadata");
         assert_eq!(child_metadata.model.as_deref(), Some("child-model"));
-        assert_eq!(child_metadata.approval_mode, "on-request");
     }
 
     #[tokio::test]

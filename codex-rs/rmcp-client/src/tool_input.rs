@@ -22,12 +22,10 @@ use rmcp::service::RequestContext;
 use rmcp::service::RunningService;
 use rmcp::service::Service;
 use rmcp::service::ServiceError;
-use rmcp::transport::streamable_http_client::StreamableHttpError;
 use serde::Deserialize;
 use serde_json::Value;
 
 use crate::elicitation_client_service::ElicitationClientService;
-use crate::http_client_adapter::StreamableHttpClientAdapterError;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -41,7 +39,6 @@ pub(crate) async fn call_tool(
     mut params: CallToolRequestParams,
 ) -> Result<CallToolResult, ServiceError> {
     let mut state_only_rounds = 0;
-    let mut submitted_verification_proof = false;
     for round in 0..DEFAULT_MRTR_MAX_ROUNDS {
         let response = async {
             let handle = service
@@ -55,24 +52,7 @@ pub(crate) async fn call_tool(
             Ok::<_, ServiceError>((id, handle.await_response().await?))
         }
         .await;
-        let (id, result) = response.map_err(|error| {
-            if submitted_verification_proof
-                && let ServiceError::TransportSend(transport) = &error
-                && !matches!(
-                    transport
-                        .error
-                        .downcast_ref::<StreamableHttpError<StreamableHttpClientAdapterError>>(),
-                    Some(StreamableHttpError::AuthRequired(_))
-                )
-            {
-                // Session recovery must not replay the original operation after a
-                // continuation (which may already have consumed a signed proof).
-                // Auth challenges already return without replaying the operation.
-                invalid("MCP tool continuation failed; the tool was not restarted")
-            } else {
-                error
-            }
-        })?;
+        let (_id, result) = response?;
         let input = match result {
             ServerResult::CallToolResult(result) => return Ok(result),
             ServerResult::InputRequiredResult(result) => serde_json::to_value(result)
@@ -107,18 +87,9 @@ pub(crate) async fn call_tool(
         } else {
             state_only_rounds = 0;
         }
-        let responses = futures::future::try_join_all(requests.into_iter().enumerate().map(
-            |(index, (key, mut request))| {
-                // Native prompts need distinct UI/cancellation ownership when
-                // concurrent tool calls use the same server-assigned input key.
-                let native_verification = matches!(&request, ServerRequest::CustomRequest(request)
-                    if request.params.as_ref().and_then(|params| params.get("mode"))
-                        .and_then(Value::as_str) == Some(crate::user_verification::MODE));
-                let request_id = if native_verification {
-                    RequestId::String(format!("tool-input/{id}/{index}").into())
-                } else {
-                    RequestId::String(key.clone().into())
-                };
+        let responses =
+            futures::future::try_join_all(requests.into_iter().map(|(key, mut request)| {
+                let request_id = RequestId::String(key.clone().into());
                 let mut context = RequestContext::new(request_id, service.peer().clone());
                 context.meta = std::mem::take(request.get_meta_mut());
                 context.extensions = std::mem::take(request.extensions_mut());
@@ -130,12 +101,9 @@ pub(crate) async fn call_tool(
                         .map_err(ServiceError::McpError)?;
                     let result = serde_json::to_value(result)
                         .map_err(|_| invalid("invalid MCP tool input response"))?;
-                    let contains_proof = native_verification
-                        && result.get("action").and_then(Value::as_str) == Some("accept");
-                    Ok::<_, ServiceError>((key, result, contains_proof))
+                    Ok::<_, ServiceError>((key, result))
                 }
-            },
-        ));
+            }));
         let responses = tokio::select! {
             biased;
             _ = async {
@@ -148,15 +116,7 @@ pub(crate) async fn call_tool(
             } => return Err(ServiceError::TransportClosed),
             responses = responses => responses?,
         };
-        params.input_responses = (!responses.is_empty()).then(|| {
-            responses
-                .into_iter()
-                .map(|(key, result, contains_proof)| {
-                    submitted_verification_proof |= contains_proof;
-                    (key, result)
-                })
-                .collect()
-        });
+        params.input_responses = (!responses.is_empty()).then(|| responses.into_iter().collect());
         params.request_state = input.request_state;
     }
     Err(ServiceError::InputRequiredRoundsExceeded {
@@ -188,10 +148,6 @@ fn parse_input(value: Value) -> Result<ServerRequest, ServiceError> {
         {
             Some("form") => {
                 crate::elicitation_client_service::openai_elicitation_form(request.clone())
-                    .map_err(ServiceError::McpError)?;
-            }
-            Some(crate::user_verification::MODE) => {
-                crate::user_verification::parse_request(request.clone())
                     .map_err(ServiceError::McpError)?;
             }
             _ => return Err(invalid("unsupported OpenAI elicitation mode")),

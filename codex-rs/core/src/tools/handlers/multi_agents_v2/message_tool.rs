@@ -3,7 +3,6 @@
 //! `send_message` and `followup_task` share the same submission path and differ only in whether the
 //! resulting `InterAgentCommunication` should wake the target immediately.
 
-use super::analytics::ToolCallAnalytics;
 use super::*;
 use crate::TurnStartOptions;
 use crate::agent::api::AgentInput;
@@ -44,7 +43,6 @@ pub(super) async fn handle_message_string_tool(
     mode: MessageDeliveryMode,
     target: String,
     message: String,
-    analytics: &mut ToolCallAnalytics,
 ) -> Result<FunctionToolOutput, FunctionCallError> {
     let message = message_content(message)?;
     let ToolInvocation {
@@ -55,7 +53,6 @@ pub(super) async fn handle_message_string_tool(
         ..
     } = invocation;
     let receiver_thread_id = resolve_agent_target(&session, &turn, &target).await?;
-    analytics.set_receiver(receiver_thread_id);
     let resume_config =
         build_agent_resume_config(&turn).map_err(FunctionCallError::RespondToModel)?;
     let receipt = session

@@ -16,9 +16,7 @@ use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
 use codex_protocol::models::ContentItem;
-use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::ResponseItem;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::user_input::UserInput;
@@ -38,7 +36,6 @@ use core_test_support::skip_if_remote;
 use core_test_support::skip_if_wine_exec;
 use core_test_support::test_codex::local_requests;
 use core_test_support::test_codex::test_codex;
-use core_test_support::test_codex::turn_permission_fields;
 use pretty_assertions::assert_eq;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -78,19 +75,13 @@ async fn write_repo_skill(
             recursive: true,
             follow_symlinks: true,
         },
-        /*sandbox*/ None,
     )
     .await?;
     let contents = format!("---\nname: {name}\ndescription: {description}\n---\n\n{body}\n");
     let path = skill_dir.join("SKILL.md");
     let path_uri = PathUri::from_host_native_path(&path)?;
-    fs.write_file(
-        &path_uri,
-        contents.into_bytes(),
-        Default::default(),
-        /*sandbox*/ None,
-    )
-    .await?;
+    fs.write_file(&path_uri, contents.into_bytes(), Default::default())
+        .await?;
     Ok(())
 }
 
@@ -133,8 +124,6 @@ async fn user_turn_includes_skill_instructions() -> Result<()> {
     .await;
 
     let session_model = test.session_configured.model.clone();
-    let (sandbox_policy, permission_profile) =
-        turn_permission_fields(PermissionProfile::Disabled, test.config.cwd.as_path());
     test.codex
         .start_or_steer_turn(
             TurnInputRequest::user_input(vec![
@@ -149,9 +138,6 @@ async fn user_turn_includes_skill_instructions() -> Result<()> {
             ])
             .with_thread_settings(ThreadSettingsOverrides {
                 environments: Some(local_requests(test.config.cwd.clone())),
-                approval_policy: Some(AskForApproval::Never),
-                sandbox_policy: Some(sandbox_policy),
-                permission_profile,
                 collaboration_mode: Some(CollaborationMode {
                     mode: ModeKind::Default,
                     settings: Settings {

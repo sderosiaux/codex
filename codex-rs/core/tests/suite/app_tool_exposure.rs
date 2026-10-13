@@ -6,9 +6,7 @@ use codex_extension_api::ExtensionRegistryBuilder;
 use codex_extension_api::McpServerContribution;
 use codex_extension_api::McpServerContributionContext;
 use codex_extension_api::McpServerContributor;
-use codex_features::Feature;
 use codex_protocol::config_types::ToolExposureSurface;
-use codex_protocol::openai_models::ToolMode;
 use core_test_support::apps_test_server::AppsTestServer;
 use core_test_support::apps_test_server::search_capable_apps_builder;
 use core_test_support::responses;
@@ -46,71 +44,42 @@ impl McpServerContributor<Config> for AppsServer {
     }
 }
 
-pub(super) struct ExposureCase {
-    mode: ToolMode,
+struct ExposureCase {
     app_config: &'static str,
     server_omissions: &'static [&'static str],
-    direct_only: bool,
     expect_direct: bool,
-    expect_exec: bool,
 }
 
-impl ExposureCase {
-    pub(super) fn non_deferred(mode: ToolMode) -> Self {
-        Self {
-            mode,
-            app_config: "omit_tools_from = [\"deferred\"]",
-            server_omissions: &[],
-            direct_only: false,
-            expect_direct: mode != ToolMode::CodeModeOnly,
-            expect_exec: mode != ToolMode::Direct,
-        }
-    }
-}
-
-#[test_case::test_case(ToolMode::Direct; "direct")]
-#[test_case::test_case(ToolMode::CodeMode; "code_mode")]
-#[test_case::test_case(ToolMode::CodeModeOnly; "code_mode_only")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn non_deferred_connector_exposure_and_dispatch(mode: ToolMode) -> anyhow::Result<()> {
-    connector_exposure_requests(ExposureCase::non_deferred(mode)).await?;
+async fn non_deferred_connector_exposure_and_dispatch() -> anyhow::Result<()> {
+    connector_exposure_requests(ExposureCase {
+        app_config: "omit_tools_from = [\"deferred\"]",
+        server_omissions: &[],
+        expect_direct: true,
+    })
+    .await?;
     Ok(())
 }
 
-#[test_case::test_case("", &[], false, false; "unconfigured")]
-#[test_case::test_case("omit_tools_from = [\"deferred\"]", &["code_mode"], true, false; "server_excludes_exec")]
-#[test_case::test_case("omit_tools_from = [\"deferred\"]", &["direct"], false, true; "server_excludes_direct")]
+#[test_case::test_case("", &[], false; "unconfigured")]
+#[test_case::test_case("omit_tools_from = [\"deferred\"]", &["code_mode"], true; "server_omits_other_surface")]
+#[test_case::test_case("omit_tools_from = [\"deferred\"]", &["direct"], false; "server_excludes_direct")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn connector_omissions_respect_server_restrictions(
     app_config: &'static str,
     server_omissions: &'static [&'static str],
     expect_direct: bool,
-    expect_exec: bool,
 ) -> anyhow::Result<()> {
     connector_exposure_requests(ExposureCase {
         app_config,
         server_omissions,
         expect_direct,
-        expect_exec,
-        ..ExposureCase::non_deferred(ToolMode::CodeMode)
     })
     .await?;
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn connector_omissions_preserve_direct_only_namespace() -> anyhow::Result<()> {
-    connector_exposure_requests(ExposureCase {
-        direct_only: true,
-        expect_direct: true,
-        expect_exec: false,
-        ..ExposureCase::non_deferred(ToolMode::CodeModeOnly)
-    })
-    .await?;
-    Ok(())
-}
-
-pub(super) async fn connector_exposure_requests(
+async fn connector_exposure_requests(
     case: ExposureCase,
 ) -> anyhow::Result<Vec<responses::ResponsesRequest>> {
     let server = responses::start_mock_server().await;
@@ -151,18 +120,12 @@ pub(super) async fn connector_exposure_requests(
             .await;
     }
     let namespace = "mcp__codex_apps__calendar";
-    let tool_call = if case.expect_exec {
-        responses::ev_custom_tool_call(
-            "lookup",
-            "exec",
-            &format!("text((await tools.{namespace}__lookup({{}})).content[0].text);"),
-        )
-    } else if case.expect_direct {
+    let tool_call = if case.expect_direct {
         responses::ev_function_call_with_namespace("lookup", namespace, "lookup", "{}")
     } else {
         responses::ev_assistant_message("message", "done")
     };
-    let calls_tool = case.expect_direct || case.expect_exec;
+    let calls_tool = case.expect_direct;
     let mut events = vec![responses::sse(vec![
         tool_call,
         responses::ev_completed("first"),
@@ -177,7 +140,6 @@ pub(super) async fn connector_exposure_requests(
         case.server_omissions
     ))?)));
     let mut builder = search_capable_apps_builder(server.uri())
-        .with_code_mode_host_program(codex_utils_cargo_bin::cargo_bin("codex-code-mode-host")?)
         .with_pre_build_hook(move |home| {
             std::fs::write(
                 home.join("config.toml"),
@@ -186,18 +148,7 @@ pub(super) async fn connector_exposure_requests(
             .expect("valid fixture configuration");
         })
         .with_auth(auth)
-        .with_extensions(Arc::new(extensions.build()))
-        .with_model_info_override("gpt-5.5", move |model| model.tool_mode = Some(case.mode))
-        .with_config(move |config| {
-            if case.direct_only {
-                config.code_mode.direct_only_tool_namespaces = vec![namespace.to_string()];
-            }
-            config.analytics_enabled = Some(false);
-            config
-                .features
-                .enable(Feature::CodeModeHost)
-                .expect("code mode host");
-        });
+        .with_extensions(Arc::new(extensions.build()));
     let test = builder.build_with_auto_env(&server).await?;
     test.submit_turn("Look up my calendar.").await?;
     let requests = response_mock.requests();
@@ -211,25 +162,9 @@ pub(super) async fn connector_exposure_requests(
             .tool_by_name("mcp__codex_apps__notes", "read")
             .is_none()
     );
-    let body = requests[0].body_json();
-    let exec_description = body["tools"]
-        .as_array()
-        .expect("request tool list")
-        .iter()
-        .find(|tool| tool["name"] == "exec")
-        .and_then(|tool| tool["description"].as_str())
-        .unwrap_or_default();
-    assert_eq!(
-        exec_description.contains(&format!("{namespace}__lookup(")),
-        case.expect_exec && case.mode == ToolMode::CodeModeOnly
-    );
-    assert!(!exec_description.contains("mcp__codex_apps__notes__read("));
     if calls_tool {
         assert!(requests[1].body_contains_text("calendar-lookup-ok"));
     }
     test.codex.shutdown_and_wait().await?;
     Ok(requests)
 }
-
-#[path = "app_tool_exposure_strict_tests.rs"]
-mod strict_third_party;

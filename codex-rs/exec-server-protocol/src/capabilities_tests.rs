@@ -7,7 +7,6 @@ use pretty_assertions::assert_eq;
 fn discovery_contract_round_trips_json() -> Result<(), Box<dyn std::error::Error>> {
     let request = DiscoverV2CapabilitiesRequest {
         cwd: PathUri::parse("file:///workspace")?,
-        sandbox: None,
     };
     let wire = serde_json::to_value(&request)?;
     assert_eq!(

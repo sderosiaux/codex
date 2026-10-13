@@ -34,10 +34,8 @@ fn cancelled_dispatch_reports_zero_handler_work_even_without_tracing() {
         &"thread",
         "turn",
         &call,
-        &ToolCallSource::Direct,
         Arc::new(extensions.build()),
-    )
-    .unwrap();
+    );
     drop(guard);
     assert_eq!(
         *observer.0.lock().unwrap(),

@@ -16,25 +16,19 @@ use tokio_util::task::AbortOnDropHandle;
 use crate::responses_metadata::AGENT_NAME_KEY;
 use crate::responses_metadata::CodexResponsesMetadata;
 use crate::responses_metadata::CodexResponsesRequestKind;
-use crate::responses_metadata::MAX_EXTRA_METADATA_VALUE_BYTES;
 use crate::responses_metadata::PARENT_TURN_ID_KEY;
 use crate::responses_metadata::ROOT_TURN_ID_KEY;
 use crate::responses_metadata::TurnMetadataWorkspace;
 use crate::responses_metadata::filter_extra_metadata;
 use crate::responses_metadata::subagent_header_value;
 use crate::responses_metadata::subagent_metadata_kind;
-use crate::sandbox_tags::SandboxTags;
-use crate::sandbox_tags::record_policy_metadata;
 use crate::session::step_settings::ResolvedStepSettings;
-use codex_file_system::WindowsSandboxSelection;
 use codex_git_utils::SanitizedGitUrl;
 use codex_git_utils::get_git_remote_urls_assume_git_repo;
 use codex_git_utils::get_has_changes_in_repo;
 use codex_git_utils::get_head_commit_hash;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
-use codex_protocol::models::PermissionProfile;
-use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::ThreadSource;
@@ -48,7 +42,6 @@ const MODEL_KEY: &str = "model";
 const CODEX_VERSION_KEY: &str = "codex_version";
 const REASONING_EFFORT_KEY: &str = "reasoning_effort";
 const USER_INPUT_REQUESTED_DURING_TURN_KEY: &str = "user_input_requested_during_turn";
-const WORKSPACE_KIND_KEY: &str = "workspace_kind";
 
 fn is_targeted_continuation(value: &str) -> bool {
     serde_json::from_str::<Value>(value).is_ok_and(|value| value.get("review_target").is_some())
@@ -58,9 +51,6 @@ fn is_targeted_continuation(value: &str) -> bool {
 pub(crate) struct ExecutionMetadata<'a> {
     pub(crate) model: &'a str,
     pub(crate) reasoning_effort: Option<ReasoningEffortConfig>,
-    pub(crate) node_repl_disabled: bool,
-    pub(crate) auto_review_enabled: bool,
-    pub(crate) node_repl_auto_review_required: bool,
 }
 
 impl<'a> ExecutionMetadata<'a> {
@@ -68,19 +58,10 @@ impl<'a> ExecutionMetadata<'a> {
         Self {
             model: settings.model_info.slug.as_str(),
             reasoning_effort: settings.effective_reasoning_effort(),
-            node_repl_disabled: settings.model_info.node_repl_disabled,
-            auto_review_enabled: crate::guardian::routes_approval_policy_to_guardian(
-                settings.approval_policy(),
-                settings.approvals_reviewer(),
-            ),
-            node_repl_auto_review_required: settings.model_info.computer_use_review_required(),
         }
     }
 
     pub(crate) fn apply_to(&self, metadata: &mut CodexResponsesMetadata) {
-        metadata.auto_review_enabled = Some(self.auto_review_enabled);
-        metadata.node_repl_auto_review_required = Some(self.node_repl_auto_review_required);
-        metadata.node_repl_disabled = Some(self.node_repl_disabled);
         metadata
             .extra
             .insert(MODEL_KEY.to_string(), self.model.to_string());
@@ -132,27 +113,22 @@ pub async fn detached_memory_responses_metadata(
     window_id: String,
     session_source: &SessionSource,
     cwd: &AbsolutePathBuf,
-    permission_profile: &PermissionProfile,
-    sandbox: Option<&str>,
 ) -> CodexResponsesMetadata {
     let turn_id = uuid::Uuid::now_v7().to_string();
-    let mut metadata = CodexResponsesMetadata {
+    CodexResponsesMetadata {
         turn_id: Some(turn_id.clone()),
         root_turn_id: Some(turn_id),
         request_kind: Some(CodexResponsesRequestKind::Memory),
         thread_source: Some(ThreadSource::MemoryConsolidation),
         turn_trigger: Some("memory_consolidation".to_owned()),
         subagent_header: subagent_header_value(session_source),
-        sandbox: sandbox.map(ToString::to_string),
         workspaces: memory_workspaces(
             cwd,
             thread_manager.git_root_discovery().discover(cwd.clone()),
         )
         .await,
         ..CodexResponsesMetadata::new(installation_id, session_id, thread_id, window_id)
-    };
-    record_policy_metadata(permission_profile, cwd.as_path(), &mut metadata);
-    metadata
+    }
 }
 
 #[derive(Debug)]
@@ -171,12 +147,6 @@ pub(crate) struct TurnMetadataState {
     thread_source: Option<ThreadSource>,
     turn_trigger: OnceLock<String>,
     turn_id: String,
-    // TODO(anp): Derive this cached tag from TurnEnvironment::sandbox_context
-    // so metadata reflects the selected environment's backend.
-    pub(crate) sandbox_tags: SandboxTags,
-    auto_review_enabled: bool,
-    node_repl_auto_review_required: bool,
-    node_repl_disabled: bool,
     enriched_workspaces: RwLock<Option<BTreeMap<String, TurnMetadataWorkspace>>>,
     turn_started_at_unix_ms: RwLock<Option<i64>>,
     responses_api_metadata: RwLock<BTreeMap<String, String>>,
@@ -184,36 +154,6 @@ pub(crate) struct TurnMetadataState {
     user_input_requested_during_turn: AtomicBool,
     enrichment_task: Mutex<Option<AbortOnDropHandle<()>>>,
     git_enrichment_complete: watch::Sender<bool>,
-}
-
-impl codex_analytics::TurnAnalyticsMetadata for TurnMetadataState {
-    fn root_turn_id(&self) -> Option<String> {
-        TurnMetadataState::root_turn_id(self)
-    }
-
-    fn turn_trigger(&self) -> Option<String> {
-        self.turn_trigger
-            .get()
-            .filter(|trigger| trigger.len() <= MAX_EXTRA_METADATA_VALUE_BYTES)
-            .cloned()
-    }
-
-    fn codex_turn_source(&self) -> Option<String> {
-        // Match Responses metadata precedence without copying oversized client values to analytics.
-        let configured_metadata = self
-            .responses_api_metadata
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let client_metadata = self
-            .responsesapi_client_metadata
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        configured_metadata
-            .get("source")
-            .or_else(|| client_metadata.get("source"))
-            .filter(|source| source.len() <= MAX_EXTRA_METADATA_VALUE_BYTES)
-            .cloned()
-    }
 }
 
 impl TurnMetadataState {
@@ -227,18 +167,7 @@ impl TurnMetadataState {
         thread_source: Option<ThreadSource>,
         turn_id: String,
         cwd: AbsolutePathBuf,
-        permission_profile: &PermissionProfile,
-        windows_sandbox_selection: impl Into<WindowsSandboxSelection>,
-        enforce_managed_network: bool,
-        auto_review_enabled: bool,
-        model_info: &ModelInfo,
     ) -> Self {
-        let sandbox_tags = SandboxTags::new(
-            permission_profile,
-            cwd.as_path(),
-            windows_sandbox_selection.into(),
-            enforce_managed_network,
-        );
         let agent_name = session_source
             .get_agent_path()
             .unwrap_or_else(AgentPath::root)
@@ -258,10 +187,6 @@ impl TurnMetadataState {
             thread_source,
             turn_trigger: OnceLock::new(),
             turn_id,
-            sandbox_tags,
-            auto_review_enabled,
-            node_repl_auto_review_required: model_info.computer_use_review_required(),
-            node_repl_disabled: model_info.node_repl_disabled,
             enriched_workspaces: RwLock::new(None),
             turn_started_at_unix_ms: RwLock::new(None),
             responses_api_metadata: RwLock::new(BTreeMap::new()),
@@ -415,14 +340,6 @@ impl TurnMetadataState {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = metadata;
     }
 
-    pub(crate) fn workspace_kind(&self) -> Option<String> {
-        self.responsesapi_client_metadata
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(WORKSPACE_KIND_KEY)
-            .cloned()
-    }
-
     fn responses_metadata_template(&self) -> CodexResponsesMetadata {
         let mut metadata = self.mcp_metadata_template();
         if metadata.parent_thread_id.is_some() {
@@ -443,14 +360,6 @@ impl TurnMetadataState {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
-        // Extract Guardian's internal parent before filtering configured metadata keys.
-        // Ordinary app-server client metadata stays in `extra`.
-        let parent_response_id =
-            if self.subagent_header.as_deref() == Some(crate::guardian::GUARDIAN_REVIEWER_NAME) {
-                extra.remove("parent_response_id")
-            } else {
-                None
-            };
         for key in self
             .responses_api_metadata
             .read()
@@ -459,8 +368,7 @@ impl TurnMetadataState {
         {
             extra.remove(key);
         }
-        let mut metadata = CodexResponsesMetadata {
-            parent_response_id,
+        CodexResponsesMetadata {
             turn_id: Some(self.turn_id.clone()),
             agent_name: Some(self.agent_name.clone()),
             forked_from_thread_id: self.forked_from_thread_id,
@@ -471,9 +379,6 @@ impl TurnMetadataState {
             subagent_kind: self.subagent_kind.clone(),
             thread_source: self.thread_source.clone(),
             turn_trigger: self.turn_trigger.get().cloned(),
-            auto_review_enabled: Some(self.auto_review_enabled),
-            node_repl_auto_review_required: Some(self.node_repl_auto_review_required),
-            node_repl_disabled: Some(self.node_repl_disabled),
             workspaces: self.current_workspaces(),
             tool_namespaces_info: None,
             turn_started_at_unix_ms: self.current_turn_started_at_unix_ms(),
@@ -484,9 +389,7 @@ impl TurnMetadataState {
                 self.thread_id.clone(),
                 String::new(),
             )
-        };
-        self.sandbox_tags.record_metadata(&mut metadata);
-        metadata
+        }
     }
 
     fn current_workspaces(&self) -> BTreeMap<String, TurnMetadataWorkspace> {

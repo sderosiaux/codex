@@ -343,10 +343,7 @@ async fn direct_results_keep_their_own_records_when_call_ids_repeat() {
         CodexAuth::from_api_key("Test API Key"),
         Vec::new(),
         |config| {
-            config
-                .features
-                .enable(Feature::ExecutedToolCallMetadata)
-                .expect("enable metadata");
+            config.features.enable(Feature::ExecutedToolCallMetadata);
             config.update_plan_enabled = true;
         },
     )
@@ -408,7 +405,7 @@ async fn direct_results_keep_their_own_records_when_call_ids_repeat() {
     session
         .services
         .executed_tool_calls
-        .attach_to_prompt(&mut outputs, &mut Default::default());
+        .attach_to_prompt(&mut outputs);
     assert_eq!(outputs, original);
 
     let mut pending = Vec::new();
@@ -428,10 +425,7 @@ async fn direct_results_keep_their_own_records_when_call_ids_repeat() {
     }
     let current_config = session.get_config().await;
     let mut config = current_config.as_ref().clone();
-    config
-        .features
-        .disable(Feature::ExecutedToolCallMetadata)
-        .expect("disable metadata");
+    config.features.disable(Feature::ExecutedToolCallMetadata);
     let _ = session
         .refresh_runtime_config(current_config, config.clone())
         .await;
@@ -443,17 +437,14 @@ async fn direct_results_keep_their_own_records_when_call_ids_repeat() {
     session
         .services
         .executed_tool_calls
-        .attach_to_prompt(&mut outputs, &mut Default::default());
+        .attach_to_prompt(&mut outputs);
     let mut expected = original;
     for item in &mut expected {
         item.clear_executed_tool_calls();
     }
     assert_eq!(outputs, expected);
 
-    config
-        .features
-        .enable(Feature::ExecutedToolCallMetadata)
-        .expect("re-enable metadata");
+    config.features.enable(Feature::ExecutedToolCallMetadata);
     let current_config = session.get_config().await;
     let _ = session.refresh_runtime_config(current_config, config).await;
     let result = pending

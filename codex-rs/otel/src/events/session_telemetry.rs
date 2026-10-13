@@ -1,5 +1,4 @@
 use crate::TelemetryAuthMode;
-use crate::ToolDecisionSource;
 use crate::events::shared::log_and_trace_event;
 use crate::events::shared::log_event;
 use crate::events::shared::trace_event;
@@ -49,9 +48,6 @@ use codex_protocol::error::CodexErr;
 use codex_protocol::error::CodexErrKind;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
-use codex_protocol::protocol::AskForApproval;
-use codex_protocol::protocol::ReviewDecision;
-use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::user_input::UserInput;
@@ -683,8 +679,6 @@ impl SessionTelemetry {
         reasoning_summary: ReasoningSummary,
         context_window: Option<i64>,
         auto_compact_token_limit: Option<i64>,
-        approval_policy: AskForApproval,
-        sandbox_policy: SandboxPolicy,
         mcp_servers: Vec<&str>,
     ) {
         log_and_trace_event!(
@@ -702,8 +696,6 @@ impl SessionTelemetry {
                 reasoning_summary = %reasoning_summary,
                 context_window = context_window,
                 auto_compact_token_limit = auto_compact_token_limit,
-                approval_policy = %approval_policy,
-                sandbox_policy = %sandbox_policy,
             },
             log: {
                 mcp_servers = mcp_servers.join(", "),
@@ -1189,66 +1181,6 @@ impl SessionTelemetry {
             text_input_count = text_input_count as i64,
             image_input_count = image_input_count as i64,
             local_image_input_count = local_image_input_count as i64,
-        );
-    }
-
-    pub fn tool_decision(
-        &self,
-        tool_name: &ToolName,
-        call_id: &str,
-        decision: &ReviewDecision,
-        source: Option<ToolDecisionSource>,
-    ) {
-        let tool_namespace = crate::events::shared::tool_namespace(tool_name);
-        match source {
-            Some(source) => log_event!(
-                self,
-                event.name = "codex.tool_decision",
-                tool_name = %tool_name.name,
-                tool_namespace = %tool_namespace,
-                call_id = %call_id,
-                decision = %decision.to_opaque_string(),
-                source = %source.to_string(),
-            ),
-            None => log_event!(
-                self,
-                event.name = "codex.tool_decision",
-                tool_name = %tool_name.name,
-                tool_namespace = %tool_namespace,
-                call_id = %call_id,
-                decision = %decision.to_opaque_string(),
-            ),
-        }
-    }
-
-    pub fn sandbox_outcome(
-        &self,
-        tool_name: &str,
-        call_id: &str,
-        outcome: &str,
-        initial_duration: Duration,
-        escalated_duration: Option<Duration>,
-    ) {
-        let initial_duration_ms = initial_duration.as_millis().min(i64::MAX as u128) as i64;
-        let escalated_duration_ms =
-            escalated_duration.map(|duration| duration.as_millis().min(i64::MAX as u128) as i64);
-        log_event!(
-            self,
-            event.name = "codex.sandbox_outcome",
-            tool_name = %tool_name,
-            call_id = %call_id,
-            outcome = %outcome,
-            initial_duration_ms = initial_duration_ms,
-            escalated_duration_ms = escalated_duration_ms,
-        );
-        trace_event!(
-            self,
-            event.name = "codex.sandbox_outcome",
-            tool_name = %tool_name,
-            call_id = %call_id,
-            outcome = %outcome,
-            initial_duration_ms = initial_duration_ms,
-            escalated_duration_ms = escalated_duration_ms,
         );
     }
 

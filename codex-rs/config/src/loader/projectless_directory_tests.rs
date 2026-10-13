@@ -5,12 +5,10 @@ use crate::LoaderOverrides;
 use crate::NoopThreadConfigLoader;
 use crate::loader::find_project_root;
 use crate::loader::load_config_layers_state;
-use crate::loader::project_trust_key;
 use crate::loader::tests::TestFileSystem;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
-use toml::Value as TomlValue;
 
 struct Fixture {
     _temp: TempDir,
@@ -66,21 +64,6 @@ async fn project_root_lookup_preserves_cwd_fallback() -> anyhow::Result<()> {
         find_project_root(&TestFileSystem, &nested, &markers).await?,
         fixture.cwd,
     );
-    Ok(())
-}
-
-#[tokio::test]
-async fn unmarked_directory_is_projectless_even_with_saved_trust() -> anyhow::Result<()> {
-    let fixture = Fixture::new()?;
-    assert!(fixture.load().await?.is_projectless());
-    let key = TomlValue::String(project_trust_key(fixture.cwd.as_path()));
-    for level in ["trusted", "untrusted"] {
-        std::fs::write(
-            fixture.home.join("config.toml"),
-            format!("[projects.{key}]\ntrust_level = \"{level}\"\n"),
-        )?;
-        assert!(fixture.load().await?.is_projectless(), "{level}");
-    }
     Ok(())
 }
 
@@ -148,28 +131,5 @@ async fn user_codex_home_is_not_a_project_layer() -> anyhow::Result<()> {
     std::fs::create_dir(&fixture.home)?;
     std::fs::write(fixture.home.join("config.toml"), "model = 'user-model'\n")?;
     assert!(fixture.load().await?.is_projectless());
-    Ok(())
-}
-
-#[tokio::test]
-async fn managed_root_markers_control_projectless_classification() -> anyhow::Result<()> {
-    let mut fixture = Fixture::new()?;
-    std::fs::create_dir(fixture.cwd.join(".company-root"))?;
-    fixture.cwd = fixture.cwd.join("nested");
-    std::fs::create_dir(&fixture.cwd)?;
-    std::fs::write(
-        fixture.home.join("config.toml"),
-        "project_root_markers = []",
-    )?;
-    let managed = fixture.home.join("managed_config.toml");
-    fixture.overrides = LoaderOverrides::with_managed_config_path_for_tests(managed.to_path_buf());
-    for (markers, expected) in [("['.company-root']", false), ("[]", true)] {
-        std::fs::write(&managed, format!("project_root_markers = {markers}\n"))?;
-        assert_eq!(
-            fixture.load().await?.is_projectless(),
-            expected,
-            "{markers}"
-        );
-    }
     Ok(())
 }

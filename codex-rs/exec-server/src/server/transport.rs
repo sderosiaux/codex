@@ -30,7 +30,6 @@ use tokio::net::TcpListener;
 use tracing::info;
 use tracing::warn;
 
-use crate::ExecServerRuntimeOptions;
 use crate::ExecServerTelemetry;
 use crate::connection::JsonRpcConnection;
 use crate::server::RequestDispatchMode;
@@ -91,7 +90,6 @@ pub(crate) fn parse_listen_url(
 
 pub(crate) async fn run_transport(
     listen_url: &str,
-    runtime_paths: ExecServerRuntimeOptions,
     telemetry: ExecServerTelemetry,
     http_client_factory: HttpClientFactory,
     request_dispatch_mode: RequestDispatchMode,
@@ -101,7 +99,6 @@ pub(crate) async fn run_transport(
         ExecServerListenTransport::WebSocket(bind_address) => {
             run_websocket_listener(
                 bind_address,
-                runtime_paths,
                 telemetry,
                 http_client_factory,
                 request_dispatch_mode,
@@ -117,19 +114,12 @@ pub(crate) async fn run_transport(
                 )
                 .into());
             }
-            run_stdio_connection(
-                runtime_paths,
-                telemetry,
-                http_client_factory,
-                request_dispatch_mode,
-            )
-            .await
+            run_stdio_connection(telemetry, http_client_factory, request_dispatch_mode).await
         }
     }
 }
 
 async fn run_stdio_connection(
-    runtime_paths: ExecServerRuntimeOptions,
     telemetry: ExecServerTelemetry,
     http_client_factory: HttpClientFactory,
     request_dispatch_mode: RequestDispatchMode,
@@ -137,7 +127,6 @@ async fn run_stdio_connection(
     run_stdio_connection_with_io(
         io::stdin(),
         io::stdout(),
-        runtime_paths,
         telemetry,
         http_client_factory,
         request_dispatch_mode,
@@ -148,7 +137,6 @@ async fn run_stdio_connection(
 async fn run_stdio_connection_with_io<R, W>(
     reader: R,
     writer: W,
-    runtime_paths: ExecServerRuntimeOptions,
     telemetry: ExecServerTelemetry,
     http_client_factory: HttpClientFactory,
     request_dispatch_mode: RequestDispatchMode,
@@ -158,7 +146,6 @@ where
     W: AsyncWrite + Unpin + Send + 'static,
 {
     let processor = ConnectionProcessor::new_with_telemetry(
-        runtime_paths,
         telemetry,
         http_client_factory,
         request_dispatch_mode,
@@ -177,7 +164,6 @@ where
 
 async fn run_websocket_listener(
     bind_address: SocketAddr,
-    runtime_paths: ExecServerRuntimeOptions,
     telemetry: ExecServerTelemetry,
     http_client_factory: HttpClientFactory,
     request_dispatch_mode: RequestDispatchMode,
@@ -186,7 +172,6 @@ async fn run_websocket_listener(
     let listener = TcpListener::bind(bind_address).await?;
     let local_addr = listener.local_addr()?;
     let processor = ConnectionProcessor::new_with_telemetry(
-        runtime_paths,
         telemetry,
         http_client_factory,
         request_dispatch_mode,

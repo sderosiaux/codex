@@ -223,7 +223,7 @@ async fn read_resolved_agent_role_file(
 ) -> std::io::Result<ResolvedAgentRoleFile> {
     let path_uri = PathUri::from_abs_path(path);
     let contents = fs
-        .read_file_text(&path_uri, ReadFileOptions::default(), /*sandbox*/ None)
+        .read_file_text(&path_uri, ReadFileOptions::default())
         .await?;
     let config_base_dir = path.parent().unwrap_or_else(|| path.clone());
     parse_agent_role_file_contents(
@@ -259,11 +259,7 @@ async fn validate_agent_role_config_file(
 
     let config_file_uri = PathUri::from_abs_path(config_file);
     let metadata = fs
-        .get_metadata(
-            &config_file_uri,
-            GetMetadataOptions::default(),
-            /*sandbox*/ None,
-        )
+        .get_metadata(&config_file_uri, GetMetadataOptions::default())
         .await
         .map_err(|e| {
             std::io::Error::new(

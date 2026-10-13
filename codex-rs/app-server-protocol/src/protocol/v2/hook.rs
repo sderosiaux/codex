@@ -10,14 +10,13 @@ use codex_protocol::protocol::HookRunStatus as CoreHookRunStatus;
 use codex_protocol::protocol::HookRunSummary as CoreHookRunSummary;
 use codex_protocol::protocol::HookScope as CoreHookScope;
 use codex_protocol::protocol::HookSource as CoreHookSource;
-use codex_protocol::protocol::HookTrustStatus as CoreHookTrustStatus;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use serde::Deserialize;
 use serde::Serialize;
 
 v2_enum_from_core!(
     pub enum HookEventName from CoreHookEventName {
-        PreToolUse, PermissionRequest, PostToolUse, PreCompact, PostCompact, SessionStart, SessionEnd, UserPromptSubmit, SubagentStart, SubagentStop, Stop, Interrupt
+        PreToolUse, PostToolUse, PreCompact, PostCompact, SessionStart, SessionEnd, UserPromptSubmit, SubagentStart, SubagentStop, Stop, Interrupt
     }
 );
 
@@ -47,20 +46,9 @@ v2_enum_from_core!(
         System,
         User,
         Project,
-        Mdm,
         SessionFlags,
         Plugin,
-        CloudRequirements,
-        CloudManagedConfig,
-        LegacyManagedConfigFile,
-        LegacyManagedConfigMdm,
         Unknown,
-    }
-);
-
-v2_enum_from_core!(
-    pub enum HookTrustStatus from CoreHookTrustStatus {
-        Managed, Untrusted, Trusted, Modified
     }
 );
 
@@ -137,22 +125,4 @@ impl From<CoreHookRunSummary> for HookRunSummary {
             entries: value.entries.into_iter().map(Into::into).collect(),
         }
     }
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-pub struct HookStartedNotification {
-    pub thread_id: String,
-    pub turn_id: Option<String>,
-    pub run: HookRunSummary,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-pub struct HookCompletedNotification {
-    pub thread_id: String,
-    pub turn_id: Option<String>,
-    pub run: HookRunSummary,
 }

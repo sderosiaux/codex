@@ -1025,12 +1025,6 @@ async fn read_head_summary(path: &Path, head_limit: usize) -> io::Result<HeadTai
                     summary.cli_version = Some(session_meta_line.meta.cli_version);
                     summary.created_at = Some(session_meta_line.meta.timestamp.clone());
                     summary.saw_session_meta = true;
-
-                    if codex_state::is_guardian_review_source(&session_meta_line.meta.source) {
-                        // The synthetic prompt is not needed for the thread summary.
-                        summary.preview = Some(codex_state::GUARDIAN_THREAD_PREVIEW.to_string());
-                        break;
-                    }
                 }
             }
             RolloutItem::ResponseItem(_) | RolloutItem::InterAgentCommunication(_) => {
@@ -1045,13 +1039,8 @@ async fn read_head_summary(path: &Path, head_limit: usize) -> io::Result<HeadTai
             RolloutItem::TokenUsageRecord(_) => {
                 // Not included in `head`; skip.
             }
-            RolloutItem::RetainedContext(_)
-            | RolloutItem::WorldState(_)
-            | RolloutItem::SecurityRiskScore(_) => {
+            RolloutItem::RetainedContext(_) | RolloutItem::WorldState(_) => {
                 // Not included in `head`; skip.
-            }
-            RolloutItem::RealtimeItem(_) => {
-                // Realtime presentation does not affect model-visible thread summaries.
             }
             RolloutItem::Compacted(_) => {
                 // Not included in `head`; skip.
@@ -1124,9 +1113,7 @@ pub async fn read_head_for_summary(path: &Path) -> io::Result<Vec<serde_json::Va
                 | RolloutItem::TurnContext(_)
                 | RolloutItem::TokenUsageRecord(_)
                 | RolloutItem::WorldState(_)
-                | RolloutItem::RealtimeItem(_)
                 | RolloutItem::RetainedContext(_)
-                | RolloutItem::SecurityRiskScore(_)
                 | RolloutItem::EventMsg(_) => {}
             }
         }
@@ -1218,9 +1205,7 @@ pub async fn read_session_meta_line(path: &Path) -> io::Result<SessionMetaLine> 
             | RolloutItem::TurnContext(_)
             | RolloutItem::TokenUsageRecord(_)
             | RolloutItem::WorldState(_)
-            | RolloutItem::RealtimeItem(_)
             | RolloutItem::RetainedContext(_)
-            | RolloutItem::SecurityRiskScore(_)
             | RolloutItem::EventMsg(_) => {}
         }
     }

@@ -21,7 +21,6 @@ use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
-use crate::tools::lifecycle::extension_tool_call_source;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
 use crate::turn_metadata::ExecutionMetadata;
@@ -83,30 +82,6 @@ impl ToolExecutor<ToolInvocation> for ExtensionToolAdapter {
 }
 
 impl CoreToolRuntime for ExtensionToolAdapter {
-    fn is_builtin_control_tool(&self) -> bool {
-        let tool_name = self.0.tool_name();
-        if tool_name.is_default_namespace() {
-            return matches!(
-                tool_name.name.as_str(),
-                "get_goal" | "create_goal" | "update_goal"
-            );
-        }
-        matches!(
-            (tool_name.namespace.as_deref(), tool_name.name.as_str()),
-            (
-                Some("notes"),
-                "list_files_by_prefix"
-                    | "read_file"
-                    | "search_contents"
-                    | "append_to_file"
-                    | "write_file"
-            ) | (
-                Some("history"),
-                "list_windows" | "list_items" | "read_item" | "search_contents"
-            )
-        )
-    }
-
     fn matches_kind(&self, payload: &ToolPayload) -> bool {
         match payload {
             ToolPayload::Function { .. } => true,
@@ -206,7 +181,6 @@ async fn to_extension_call<'a>(
         model: settings.model_info.slug.clone(),
         codex_turn_metadata,
         truncation_policy: settings.model_info.truncation_policy.into(),
-        source: extension_tool_call_source(invocation.source.clone()),
         conversation_history,
         turn_item_emitter: Arc::new(CoreTurnItemEmitter {
             session: Arc::downgrade(&invocation.session),
@@ -231,7 +205,6 @@ mod tests {
     use codex_protocol::protocol::ImageGenerationBeginEvent;
     use codex_protocol::protocol::ImageGenerationEndEvent;
     use codex_tools::ExtensionTurnItem;
-    use codex_tools::ToolCallSource as ExtensionToolCallSource;
     use codex_utils_absolute_path::test_support::PathExt;
     use codex_utils_absolute_path::test_support::test_path_buf;
     use codex_utils_path_uri::PathUri;
@@ -299,7 +272,7 @@ mod tests {
 
     struct CapturingExtensionExecutor {
         captured_call: Arc<Mutex<Option<codex_tools::ToolCall<'static>>>>,
-        captured_sandbox_cwds: Arc<Mutex<Vec<PathUri>>>,
+        captured_environment_cwds: Arc<Mutex<Vec<PathUri>>>,
     }
 
     impl<'call> codex_extension_api::ToolExecutor<codex_tools::ToolCall<'call>>
@@ -348,7 +321,7 @@ mod tests {
                 })
                 .await;
             // Record owned metadata only; the invocation lifetime belongs to this callback.
-            *self.captured_sandbox_cwds.lock().await = call
+            *self.captured_environment_cwds.lock().await = call
                 .environments
                 .iter()
                 .map(|environment| environment.cwd.clone())
@@ -416,12 +389,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn passes_step_node_repl_flag_and_scoped_turn_item_emitter_to_extension_call() {
+    async fn passes_step_and_scoped_turn_item_emitter_to_extension_call() {
         let captured_call = Arc::new(Mutex::new(None));
-        let captured_sandbox_cwds = Arc::new(Mutex::new(Vec::new()));
+        let captured_environment_cwds = Arc::new(Mutex::new(Vec::new()));
         let handler = ExtensionToolAdapter::new(Arc::new(CapturingExtensionExecutor {
             captured_call: Arc::clone(&captured_call),
-            captured_sandbox_cwds: Arc::clone(&captured_sandbox_cwds),
+            captured_environment_cwds: Arc::clone(&captured_environment_cwds),
         }));
         let (session, turn, rx) = crate::session::tests::make_session_and_context_with_rx().await;
         let weak_session = Arc::downgrade(&session);
@@ -429,7 +402,7 @@ mod tests {
         let turn_id = turn.sub_id.clone();
         let model = turn.model_info().slug.clone();
         let truncation_policy = turn.model_info().truncation_policy.into();
-        let expected_sandbox_cwds = turn
+        let expected_environment_cwds = turn
             .initial_environments
             .turn_environments()
             .map(|environment| environment.cwd().clone())
@@ -469,15 +442,7 @@ mod tests {
             strip_response_item_id(raw_history_item.item),
             expected_history_item
         );
-        let mut step_context = StepContext::for_test(Arc::clone(&turn));
-        let settings = Arc::make_mut(
-            &mut Arc::get_mut(&mut step_context)
-                .expect("unshared step")
-                .settings,
-        );
-        let model_info = Arc::make_mut(&mut settings.model_info);
-        model_info.node_repl_disabled = !turn.model_info().node_repl_disabled;
-        let node_repl_disabled = model_info.node_repl_disabled;
+        let step_context = StepContext::for_test(Arc::clone(&turn));
         let invocation = ToolInvocation {
             session,
             step_context,
@@ -486,10 +451,7 @@ mod tests {
             tracker: Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new())),
             call_id: "call-extension".to_string(),
             tool_name: codex_tools::ToolName::plain("extension_echo"),
-            source: ToolCallSource::CodeMode {
-                cell_id: "cell-1".to_string(),
-                runtime_tool_call_id: "nested-call-1".to_string(),
-            },
+            source: ToolCallSource::Direct,
             payload: ToolPayload::Function {
                 arguments: json!({ "message": "hello" }).to_string(),
             },
@@ -517,15 +479,11 @@ mod tests {
                 .expect("turn metadata"),
         )
         .expect("metadata JSON");
-        assert_eq!(metadata["node_repl_disabled"], json!(node_repl_disabled));
+        assert_eq!(metadata["model"], json!(model));
         assert_eq!(
-            captured_call.source,
-            ExtensionToolCallSource::CodeMode {
-                cell_id: "cell-1".to_string(),
-                runtime_tool_call_id: "nested-call-1".to_string(),
-            }
+            *captured_environment_cwds.lock().await,
+            expected_environment_cwds
         );
-        assert_eq!(*captured_sandbox_cwds.lock().await, expected_sandbox_cwds);
         assert_eq!(
             strip_response_item_ids(captured_call.conversation_history.items()),
             vec![expected_history_item]

@@ -26,9 +26,7 @@ pub(crate) fn prepare(
             });
             if let Some(additions) = additions {
                 for (key, value) in crate::responses_metadata::filter_extra_metadata(additions) {
-                    if key != "parent_response_id" {
-                        metadata.get_or_insert_default().entry(key).or_insert(value);
-                    }
+                    metadata.get_or_insert_default().entry(key).or_insert(value);
                 }
             }
             interceptor

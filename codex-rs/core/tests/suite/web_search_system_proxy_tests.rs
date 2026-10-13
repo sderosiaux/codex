@@ -41,7 +41,7 @@ async fn standalone_web_search_resolves_redirect_routes() -> Result<()> {
         // system proxy route can reach the fake API origin.
         let mut command = Command::new(std::env::current_exe()?);
         command.arg("--exact").arg(TEST_NAME);
-        for key in codex_network_proxy::PROXY_ENV_KEYS {
+        for key in core_test_support::proxy_env::PROXY_ENV_KEYS {
             command.env_remove(key);
         }
         let output = timeout(
@@ -119,16 +119,10 @@ async fn standalone_web_search_resolves_redirect_routes() -> Result<()> {
                 Some(bundled_models_response().expect("bundled models.json should parse"));
             config.model_provider.base_url = Some(API_BASE_URL.to_string());
             for feature in [Feature::RespectSystemProxy, Feature::StandaloneWebSearch] {
-                config
-                    .features
-                    .enable(feature)
-                    .expect("test config should allow feature update");
+                config.features.enable(feature);
             }
             config.respect_system_proxy = true;
-            config
-                .web_search_mode
-                .set(WebSearchMode::Live)
-                .expect("web search mode should be accepted");
+            config.web_search_mode = WebSearchMode::Live;
         });
     let test = builder.build_with_auto_env(&proxy).await?;
 

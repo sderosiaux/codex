@@ -476,17 +476,6 @@ impl McpConnectionSet {
                 }
                 continue;
             };
-            if config
-                .permission_profile_for_server(&tool_info.server_name)
-                .is_none()
-            {
-                trace!(
-                    server_name = %tool_info.server_name,
-                    tool_name = %tool_info.tool.name,
-                    "omitting MCP tool without an exact ready client"
-                );
-                continue;
-            }
             let pending_tool_info = if model_visible {
                 let tool_index = tools.len();
                 tools.push(tool_info);
@@ -569,7 +558,7 @@ impl McpConnectionSet {
         }
         tool_info = Self::with_server_metadata(tool_info, &view.metadata);
         // Preserve the globally normalized identity advertised to the model, while
-        // taking schema, annotations, and approval metadata from the current catalog.
+        // taking schema and annotations from the current catalog.
         tool_info
             .callable_namespace
             .clone_from(&advertised_tool.callable_namespace);
@@ -597,7 +586,7 @@ impl McpConnectionSet {
                 self.is_selected_plugin_mcp_server(server_name),
             )
         };
-        PreparedMcpCall::new(
+        Some(PreparedMcpCall::new(
             Arc::clone(self),
             client,
             config,
@@ -606,28 +595,21 @@ impl McpConnectionSet {
             server_metadata,
             plugin_id,
             selected_plugin_server,
-        )
+        ))
     }
 
     /// Refreshes one exact Apps catalog, preserving the raw inventory for app policy.
-    pub(crate) async fn refresh_codex_apps_client_catalog(
-        &self,
-        config: &crate::McpConfig,
-    ) -> Result<CodexAppsToolSnapshot> {
+    pub(crate) async fn refresh_codex_apps_client_catalog(&self) -> Result<CodexAppsToolSnapshot> {
         let refresh_start = Instant::now();
         let view = self
             .servers
             .get(CODEX_APPS_MCP_SERVER_NAME)
             .ok_or_else(|| anyhow!("unknown MCP server '{CODEX_APPS_MCP_SERVER_NAME}'"))?;
         let (tools, _) = self.refresh_codex_apps_tool_catalog().await?;
-        let server_has_permission = config
-            .permission_profile_for_server(CODEX_APPS_MCP_SERVER_NAME)
-            .is_some();
         let model_visible_tool_names = tools
             .iter()
             .filter(|tool| {
-                server_has_permission
-                    && view.tool_filter.allows(&tool.tool.name)
+                view.tool_filter.allows(&tool.tool.name)
                     && self
                         .tool_plugin_context
                         .allows_connector_id(tool.connector_id.as_deref())

@@ -12,13 +12,11 @@ use codex_protocol::ThreadId;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::items::SubAgentActivityItem;
 use codex_protocol::items::TurnItem;
-use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::MultiAgentMessages;
 use codex_protocol::openai_models::MultiAgentRoleMessages;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::protocol::AgentStatus;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::MULTI_AGENT_MODE_OPEN_TAG;
 use codex_protocol::protocol::Op;
@@ -29,7 +27,7 @@ use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::user_input::UserInput;
 use codex_thread_store::LoadThreadHistoryParams;
-use core_test_support::hooks::trust_discovered_hooks;
+use core_test_support::hooks::enable_discovered_hooks;
 use core_test_support::responses::ResponsesRequest;
 use core_test_support::responses::assert_parent_turn;
 use core_test_support::responses::assert_root_turn;
@@ -53,7 +51,6 @@ use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::local_requests;
 use core_test_support::test_codex::test_codex;
-use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_match;
 use pretty_assertions::assert_eq;
@@ -79,9 +76,6 @@ use super::direct_tool_metadata::tool_call_metadata;
 
 #[path = "spawn_settings_tests.rs"]
 mod spawn_settings_tests;
-
-#[path = "guardian_subagent_notification_tests.rs"]
-mod guardian_subagent_notification_tests;
 
 const SPAWN_CALL_ID: &str = "spawn-call-1";
 const MULTI_AGENT_V1_NAMESPACE: &str = "multi_agent_v1";
@@ -501,10 +495,7 @@ async fn setup_turn_one_with_custom_spawned_child(
 
     let configured_reasoning_effort = turn_reasoning_effort.clone();
     let mut builder = configure_test(test_codex().with_config(move |config| {
-        config
-            .features
-            .enable(Feature::Collab)
-            .expect("test config should allow feature update");
+        config.features.enable(Feature::Collab);
         config.model = Some(INHERITED_MODEL.to_string());
         config.model_reasoning_effort = Some(configured_reasoning_effort);
     }));
@@ -688,11 +679,8 @@ async fn subagent_start_replaces_session_start_and_injects_context(
                 .expect("failed to write subagent hook fixture");
         })
         .with_config(|config| {
-            trust_discovered_hooks(config);
-            config
-                .features
-                .enable(Feature::Collab)
-                .expect("test config should allow feature update");
+            enable_discovered_hooks(config);
+            config.features.enable(Feature::Collab);
         })
         // Command hooks run on the host and require a host-native working directory.
         .build(&server)
@@ -843,11 +831,8 @@ async fn subagent_stop_replaces_stop_and_skips_internal_subagents() -> Result<()
             .expect("failed to write subagent hook fixture");
         })
         .with_config(|config| {
-            trust_discovered_hooks(config);
-            config
-                .features
-                .enable(Feature::Collab)
-                .expect("test config should allow feature update");
+            enable_discovered_hooks(config);
+            config.features.enable(Feature::Collab);
         })
         .build(&server)
         .await?;
@@ -914,8 +899,6 @@ async fn subagent_stop_replaces_stop_and_skips_internal_subagents() -> Result<()
         })
         .await?;
 
-    let (sandbox_policy, permission_profile) =
-        turn_permission_fields(PermissionProfile::Disabled, test.cwd_path());
     internal_thread
         .thread
         .start_or_steer_turn(
@@ -925,9 +908,6 @@ async fn subagent_stop_replaces_stop_and_skips_internal_subagents() -> Result<()
             }])
             .with_thread_settings(ThreadSettingsOverrides {
                 environments: Some(local_requests(test.config.cwd.clone())),
-                approval_policy: Some(AskForApproval::Never),
-                sandbox_policy: Some(sandbox_policy),
-                permission_profile,
                 model: Some(internal_thread.session_configured.model.clone()),
                 ..Default::default()
             }),
@@ -1055,10 +1035,7 @@ async fn spawned_child_receives_forked_parent_context(
         .with_model_info_override(INHERITED_MODEL, |model| model.comp_hash = None)
         .with_history_mode(history_mode)
         .with_config(|config| {
-            config
-                .features
-                .enable(Feature::Collab)
-                .expect("test config should allow feature update");
+            config.features.enable(Feature::Collab);
             config.model = Some(INHERITED_MODEL.to_string());
             config.model_reasoning_effort = Some(INHERITED_REASONING_EFFORT);
             config.agent_default_subagent_model = Some(REQUESTED_MODEL.to_string());
@@ -1347,14 +1324,8 @@ async fn grandchild_full_fork_preserves_context_baseline(
     let test = test_codex()
         .with_history_mode(history_mode)
         .with_config(move |config| {
-            config
-                .features
-                .enable(Feature::Collab)
-                .expect("test config should allow feature update");
-            config
-                .features
-                .enable(Feature::MultiAgentV2)
-                .expect("test config should allow feature update");
+            config.features.enable(Feature::Collab);
+            config.features.enable(Feature::MultiAgentV2);
             config.model = Some(V2_DEFAULT_MODEL.to_string());
             config.agent_default_subagent_model = Some(V2_DEFAULT_MODEL.to_string());
             config.developer_instructions = Some(INSTRUCTIONS.to_string());
@@ -1578,14 +1549,8 @@ async fn spawned_full_history_v2_child_uses_model_precedence_without_dropping_co
     )
     .await;
     let mut builder = test_codex().with_config(move |config| {
-        config
-            .features
-            .enable(Feature::Collab)
-            .expect("test config should allow feature update");
-        config
-            .features
-            .enable(Feature::MultiAgentV2)
-            .expect("test config should allow feature update");
+        config.features.enable(Feature::Collab);
+        config.features.enable(Feature::MultiAgentV2);
         let model_catalog = config.model_catalog.get_or_insert_with(|| {
             bundled_models_response().expect("bundled models.json should parse")
         });
@@ -1622,10 +1587,7 @@ async fn spawned_full_history_v2_child_uses_model_precedence_without_dropping_co
             }
         }
         if matches!(selection, FullHistoryV2ModelSelection::WorldStateIdentity) {
-            config
-                .features
-                .enable(Feature::TokenBudget)
-                .expect("test config should allow feature update");
+            config.features.enable(Feature::TokenBudget);
             config.model_context_window = Some(128_000);
         }
         if matches!(selection, FullHistoryV2ModelSelection::ConfiguredDefault) {
@@ -1634,14 +1596,8 @@ async fn spawned_full_history_v2_child_uses_model_precedence_without_dropping_co
                 Some(FULL_HISTORY_SUBAGENT_DEVELOPER_INSTRUCTIONS.to_string());
         }
         if matches!(selection, FullHistoryV2ModelSelection::CurrentTimeReminders) {
-            config
-                .features
-                .enable(Feature::CurrentTimeReminder)
-                .expect("test config should allow feature update");
-            config
-                .features
-                .enable(Feature::NonfatalClockReadErrors)
-                .expect("test config should allow feature update");
+            config.features.enable(Feature::CurrentTimeReminder);
+            config.features.enable(Feature::NonfatalClockReadErrors);
             config.include_environment_context = false;
             config.current_time_reminder = Some(CurrentTimeReminderConfig {
                 reminder_interval_seconds: 0,
@@ -1710,13 +1666,9 @@ async fn spawned_full_history_v2_child_uses_model_precedence_without_dropping_co
     test.submit_turn(TURN_0_FORK_PROMPT).await?;
     let _ = seed_turn.single_request();
     if let Some((proactive_turn, explicit_turn)) = mode_transition_turns {
-        for (prompt, effort, approval_policy) in [
-            (
-                FULL_HISTORY_PROACTIVE_PROMPT,
-                ReasoningEffort::Ultra,
-                Some(AskForApproval::OnRequest),
-            ),
-            (FULL_HISTORY_EXPLICIT_PROMPT, ReasoningEffort::High, None),
+        for (prompt, effort) in [
+            (FULL_HISTORY_PROACTIVE_PROMPT, ReasoningEffort::Ultra),
+            (FULL_HISTORY_EXPLICIT_PROMPT, ReasoningEffort::High),
         ] {
             test.codex
                 .start_or_steer_turn(
@@ -1726,7 +1678,6 @@ async fn spawned_full_history_v2_child_uses_model_precedence_without_dropping_co
                     }])
                     .with_thread_settings(ThreadSettingsOverrides {
                         effort: Some(Some(effort)),
-                        approval_policy,
                         ..Default::default()
                     }),
                 )
@@ -2101,8 +2052,7 @@ async fn spawned_agent_uses_summary_support_for_final_model(
                 config.model_reasoning_summary = Some(ReasoningSummary::Detailed);
                 config
                     .features
-                    .enable(Feature::ConcurrentReasoningSummaries)
-                    .expect("test config should allow feature update");
+                    .enable(Feature::ConcurrentReasoningSummaries);
             })
         },
     )
@@ -2187,14 +2137,8 @@ async fn spawned_multi_agent_v2_child_inherits_parent_developer_context() -> Res
     .await;
 
     let mut builder = test_codex().with_config(|config| {
-        config
-            .features
-            .enable(Feature::Collab)
-            .expect("test config should allow feature update");
-        config
-            .features
-            .enable(Feature::MultiAgentV2)
-            .expect("test config should allow feature update");
+        config.features.enable(Feature::Collab);
+        config.features.enable(Feature::MultiAgentV2);
         config.developer_instructions = Some("Parent developer instructions.".to_string());
     });
     let test = builder.build(&server).await?;
@@ -2310,19 +2254,10 @@ async fn multi_agent_v2_spawn_sends_agent_message_to_child(
         .with_model(parent_model)
         .with_config(move |config| {
             config.model_reasoning_effort = parent_reasoning_effort;
-            config
-                .features
-                .enable(Feature::Collab)
-                .expect("test config should allow feature update");
-            config
-                .features
-                .enable(Feature::MultiAgentV2)
-                .expect("test config should allow feature update");
+            config.features.enable(Feature::Collab);
+            config.features.enable(Feature::MultiAgentV2);
             if plaintext {
-                config
-                    .features
-                    .enable(Feature::ExecutedToolCallMetadata)
-                    .expect("enable tool-call metadata");
+                config.features.enable(Feature::ExecutedToolCallMetadata);
             }
         });
     let test = builder.build(&server).await?;
@@ -2632,14 +2567,8 @@ async fn plaintext_multi_agent_v2_completion_sends_agent_message(
     let test = test_codex()
         .with_model("koffing")
         .with_config(|config| {
-            config
-                .features
-                .enable(Feature::Collab)
-                .expect("test config should allow feature update");
-            config
-                .features
-                .enable(Feature::MultiAgentV2)
-                .expect("test config should allow feature update");
+            config.features.enable(Feature::Collab);
+            config.features.enable(Feature::MultiAgentV2);
             config.model_provider.request_max_retries = Some(0);
             config.model_provider.stream_max_retries = Some(0);
             config.model_provider.supports_websockets = false;
@@ -2869,10 +2798,7 @@ async fn multi_agent_v2_peer_followup_completion_notifies_initiating_turn(
         .with_model("gpt-5.6-sol")
         .with_config(|config| {
             for feature in [Feature::Collab, Feature::MultiAgentV2] {
-                config
-                    .features
-                    .enable(feature)
-                    .expect("test config should allow feature update");
+                config.features.enable(feature);
             }
             config.model_provider.request_max_retries = Some(0);
             config.model_provider.stream_max_retries = Some(0);
@@ -3262,14 +3188,8 @@ async fn skills_toggle_skips_instructions_for_parent_and_spawned_child() -> Resu
             write_home_skill(home, "demo", "demo-skill", "demo skill").expect("write home skill");
         })
         .with_config(|config| {
-            config
-                .features
-                .enable(Feature::Collab)
-                .expect("test config should allow feature update");
-            config
-                .features
-                .enable(Feature::MultiAgentV2)
-                .expect("test config should allow feature update");
+            config.features.enable(Feature::Collab);
+            config.features.enable(Feature::MultiAgentV2);
             config.include_skill_instructions = false;
         });
     let test = builder.build(&server).await?;
@@ -3408,10 +3328,7 @@ async fn spawn_agent_rejects_reasoning_effort_unsupported_by_role_model() -> Res
 
     let test = test_codex()
         .with_config(|config| {
-            config
-                .features
-                .enable(Feature::Collab)
-                .expect("test config should allow feature update");
+            config.features.enable(Feature::Collab);
             let role_path = config.codex_home.join("model-only-role.toml");
             std::fs::write(&role_path, format!("model = \"{ROLE_MODEL}\"\n"))
                 .expect("write role config");
@@ -3476,8 +3393,7 @@ async fn spawn_agent_tool_description_mentions_role_locked_settings() -> Result<
     let mut builder = test_codex().with_config(|config| {
         config
             .features
-            .enable(Feature::Collab)
-            .expect("test config should allow feature update");
+            .enable(Feature::Collab);
         config.multi_agent_v2.hide_spawn_agent_metadata = false;
         let role_path = config.codex_home.join("custom-role.toml");
         std::fs::write(

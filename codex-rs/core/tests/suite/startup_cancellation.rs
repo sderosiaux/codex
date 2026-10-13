@@ -144,7 +144,7 @@ async fn failed_resume_releases_writer_before_returning() -> Result<()> {
     let (http_server, control) = AppsTestServer::mount_with_startup_control(&mcp_server).await?;
     control.fail_next_initialize_attempts(/*attempts*/ 1);
     let mut config = test.config.clone();
-    let mut servers = config.mcp_servers.get().clone();
+    let mut servers = config.mcp_servers.clone();
     servers.insert(
         "fails-once".to_owned(),
         serde_json::from_value(json!({
@@ -153,7 +153,7 @@ async fn failed_resume_releases_writer_before_returning() -> Result<()> {
             "required": true,
         }))?,
     );
-    config.mcp_servers.set(servers)?;
+    config.mcp_servers = servers;
     let resume_options = || StartThreadOptions {
         initial_history: history.clone(),
         environments: Some(

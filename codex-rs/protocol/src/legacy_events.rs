@@ -476,7 +476,6 @@ impl FileChangeItem {
         EventMsg::PatchApplyBegin(PatchApplyBeginEvent {
             call_id: self.id.clone(),
             turn_id,
-            auto_approved: self.auto_approved.unwrap_or(false),
             changes: self.changes.clone(),
         })
     }

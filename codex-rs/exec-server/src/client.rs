@@ -9,12 +9,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
-use arc_swap::ArcSwapOption;
 use codex_exec_server_protocol::JSONRPCNotification;
-use codex_network_proxy::NetworkPolicyDecider;
-use codex_network_proxy::NetworkProxyAuditMetadata;
-use codex_network_proxy::NetworkRequestCancellation;
-use codex_network_proxy::NetworkRequestCancellationReason;
 use futures::FutureExt;
 use futures::future::BoxFuture;
 use serde_json::Value;
@@ -114,10 +109,7 @@ use crate::protocol::INITIALIZE_METHOD;
 use crate::protocol::INITIALIZED_METHOD;
 use crate::protocol::InitializeParams;
 use crate::protocol::InitializeResponse;
-use crate::protocol::NETWORK_POLICY_DECISION_METHOD;
-use crate::protocol::NetworkPolicyDecisionNotification;
 use crate::protocol::ProcessOutputChunk;
-use crate::protocol::ProcessSandboxType;
 use crate::protocol::ProcessSignal;
 use crate::protocol::ReadParams;
 use crate::protocol::ReadResponse;
@@ -125,27 +117,15 @@ use crate::protocol::SignalParams;
 use crate::protocol::SignalResponse;
 use crate::protocol::TerminateParams;
 use crate::protocol::TerminateResponse;
-use crate::protocol::WireFsCanonicalizeParams;
-use crate::protocol::WireFsCopyParams;
-use crate::protocol::WireFsCreateDirectoryParams;
-use crate::protocol::WireFsGetMetadataParams;
-use crate::protocol::WireFsOpenParams;
-use crate::protocol::WireFsReadDirectoryParams;
-use crate::protocol::WireFsReadFileParams;
-use crate::protocol::WireFsRemoveParams;
-use crate::protocol::WireFsWalkParams;
-use crate::protocol::WireFsWriteFileParams;
 use crate::protocol::WriteParams;
 use crate::protocol::WriteResponse;
 use crate::rpc::RpcCallError;
 use crate::rpc::RpcClient;
-use crate::rpc_server_requests::MAX_IN_FLIGHT_SERVER_CALLS;
 use codex_http_client::HttpClientFactory;
 
 #[path = "client/accepted.rs"]
 pub(crate) mod accepted;
 pub(crate) mod http_client;
-mod network_policy_audit;
 #[cfg(test)]
 #[path = "../tests/unit/client_provisioning_tests.rs"]
 mod provisioning_tests;
@@ -153,13 +133,9 @@ mod provisioning_tests;
 mod recovery;
 #[path = "client_refresh.rs"]
 mod refresh;
-pub(crate) use connection_failure::can_retry_connection_attempt;
 pub(crate) use recovery::is_environment_offline_error;
 pub(crate) use recovery::is_retryable_recovery_error;
 
-#[path = "client/connection_failure.rs"]
-mod connection_failure;
-use connection_failure::ConnectionFailure;
 pub(crate) use recovery::is_retryable_registry_error;
 pub(crate) use recovery::registry_recovery_retry_delay;
 use refresh::ConnectionAttempt;
@@ -226,25 +202,6 @@ pub(crate) struct SessionState {
     ordered_events: StdMutex<OrderedSessionEvents>,
     recoverable: AtomicBool,
     next_write_id: AtomicU64,
-    network_policy: NetworkPolicyState,
-}
-
-struct NetworkPolicyState {
-    controller: ArcSwapOption<NetworkPolicyDecisionController>,
-    cancelled: CancellationToken,
-    cancellation: NetworkRequestCancellation,
-    audit: Option<NetworkPolicyAuditContext>,
-}
-
-#[derive(Clone)]
-struct NetworkPolicyDecisionController {
-    decider: Arc<dyn NetworkPolicyDecider>,
-    timeout: Duration,
-}
-
-struct NetworkPolicyAuditContext {
-    metadata: NetworkProxyAuditMetadata,
-    execution_id: Option<String>,
 }
 
 #[derive(Default)]
@@ -264,7 +221,6 @@ struct OrderedSessionEvents {
 pub(crate) struct Session {
     client: ExecServerClient,
     process_id: ProcessId,
-    sandbox_type: Option<ProcessSandboxType>,
     state: Arc<SessionState>,
 }
 
@@ -290,7 +246,6 @@ struct Inner {
     http_body_stream_byte_budget: Arc<Semaphore>,
     http_body_stream_next_id: AtomicU64,
     // Keep admission shared while recovered transports finish older requests.
-    rpc_inbound_request_slots: Arc<Semaphore>,
     session_id: OnceLock<String>,
     retired: CancellationToken,
     /// Caches metadata from initialization or the first successful info request for this client's lifetime.
@@ -309,7 +264,7 @@ struct ConnectionState {
 enum ConnectionStatus {
     Connected(Arc<RpcClient>),
     Recovering,
-    Failed(ConnectionFailure),
+    Failed(String),
 }
 
 impl ConnectionState {
@@ -553,7 +508,7 @@ impl LazyRemoteExecServerClient {
                 || self.startup.result.get().is_some_and(|result| {
                     result
                         .as_ref()
-                        .is_err_and(|error| can_retry_connection_attempt(error))
+                        .is_err_and(|error| is_retryable_recovery_error(error))
                 })) {
             Box::pin(self.reconnect()).await
         } else {
@@ -684,8 +639,6 @@ pub enum ExecServerError {
         "exec-server protocol error: timed out waiting for exec-server `{method}` response after {timeout:?}"
     )]
     RpcTimedOut { method: String, timeout: Duration },
-    #[error(transparent)]
-    ApplicationNetworkPolicy(#[from] codex_http_client::NetworkPolicyDenied),
     #[error("exec-server transport closed")]
     Closed,
     #[error("{0}")]
@@ -766,7 +719,9 @@ impl ExecServerClient {
             ConnectionStatus::Connected(_) | ConnectionStatus::Recovering => Err(
                 ExecServerError::Disconnected("exec-server environment is recovering".to_string()),
             ),
-            ConnectionStatus::Failed(message) => Err(message.clone().into()),
+            ConnectionStatus::Failed(message) => {
+                Err(ExecServerError::Disconnected(message.clone()))
+            }
         }
     }
 
@@ -935,13 +890,6 @@ impl ExecServerClient {
         &self,
         process_id: &ProcessId,
     ) -> Result<TerminateResponse, ExecServerError> {
-        // A close notification may arrive before the termination response.
-        if let Some(session) = self.inner.get_session(process_id) {
-            session
-                .network_policy
-                .cancellation
-                .record(NetworkRequestCancellationReason::ProcessCancelled);
-        }
         self.call_for_cleanup(
             EXEC_TERMINATE_METHOD,
             &TerminateParams {
@@ -955,8 +903,7 @@ impl ExecServerClient {
         &self,
         params: FsReadFileParams,
     ) -> Result<FsReadFileResponse, ExecServerError> {
-        self.call(FS_READ_FILE_METHOD, &WireFsReadFileParams::from(params))
-            .await
+        self.call(FS_READ_FILE_METHOD, &params).await
     }
 
     pub async fn fs_open(&self, params: FsOpenParams) -> Result<FsOpenResponse, ExecServerError> {
@@ -972,8 +919,7 @@ impl ExecServerClient {
                 "exec-server does not support writable file streams".to_string(),
             ));
         }
-        self.call(FS_OPEN_METHOD, &WireFsOpenParams::from(params))
-            .await
+        self.call(FS_OPEN_METHOD, &params).await
     }
 
     pub async fn fs_read_block(
@@ -1011,70 +957,50 @@ impl ExecServerClient {
         &self,
         params: FsWriteFileParams,
     ) -> Result<FsWriteFileResponse, ExecServerError> {
-        self.call(FS_WRITE_FILE_METHOD, &WireFsWriteFileParams::from(params))
-            .await
+        self.call(FS_WRITE_FILE_METHOD, &params).await
     }
 
     pub async fn fs_create_directory(
         &self,
         params: FsCreateDirectoryParams,
     ) -> Result<FsCreateDirectoryResponse, ExecServerError> {
-        self.call(
-            FS_CREATE_DIRECTORY_METHOD,
-            &WireFsCreateDirectoryParams::from(params),
-        )
-        .await
+        self.call(FS_CREATE_DIRECTORY_METHOD, &params).await
     }
 
     pub async fn fs_get_metadata(
         &self,
         params: FsGetMetadataParams,
     ) -> Result<FsGetMetadataResponse, ExecServerError> {
-        self.call(
-            FS_GET_METADATA_METHOD,
-            &WireFsGetMetadataParams::from(params),
-        )
-        .await
+        self.call(FS_GET_METADATA_METHOD, &params).await
     }
 
     pub async fn fs_canonicalize(
         &self,
         params: FsCanonicalizeParams,
     ) -> Result<FsCanonicalizeResponse, ExecServerError> {
-        self.call(
-            FS_CANONICALIZE_METHOD,
-            &WireFsCanonicalizeParams::from(params),
-        )
-        .await
+        self.call(FS_CANONICALIZE_METHOD, &params).await
     }
 
     pub async fn fs_read_directory(
         &self,
         params: FsReadDirectoryParams,
     ) -> Result<FsReadDirectoryResponse, ExecServerError> {
-        self.call(
-            FS_READ_DIRECTORY_METHOD,
-            &WireFsReadDirectoryParams::from(params),
-        )
-        .await
+        self.call(FS_READ_DIRECTORY_METHOD, &params).await
     }
 
     pub async fn fs_walk(&self, params: FsWalkParams) -> Result<FsWalkResponse, ExecServerError> {
-        self.call(FS_WALK_METHOD, &WireFsWalkParams::from(params))
-            .await
+        self.call(FS_WALK_METHOD, &params).await
     }
 
     pub async fn fs_remove(
         &self,
         params: FsRemoveParams,
     ) -> Result<FsRemoveResponse, ExecServerError> {
-        self.call(FS_REMOVE_METHOD, &WireFsRemoveParams::from(params))
-            .await
+        self.call(FS_REMOVE_METHOD, &params).await
     }
 
     pub async fn fs_copy(&self, params: FsCopyParams) -> Result<FsCopyResponse, ExecServerError> {
-        self.call(FS_COPY_METHOD, &WireFsCopyParams::from(params))
-            .await
+        self.call(FS_COPY_METHOD, &params).await
     }
 
     #[tracing::instrument(
@@ -1085,31 +1011,7 @@ impl ExecServerClient {
     pub(crate) async fn start_process(
         &self,
         params: ExecParams,
-        network_policy_decider: Option<Arc<dyn NetworkPolicyDecider>>,
     ) -> Result<Session, ExecServerError> {
-        let policy_decision_timeout_ms = params
-            .network_proxy
-            .as_ref()
-            .and_then(|launch| launch.policy_decision_timeout_ms);
-        let network_policy_controller = match (
-            network_policy_decider.as_ref(),
-            policy_decision_timeout_ms,
-        ) {
-            (None, None) => None,
-            (Some(decider), Some(timeout_ms)) if timeout_ms > 0 => {
-                Some(NetworkPolicyDecisionController {
-                    decider: Arc::clone(decider),
-                    timeout: Duration::from_millis(timeout_ms),
-                })
-            }
-            _ => {
-                return Err(ExecServerError::Protocol(
-                    "network policy decision callback timeout must match the configured decider and be nonzero"
-                        .to_string(),
-                ));
-            }
-        };
-
         loop {
             let rpc_client = self.rpc_client().await?;
             if !self.inner.begin_process_start(&rpc_client) {
@@ -1117,22 +1019,7 @@ impl ExecServerClient {
             }
 
             let process_id = params.process_id.clone();
-            let mut state = SessionState::new(/*recoverable*/ false);
-            state.network_policy.audit =
-                params
-                    .network_proxy
-                    .as_ref()
-                    .map(|launch| NetworkPolicyAuditContext {
-                        metadata: launch.audit_metadata.clone(),
-                        execution_id: launch.execution_id.clone(),
-                    });
-            let state = Arc::new(state);
-            if let Some(controller) = network_policy_controller.as_ref() {
-                state
-                    .network_policy
-                    .controller
-                    .store(Some(Arc::new(controller.clone())));
-            }
+            let state = Arc::new(SessionState::new(/*recoverable*/ false));
             if let Err(error) = self.inner.insert_session(&process_id, Arc::clone(&state)) {
                 self.inner.finish_process_start();
                 return Err(error);
@@ -1155,12 +1042,11 @@ impl ExecServerClient {
                     .call_rpc::<_, ExecResponse>(&rpc_client, EXEC_METHOD, &params)
                     .await
                 {
-                    Ok(response) => {
+                    Ok(_response) => {
                         state.recoverable.store(true, Ordering::Release);
                         let session = Session {
                             client: client.clone(),
                             process_id: process_id.clone(),
-                            sandbox_type: response.sandbox_type,
                             state: Arc::clone(&state),
                         };
                         // Wait for caller receipt so cancellation after send still triggers cleanup.
@@ -1216,7 +1102,6 @@ impl ExecServerClient {
         Ok(Session {
             client: self.clone(),
             process_id: process_id.clone(),
-            sandbox_type: None,
             state,
         })
     }
@@ -1240,7 +1125,9 @@ impl ExecServerClient {
                 Some(Ok(()))
             }
             ConnectionStatus::Connected(_) | ConnectionStatus::Recovering => None,
-            ConnectionStatus::Failed(message) => Some(Err(message.clone().into())),
+            ConnectionStatus::Failed(message) => {
+                Some(Err(ExecServerError::Disconnected(message.clone())))
+            }
         }
     }
 
@@ -1310,7 +1197,6 @@ impl ExecServerClient {
             http_body_streams_write_lock: Mutex::new(()),
             http_body_stream_byte_budget: Arc::new(Semaphore::new(MAX_QUEUED_HTTP_BODY_BYTES)),
             http_body_stream_next_id: AtomicU64::new(1),
-            rpc_inbound_request_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_SERVER_CALLS)),
             session_id,
             retired: CancellationToken::new(),
             environment_info: OnceCell::new(),
@@ -1464,12 +1350,6 @@ impl SessionState {
             ordered_events: StdMutex::new(OrderedSessionEvents::default()),
             recoverable: AtomicBool::new(recoverable),
             next_write_id: AtomicU64::new(1),
-            network_policy: NetworkPolicyState {
-                controller: ArcSwapOption::empty(),
-                cancelled: CancellationToken::new(),
-                cancellation: NetworkRequestCancellation::default(),
-                audit: None,
-            },
         }
     }
 
@@ -1531,11 +1411,6 @@ impl SessionState {
             let is_closed = matches!(&event, ExecProcessEvent::Closed { .. });
             ordered_events.closed_published |= is_closed;
             published_closed |= is_closed;
-            if is_closed && ordered_events.exit_published {
-                self.network_policy
-                    .cancellation
-                    .record(NetworkRequestCancellationReason::ProcessFinished);
-            }
             self.events.publish(event);
         }
         published_closed
@@ -1576,7 +1451,6 @@ impl SessionState {
             exit_code: None,
             closed: true,
             failure: Some(message),
-            sandbox_denied: false,
         }
     }
 
@@ -1654,10 +1528,6 @@ impl Session {
         &self.process_id
     }
 
-    pub(crate) fn sandbox_type(&self) -> Option<ProcessSandboxType> {
-        self.sandbox_type
-    }
-
     pub(crate) fn subscribe_wake(&self) -> watch::Receiver<u64> {
         self.state.subscribe()
     }
@@ -1731,16 +1601,7 @@ impl Session {
 
     pub(crate) async fn terminate(&self) -> Result<(), ExecServerError> {
         self.client.terminate(&self.process_id).await?;
-        self.cancel_network_policy_decisions();
         Ok(())
-    }
-
-    pub(crate) fn cancel_network_policy_decisions(&self) {
-        self.state
-            .network_policy
-            .cancellation
-            .record(NetworkRequestCancellationReason::ProcessCancelled);
-        self.state.network_policy.cancelled.cancel();
     }
 
     pub(crate) async fn unregister(&self) {
@@ -1768,7 +1629,7 @@ impl Inner {
         // notifications. Without this check, remote MCP startup could create a
         // dead session and wait for process output that will never arrive.
         if let Some(message) = self.connection_failure() {
-            return Err(message.into());
+            return Err(ExecServerError::Disconnected(message));
         }
         let sessions = self.sessions.load();
         if sessions.contains_key(process_id) {
@@ -1797,12 +1658,6 @@ impl Inner {
         let mut next_sessions = sessions.as_ref().clone();
         next_sessions.remove(process_id);
         self.sessions.store(Arc::new(next_sessions));
-        expected
-            .network_policy
-            .cancellation
-            .record(NetworkRequestCancellationReason::ProcessCancelled);
-        expected.network_policy.cancelled.cancel();
-        expected.network_policy.controller.store(None);
     }
 
     fn take_all_sessions(&self) -> HashMap<ProcessId, Arc<SessionState>> {
@@ -1841,12 +1696,6 @@ fn fail_all_sessions(inner: &Arc<Inner>, message: String) {
     let sessions = inner.take_all_sessions();
 
     for (_, session) in sessions {
-        session
-            .network_policy
-            .cancellation
-            .record(NetworkRequestCancellationReason::ConnectionClosed);
-        session.network_policy.cancelled.cancel();
-        session.network_policy.controller.store(None);
         // Sessions synthesize a closed read response and emit a pushed Failed
         // event. That covers both polling consumers and streaming consumers
         // such as environment-backed MCP stdio.
@@ -1888,7 +1737,6 @@ async fn handle_server_notification(
                 let result = session.publish_ordered_event(ExecProcessEvent::Exited {
                     seq: params.seq,
                     exit_code: params.exit_code,
-                    sandbox_denied: params.sandbox_denied,
                 });
                 if result.is_ok() {
                     session.note_change(params.seq);
@@ -1915,24 +1763,6 @@ async fn handle_server_notification(
             inner
                 .handle_http_body_delta_notification(notification.params)
                 .await?;
-        }
-        NETWORK_POLICY_DECISION_METHOD => {
-            let Ok(params) = serde_json::from_value::<NetworkPolicyDecisionNotification>(
-                notification.params.unwrap_or(Value::Null),
-            ) else {
-                debug!("ignoring malformed exec-server network policy decision notification");
-                return Ok(());
-            };
-            let Some(session) = inner.get_session(&params.process_id) else {
-                debug!("ignoring network policy decision for an unknown exec-server process");
-                return Ok(());
-            };
-            let Some(context) = session.network_policy.audit.as_ref() else {
-                return Ok(());
-            };
-            if !network_policy_audit::emit_network_policy_decision(context, &params) {
-                debug!("ignoring invalid exec-server network policy decision notification");
-            }
         }
         other => {
             debug!("ignoring unknown exec-server notification: {other}");
@@ -2017,7 +1847,6 @@ mod tests {
     use crate::protocol::INITIALIZED_METHOD;
     use crate::protocol::InitializeResponse;
     use crate::protocol::ProcessOutputChunk;
-    use crate::protocol::ProcessSandboxType;
     use crate::protocol::ReadResponse;
     use crate::protocol::WriteParams;
     use crate::protocol::WriteResponse;
@@ -2090,7 +1919,6 @@ mod tests {
                     id: request.id,
                     result: serde_json::to_value(ExecResponse {
                         process_id: params.process_id,
-                        sandbox_type: Some(ProcessSandboxType::LinuxSeccomp),
                     })
                     .expect("process start response should serialize"),
                 }),
@@ -2125,35 +1953,24 @@ mod tests {
         let process_id = ProcessId::from("trace-process");
 
         let session = client
-            .start_process(
-                ExecParams {
-                    metadata: Default::default(),
-                    process_id: process_id.clone(),
-                    argv: vec!["true".to_string()],
-                    cwd: PathUri::from_host_native_path(std::env::current_dir().expect("cwd"))
-                        .expect("cwd URI"),
-                    shell_snapshot: None,
-                    env_policy: None,
-                    env: HashMap::new(),
-                    tty: false,
-                    pipe_stdin: false,
-                    arg0: None,
-                    sandbox: None,
-                    enforce_managed_network: false,
-                    managed_network: None,
-                    network_proxy: None,
-                },
-                /*network_policy_decider*/ None,
-            )
+            .start_process(ExecParams {
+                metadata: Default::default(),
+                process_id: process_id.clone(),
+                argv: vec!["true".to_string()],
+                cwd: PathUri::from_host_native_path(std::env::current_dir().expect("cwd"))
+                    .expect("cwd URI"),
+                shell_snapshot: None,
+                env_policy: None,
+                env: HashMap::new(),
+                tty: false,
+                pipe_stdin: false,
+                arg0: None,
+            })
             .instrument(parent_span)
             .await
             .expect("process start should succeed");
 
         assert_eq!(session.process_id(), &process_id);
-        assert_eq!(
-            session.sandbox_type(),
-            Some(ProcessSandboxType::LinuxSeccomp)
-        );
         let trace = server.await.expect("server task").expect("trace context");
         let expected_traceparent = expected_trace
             .traceparent
@@ -2537,7 +2354,6 @@ mod tests {
                         process_id: process_id.clone(),
                         seq: 3,
                         exit_code: 0,
-                        sandbox_denied: Some(true),
                     })
                     .expect("exit notification should serialize"),
                 ),
@@ -2587,7 +2403,6 @@ mod tests {
                 ExecProcessEvent::Exited {
                     seq: 3,
                     exit_code: 0,
-                    sandbox_denied: Some(true),
                 },
                 ExecProcessEvent::Closed { seq: 4 },
             ]
@@ -2757,7 +2572,6 @@ mod tests {
             handle_id: "read-handle".to_string(),
             path: PathUri::parse("file:///tmp/existing.txt")?,
             mode: FsOpenMode::Read,
-            sandbox: None,
         };
         let server = tokio::spawn(async move {
             let mut websocket = accept_websocket(&listener).await;
@@ -2781,7 +2595,6 @@ mod tests {
                     "handleId": "read-handle",
                     "path": "file:///tmp/existing.txt",
                     "mode": "read",
-                    "sandbox": null,
                 }))
             );
             write_jsonrpc_websocket(
@@ -2955,7 +2768,6 @@ mod tests {
                         exit_code: None,
                         closed: false,
                         failure: None,
-                        sandbox_denied: false,
                     })
                     .expect("read response should serialize"),
                 }),
@@ -3473,7 +3285,6 @@ mod tests {
                         process_id: quiet_process_id,
                         seq: 1,
                         exit_code: 17,
-                        sandbox_denied: Some(false),
                     })
                     .expect("exit notification should serialize"),
                 ),
@@ -3493,5 +3304,4 @@ mod tests {
     }
 
     mod config_timeout_tests;
-    mod network_policy_tests;
 }

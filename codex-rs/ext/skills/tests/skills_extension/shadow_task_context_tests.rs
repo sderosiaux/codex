@@ -176,7 +176,7 @@ async fn task_context_recovers_prior_requests_and_explicit_intent_without_changi
                             )
                             .expect("absolute cwd"),
                             is_primary: true,
-                            fs: &FileSystemEnvironmentAccessor::unrestricted(&LOCAL_FS),
+                            fs: &FileSystemEnvironmentAccessor::new(&LOCAL_FS),
                         }],
                     },
                     /*extension_metrics*/ None,

@@ -49,10 +49,7 @@ async fn descriptions_share_space_without_hiding_late_namespaces() -> Result<()>
             super::configure_scenario_catalog(config);
             configure_search_capable_model(config);
             config.agents_enabled = false;
-            config
-                .features
-                .enable(Feature::DeferredToolWorldState)
-                .expect("enable deferred namespace summaries");
+            config.features.enable(Feature::DeferredToolWorldState);
         })
         .build_with_auto_env(&server)
         .await?;

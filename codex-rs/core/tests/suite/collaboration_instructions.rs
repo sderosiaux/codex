@@ -78,14 +78,9 @@ fn model_with_collaboration_messages(
         persistent_instructions: None,
         tools: None,
         instructions_template: None,
-        approvals: None,
         collaboration_modes: None,
-        auto_review: None,
-        permissions: None,
         multi_agent: None,
         token_budget: None,
-        confirmation_policies: None,
-        guardian_v2: None,
     });
     model_messages.collaboration_modes = Some(CollaborationModeMessages {
         default: default.map(str::to_string),
@@ -139,10 +134,10 @@ async fn no_collaboration_instructions_by_default() -> Result<()> {
     let input = req.single_request().input();
     let dev_texts = developer_texts(&input);
     assert!(
-        dev_texts
+        !dev_texts
             .iter()
             .any(|text| text.contains("<permissions instructions>")),
-        "expected permissions instructions in developer messages, got {dev_texts:?}"
+        "permissions instructions should no longer be sent, got {dev_texts:?}"
     );
     assert_eq!(
         count_messages_containing(&dev_texts, COLLABORATION_MODE_OPEN_TAG),
@@ -271,10 +266,7 @@ async fn catalog_collaboration_messages_refresh_without_mode_or_model_change(
         .with_config(|config| {
             config.model_provider.request_max_retries = Some(0);
             config.model_provider.stream_max_retries = Some(1);
-            config
-                .features
-                .disable(Feature::Apps)
-                .expect("test config should allow feature update");
+            config.features.disable(Feature::Apps);
         })
         .build_with_auto_env(&server)
         .await?;
@@ -543,8 +535,6 @@ async fn collaboration_instructions_added_on_user_turn() -> Result<()> {
             }])
             .with_thread_settings(ThreadSettingsOverrides {
                 environments: Some(local_requests(test.config.cwd.clone())),
-                approval_policy: Some(test.config.permissions.approval_policy.value()),
-                sandbox_policy: Some(test.config.legacy_sandbox_policy()),
                 summary: Some(
                     test.config
                         .model_reasoning_summary
@@ -590,8 +580,6 @@ async fn collaboration_instructions_omitted_when_disabled() -> Result<()> {
             }])
             .with_thread_settings(ThreadSettingsOverrides {
                 environments: Some(local_requests(test.config.cwd.clone())),
-                approval_policy: Some(test.config.permissions.approval_policy.value()),
-                sandbox_policy: Some(test.config.legacy_sandbox_policy()),
                 summary: Some(
                     test.config
                         .model_reasoning_summary
@@ -648,8 +636,6 @@ async fn user_turn_overrides_collaboration_instructions_after_override() -> Resu
             }])
             .with_thread_settings(ThreadSettingsOverrides {
                 environments: Some(local_requests(test.config.cwd.clone())),
-                approval_policy: Some(test.config.permissions.approval_policy.value()),
-                sandbox_policy: Some(test.config.legacy_sandbox_policy()),
                 summary: Some(
                     test.config
                         .model_reasoning_summary

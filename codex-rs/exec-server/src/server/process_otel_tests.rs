@@ -1,4 +1,4 @@
-//! Verifies exported lifecycle and network logs retain launch identity without private payloads.
+//! Verifies exported lifecycle logs retain launch identity without private payloads.
 
 #![allow(clippy::expect_used)]
 
@@ -12,9 +12,6 @@ use codex_exec_server_protocol::JSONRPCRequest;
 use codex_exec_server_protocol::RequestId;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::OutboundProxyPolicy;
-use codex_network_proxy::NetworkProxyConfig;
-use codex_network_proxy::RemoteNetworkProxyConfig;
-use codex_network_proxy::RemoteNetworkProxyLaunchConfig;
 use codex_otel::OtelExporter;
 use codex_otel::OtelHttpProtocol;
 use codex_otel::OtelProvider;
@@ -24,8 +21,6 @@ use codex_utils_path_uri::PathUri;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
-use tokio::io::AsyncReadExt;
-use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 use tracing::Instrument;
 use tracing_subscriber::prelude::*;
@@ -37,7 +32,6 @@ use wiremock::matchers::method;
 use super::ExecServerHandler;
 use super::registry::build_router;
 use super::session_registry::SessionRegistry;
-use crate::ExecServerRuntimeOptions;
 use crate::ExecServerTelemetry;
 use crate::connection::JsonRpcConnectionEvent;
 use crate::protocol::EXEC_METHOD;
@@ -61,8 +55,8 @@ const CALLS: [&str; 2] = ["call-first", "call-second"];
 const LATER_TRACE: &str = "00-44444444444444444444444444444444-5555555555555555-01";
 
 #[test]
-fn exported_process_and_network_logs_keep_the_validated_launch_reference() {
-    // Keep the subscriber on the runtime's only thread, including proxy background tasks.
+fn exported_process_logs_keep_the_validated_launch_reference() {
+    // Keep the subscriber on the runtime's only thread.
     for (export_traces, registered) in [(false, true), (true, true), (false, false)] {
         let records = exported_logs(export_traces, |runtime, _, _| {
             runtime.block_on(async {
@@ -76,12 +70,6 @@ fn exported_process_and_network_logs_keep_the_validated_launch_reference() {
                     handlers.push(handler);
                     session_ids.push(session_id);
                 }
-                let proxy = RemoteNetworkProxyLaunchConfig::new(
-                    RemoteNetworkProxyConfig::from_effective_config(&NetworkProxyConfig {
-                        enabled: true,
-                        ..NetworkProxyConfig::default()
-                    }).expect("proxy config"),
-                );
                 // Unsampled incoming context must still correlate logs-only export.
                 let flags = if export_traces { "01" } else { "00" };
                 let launches = LAUNCH_SPANS.map(|span| format!("00-{TRACE_ID}-{span}-{flags}"));
@@ -94,7 +82,7 @@ fn exported_process_and_network_logs_keep_the_validated_launch_reference() {
                     for (index, (handler, trace)) in handlers.iter().zip(traces).enumerate() {
                         let mut params = process_start_params(
                             &process_id,
-                            json!(["/bin/sh", "-c", "printf '%s\\n' \"$HTTP_PROXY\"; read ignored", PRIVATE_PAYLOAD]),
+                            json!(["/bin/sh", "-c", "read ignored", PRIVATE_PAYLOAD]),
                             PathUri::from_host_native_path(std::env::current_dir().expect("cwd")).expect("cwd URI"),
                         );
                         params["metadata"] = if batch == 0 {
@@ -107,7 +95,6 @@ fn exported_process_and_network_logs_keep_the_validated_launch_reference() {
                         params["executorRegistrationId"] = json!(PRIVATE_PAYLOAD);
                         params["environmentId"] = json!(PRIVATE_PAYLOAD);
                         params["pipeStdin"] = json!(true);
-                        params["networkProxy"] = json!(proxy);
                         request(&server.router, handler, EXEC_METHOD, params, trace).await;
                     }
                     if batch == 0 {
@@ -123,21 +110,6 @@ fn exported_process_and_network_logs_keep_the_validated_launch_reference() {
                         handlers[0] = resumed;
                     }
                     for handler in &handlers {
-                        let output: ReadResponse = serde_json::from_value(request(
-                            &server.router, handler, EXEC_READ_METHOD,
-                            json!({"processId": process_id, "waitMs": 1000}), Some(LATER_TRACE),
-                        ).await).expect("read proxy address");
-                        let proxy_address = String::from_utf8(output.chunks.into_iter()
-                            .flat_map(|chunk| chunk.chunk.into_inner()).collect()).expect("UTF-8 output");
-                        let mut connection = tokio::net::TcpStream::connect(
-                            proxy_address.trim().strip_prefix("http://").expect("HTTP proxy address"),
-                        ).await.expect("connect to process proxy");
-                        connection.write_all(b"CONNECT 8.8.8.8:443 HTTP/1.1\r\nHost: 8.8.8.8:443\r\n\r\n")
-                            .await.expect("request denied destination");
-                        let mut response = [0_u8; 256];
-                        let length = tokio::time::timeout(Duration::from_secs(5), connection.read(&mut response))
-                            .await.expect("proxy response timeout").expect("proxy response");
-                        assert!(String::from_utf8_lossy(&response[..length]).starts_with("HTTP/1.1 403"));
                         request(&server.router, handler, EXEC_TERMINATE_METHOD,
                             json!({"processId": process_id}), Some(LATER_TRACE)).await;
                         read_until_closed(&server.router, handler, &process_id).await;
@@ -176,7 +148,6 @@ fn exported_process_and_network_logs_keep_the_validated_launch_reference() {
             for name in [
                 "codex.exec_server.process_start",
                 "codex.exec_server.process_exit",
-                "codex.network_proxy.policy_decision",
             ] {
                 expected.push((
                     name.to_string(),
@@ -295,18 +266,14 @@ fn launch_rpc_span_finishes_before_its_process_exits() {
     );
     assert_ne!(process_span["spanId"], launch_span["spanId"]);
     let mut expected_exit =
-        expected_process_attributes("codex.exec_server.process_exit", /*index*/ 0, "None");
+        expected_process_attributes("codex.exec_server.process_exit", /*index*/ 0);
     expected_exit["process.exit_code"] =
         json!({"intValue": exited.exit_code.expect("exit code").to_string()});
     expected_exit["process.termination_requested"] = json!({"boolValue": true});
     assert_exported_attributes(
         &records,
         vec![
-            expected_process_attributes(
-                "codex.exec_server.process_start",
-                /*index*/ 0,
-                "None",
-            ),
+            expected_process_attributes("codex.exec_server.process_start", /*index*/ 0),
             expected_exit,
         ],
     );
@@ -390,87 +357,8 @@ fn exported_spawn_failure_keeps_launch_identity_without_outcome_or_error_text() 
         vec![expected_process_attributes(
             "codex.exec_server.process_spawn_failed",
             /*index*/ 0,
-            "None",
         )],
     );
-}
-
-#[cfg(target_os = "macos")]
-#[test]
-fn exported_sandbox_denial_keeps_launch_identity_and_separate_exit_outcome() {
-    let records = exported_logs(/*export_traces*/ false, |runtime, _, _| {
-        runtime.block_on(async {
-            let server = TestServer::new();
-            let (handler, _) = server.new_orchestrator("sandbox-denial-orchestrator", Some("original")).await;
-            let directory = tempfile::tempdir().expect("process directory");
-            let private_file = directory.path().join(PRIVATE_PAYLOAD);
-            std::fs::write(&private_file, PRIVATE_PAYLOAD).expect("write test file");
-            let cwd = PathUri::from_host_native_path(directory.path()).expect("cwd URI");
-            let sandbox = crate::FileSystemSandboxContext::from_legacy_sandbox_policy(
-                codex_protocol::protocol::SandboxPolicy::new_read_only_policy(), cwd.clone(),
-            ).expect("read-only sandbox");
-            for (index, span) in LAUNCH_SPANS.into_iter().enumerate() {
-                let process_id = format!("{PRIVATE_PAYLOAD}-{index}");
-                let launch = format!("00-{TRACE_ID}-{span}-00");
-                let argv = if index == 0 {
-                    json!(["/bin/cat", private_file])
-                } else {
-                    // Emit private output, then attempt a real denied write. Exit 23 is produced
-                    // by the child shell only after that write fails, not by sandbox startup.
-                    json!(["/bin/sh", "-c",
-                        "printf '%s' \"$PRIVATE_TEST_VALUE\"; if printf changed > \"$1\"; then exit 0; else exit 23; fi",
-                        PRIVATE_PAYLOAD, private_file])
-                };
-                let mut params = process_start_params(&process_id, argv, cwd.clone());
-                params["metadata"] = process_metadata(index);
-                params["env"]["LC_ALL"] = json!("C");
-                params["sandbox"] = json!(sandbox);
-                let started: crate::protocol::ExecResponse = serde_json::from_value(request(
-                    &server.router, &handler, EXEC_METHOD, params, Some(&launch),
-                ).await).expect("start sandboxed process");
-                assert_eq!(started.sandbox_type, Some(crate::protocol::ProcessSandboxType::MacosSeatbelt));
-                let output = read_until_closed(&server.router, &handler, &process_id).await;
-                let stdout: Vec<u8> = output.chunks.iter()
-                    .filter(|chunk| chunk.stream == crate::protocol::ExecOutputStream::Stdout)
-                    .flat_map(|chunk| chunk.chunk.0.iter().copied()).collect();
-                assert_eq!(stdout, PRIVATE_PAYLOAD.as_bytes());
-                assert_eq!((output.exit_code, output.sandbox_denied), if index == 0 {
-                    (Some(0), false)
-                } else {
-                    (Some(23), true)
-                });
-                if index == 1 {
-                    let stderr: Vec<u8> = output.chunks.iter()
-                        .filter(|chunk| chunk.stream == crate::protocol::ExecOutputStream::Stderr)
-                        .flat_map(|chunk| chunk.chunk.0.iter().copied()).collect();
-                    assert!(String::from_utf8_lossy(&stderr).contains("Operation not permitted"));
-                }
-            }
-            assert_eq!(std::fs::read(&private_file).expect("read test file"), PRIVATE_PAYLOAD.as_bytes());
-            server.sessions.shutdown().await;
-        });
-    });
-    let mut expected = Vec::new();
-    for index in 0..2 {
-        expected.push(expected_process_attributes(
-            "codex.exec_server.process_start",
-            index,
-            "MacosSeatbelt",
-        ));
-        let mut exited =
-            expected_process_attributes("codex.exec_server.process_exit", index, "MacosSeatbelt");
-        exited["process.exit_code"] = json!({"intValue": if index == 0 { "0" } else { "23" }});
-        exited["process.termination_requested"] = json!({"boolValue": false});
-        expected.push(exited);
-    }
-    let mut denied = expected_process_attributes(
-        "codex.exec_server.sandbox_denied",
-        /*index*/ 1,
-        "MacosSeatbelt",
-    );
-    denied["reason"] = json!({"stringValue": "inferred_denial"});
-    expected.push(denied);
-    assert_exported_attributes(&records, expected);
 }
 
 async fn read_until_closed(
@@ -501,7 +389,7 @@ async fn read_until_closed(
     .expect("process exits")
 }
 
-fn expected_process_attributes(name: &str, index: usize, sandbox: &str) -> Value {
+fn expected_process_attributes(name: &str, index: usize) -> Value {
     json!({
         "event.name": {"stringValue": name},
         "launch.trace_id": {"stringValue": TRACE_ID},
@@ -510,7 +398,6 @@ fn expected_process_attributes(name: &str, index: usize, sandbox: &str) -> Value
         "tool.call_id": {"stringValue": CALLS[index]},
         "executor.environment_id": {"stringValue": "environment"},
         "executor.registration_id": {"stringValue": "original"},
-        "sandbox.type": {"stringValue": sandbox},
     })
 }
 
@@ -739,11 +626,6 @@ fn new_handler(
     let mut handler = ExecServerHandler::new(
         Arc::clone(sessions),
         RpcNotificationSender::new(outgoing),
-        ExecServerRuntimeOptions::new(
-            std::env::current_exe().expect("test executable"),
-            /*codex_linux_sandbox_exe*/ None,
-        )
-        .expect("runtime paths"),
         HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
     );
     handler.executor_registration = registration

@@ -71,9 +71,9 @@ pub(crate) fn trim_function_call_history_to_fit_context_window(
     history: &mut ContextManager,
     turn_context: &TurnContext,
     base_instructions: &BaseInstructions,
-) -> (usize, i64) {
+) -> usize {
     let Some(context_window) = turn_context.model_context_window() else {
-        return (0, 0);
+        return 0;
     };
     // Keep the unclamped total so replacing an item cannot lose an overflow hidden by i64
     // saturation in the normal history estimator.
@@ -83,7 +83,6 @@ pub(crate) fn trim_function_call_history_to_fit_context_window(
     let mut estimated_tokens = history_item_groups(original_items.iter().map(|item| &item.item))
         .map(|group| group.estimated_token_count())
         .fold(base_tokens, i128::saturating_add);
-    let initial_estimated_tokens = i64::try_from(estimated_tokens).unwrap_or(i64::MAX);
     let mut rewritten_items = Vec::new();
     let mut consumed_items: usize = 0;
 
@@ -128,10 +127,7 @@ pub(crate) fn trim_function_call_history_to_fit_context_window(
         items.extend(rewritten_items.into_iter().rev());
         history.replace_annotated(items);
     }
-
-    let final_estimated_tokens = i64::try_from(estimated_tokens).unwrap_or(i64::MAX);
-    let estimated_deleted_tokens = initial_estimated_tokens.saturating_sub(final_estimated_tokens);
-    (rewritten_outputs, estimated_deleted_tokens)
+    rewritten_outputs
 }
 
 fn rewritten_output_for_context_window(

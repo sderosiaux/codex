@@ -545,16 +545,10 @@ fn websocket_config() -> WebSocketConfig {
 }
 
 fn map_ws_stream_error(error: WsError) -> ApiError {
-    match codex_websocket_client::network_policy_denial(&error) {
-        Some(denied) => ApiError::Transport(TransportError::Policy(denied)),
-        None => ApiError::Stream(error.to_string()),
-    }
+    ApiError::Stream(error.to_string())
 }
 
 fn map_ws_error(err: WsError, url: &Url) -> ApiError {
-    if let Some(denied) = codex_websocket_client::network_policy_denial(&err) {
-        return ApiError::Transport(TransportError::Policy(denied));
-    }
     match err {
         WsError::Http(response) => {
             let status = response.status();

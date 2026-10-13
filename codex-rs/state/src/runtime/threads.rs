@@ -5,6 +5,11 @@ use codex_protocol::protocol::SessionSource;
 use std::sync::atomic::AtomicI64;
 use std::sync::atomic::Ordering;
 
+// The `threads` schema is shared with upstream Codex installs and keeps these
+// non-null columns; record what this build always does.
+const SANDBOX_POLICY_COLUMN_VALUE: &str = "danger-full-access";
+const APPROVAL_MODE_COLUMN_VALUE: &str = "never";
+
 impl StateRuntime {
     pub async fn get_thread(&self, id: ThreadId) -> anyhow::Result<Option<crate::ThreadMetadata>> {
         let row = sqlx::query(
@@ -32,8 +37,6 @@ SELECT
     threads.title,
     threads.name,
     threads.preview,
-    threads.sandbox_policy,
-    threads.approval_mode,
     threads.tokens_used,
     threads.first_user_message,
     threads.archived_at,
@@ -74,7 +77,7 @@ WHERE threads.id = ?
     ) -> anyhow::Result<bool> {
         // Legacy threads display `title`, then fall back to the name index. Paginated threads
         // display `name`; `title` remains derived metadata used for search. Preserve an existing
-        // `name`, unless it is the Guardian default seeded by metadata cleanup.
+        // `name`.
         let result = sqlx::query(
             r#"
 UPDATE threads
@@ -82,16 +85,11 @@ SET
     history_mode = 'paginated',
     name = CASE
         WHEN name IS NULL OR trim(name) = '' THEN ?
-        WHEN history_mode = 'legacy'
-            AND source = '{"subagent":{"other":"guardian"}}'
-            AND name = ? THEN COALESCE(?, name)
         ELSE name
     END
 WHERE id = ?
             "#,
         )
-        .bind(legacy_name)
-        .bind(crate::GUARDIAN_THREAD_TITLE)
         .bind(legacy_name)
         .bind(thread_id.to_string())
         .execute(self.pool.as_ref())
@@ -701,8 +699,8 @@ ON CONFLICT(id) DO NOTHING
         .bind(metadata.title.as_str())
         .bind(metadata.name.as_deref())
         .bind(preview)
-        .bind(metadata.sandbox_policy.as_str())
-        .bind(metadata.approval_mode.as_str())
+        .bind(SANDBOX_POLICY_COLUMN_VALUE)
+        .bind(APPROVAL_MODE_COLUMN_VALUE)
         .bind(metadata.tokens_used)
         .bind(metadata.first_user_message.as_deref().unwrap_or_default())
         .bind(metadata.archived_at.is_some())
@@ -991,8 +989,6 @@ ON CONFLICT(id) DO UPDATE SET
     cli_version = excluded.cli_version,
     title = excluded.title,
     preview = COALESCE(NULLIF(excluded.preview, ''), threads.preview),
-    sandbox_policy = excluded.sandbox_policy,
-    approval_mode = excluded.approval_mode,
     tokens_used = excluded.tokens_used,
     first_user_message = excluded.first_user_message,
     archived = excluded.archived,
@@ -1037,8 +1033,8 @@ ON CONFLICT(id) DO UPDATE SET
         .bind(metadata.title.as_str())
         .bind(metadata.name.as_deref())
         .bind(preview)
-        .bind(metadata.sandbox_policy.as_str())
-        .bind(metadata.approval_mode.as_str())
+        .bind(SANDBOX_POLICY_COLUMN_VALUE)
+        .bind(APPROVAL_MODE_COLUMN_VALUE)
         .bind(metadata.tokens_used)
         .bind(metadata.first_user_message.as_deref().unwrap_or_default())
         .bind(metadata.archived_at.is_some())
@@ -1340,8 +1336,6 @@ SELECT
     threads.title,
     threads.name,
     threads.preview,
-    threads.sandbox_policy,
-    threads.approval_mode,
     threads.tokens_used,
     threads.first_user_message,
     threads.archived_at,
@@ -1376,9 +1370,7 @@ pub(super) fn extract_memory_mode(items: &[RolloutItem]) -> Option<String> {
         | RolloutItem::Compacted(_)
         | RolloutItem::TurnContext(_)
         | RolloutItem::WorldState(_)
-        | RolloutItem::RealtimeItem(_)
         | RolloutItem::RetainedContext(_)
-        | RolloutItem::SecurityRiskScore(_)
         | RolloutItem::TokenUsageRecord(_)
         | RolloutItem::EventMsg(_) => None,
     })

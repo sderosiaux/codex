@@ -1,5 +1,5 @@
 //! Cache captured shell state in executor memory. Replay through a per-launch
-//! unnamed reader when the capture sandbox permits it; otherwise retain env replay.
+//! unnamed reader when the shell can open it; otherwise retain env replay.
 //! Command metrics exclude prewarm and measure lookup/capture wait before replay.
 //! File replay admits larger shell state while environment replay keeps its launch budget.
 
@@ -12,8 +12,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use codex_exec_server_protocol::JSONRPCErrorError;
-use codex_network_proxy::PROXY_ACTIVE_ENV_KEY;
-use codex_network_proxy::strip_managed_proxy_env;
 use codex_protocol::config_types::ShellEnvironmentPolicyInherit;
 use codex_protocol::shell_environment;
 use codex_protocol::shell_environment::CODEX_THREAD_ID_ENV_VAR;
@@ -30,10 +28,9 @@ use tokio::sync::Mutex;
 use tokio::sync::OnceCell;
 use tokio::time::Instant;
 
-use crate::FileSystemSandboxContext;
+use crate::exec_request::PreparedExecRequest;
 use crate::local_process::apply_exec_metadata;
 use crate::local_process::shell_environment_policy;
-use crate::process_sandbox::PreparedExecRequest;
 use crate::protocol::ExecEnvPolicy;
 use crate::protocol::ExecParams;
 use crate::protocol::ShellSnapshotRequest;
@@ -69,7 +66,6 @@ struct CachedShellSnapshot {
     request: ShellSnapshotRequest,
     cwd: PathUri,
     env_policy: Option<ExecEnvPolicy>,
-    sandbox: Option<FileSystemSandboxContext>,
     attempts: usize,
     // Failed captures store the earliest time another attempt may start.
     snapshot: Arc<OnceCell<Result<ShellSnapshot, Instant>>>,
@@ -142,7 +138,6 @@ impl ShellSnapshotCache {
                 &entry.request == request
                     && entry.cwd == params.cwd
                     && entry.env_policy == params.env_policy
-                    && entry.sandbox == params.sandbox
             });
             let cached = position.and_then(|position| {
                 let mut entry = entries.remove(position)?;
@@ -169,7 +164,6 @@ impl ShellSnapshotCache {
                     request: request.clone(),
                     cwd: params.cwd.clone(),
                     env_policy: params.env_policy.clone(),
-                    sandbox: params.sandbox.clone(),
                     attempts: 1,
                     snapshot: Arc::clone(&snapshot),
                 };
@@ -209,7 +203,6 @@ impl ShellSnapshotCache {
                     ("purpose", purpose),
                     ("attempt", &attempt),
                     ("shell", request.shell.name.as_str()),
-                    ("sandbox", prepared.sandbox.as_metric_tag()),
                 ],
             );
             result.map_err(|(_, error)| error)
@@ -358,8 +351,7 @@ async fn capture_snapshot(
             invalid_params("unsupported shell snapshot script".to_string()),
         )
     })?;
-    // Probe under the exact capture sandbox, including its /proc fallback and
-    // read policy. Keep cached env replay when descriptor paths cannot be opened.
+    // Keep cached env replay when descriptor paths cannot be opened.
     let probe = if shell_type == ShellType::Sh {
         None
     } else {
@@ -543,7 +535,7 @@ fn parse_snapshot(
         ));
     }
 
-    let mut environment = captured
+    let environment = captured
         .environment
         .split(|byte| *byte == 0)
         .filter(|entry| !entry.is_empty())
@@ -552,9 +544,6 @@ fn parse_snapshot(
             Some((name.to_string(), value.to_string()))
         })
         .collect::<HashMap<_, _>>();
-    if environment.contains_key(PROXY_ACTIVE_ENV_KEY) {
-        strip_managed_proxy_env(&mut environment);
-    }
     let mut environment = match env_policy {
         Some(policy) => {
             let mut policy = shell_environment_policy(policy);

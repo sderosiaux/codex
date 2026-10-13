@@ -22,14 +22,12 @@ use codex_exec_server::EnvironmentReadyInfo;
 use codex_exec_server::ExecParams;
 use codex_exec_server::ExecResponse;
 use codex_exec_server::ExecServerError;
-use codex_exec_server::ExecServerRuntimeOptions;
 use codex_exec_server::FsReadFileParams;
 use codex_exec_server::NoiseChannelPublicKey;
 use codex_exec_server::NoiseRendezvousConnectBundle;
 use codex_exec_server::NoiseRendezvousConnectProvider;
 use codex_exec_server::ProcessId;
 use codex_exec_server::RemoteEnvironmentConfig;
-use codex_exec_server_protocol::ProcessSandboxType;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::OutboundProxyPolicy;
 use codex_http_client::cache_system_proxy_route_for_test;
@@ -161,8 +159,6 @@ async fn failed_noise_environment_recovers_and_reconnects_after_ready_report() -
         .mount(&registry)
         .await;
 
-    let (codex_exe, codex_linux_sandbox_exe) = common::current_test_binary_helper_paths()?;
-    let runtime_paths = ExecServerRuntimeOptions::new(codex_exe, codex_linux_sandbox_exe)?;
     let http_client_factory = HttpClientFactory::new(OutboundProxyPolicy::RespectSystemProxy);
     let config = RemoteEnvironmentConfig::new(
         registry.uri(),
@@ -172,13 +168,9 @@ async fn failed_noise_environment_recovers_and_reconnects_after_ready_report() -
     )?;
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let remote_environment = AbortOnDropHandle::new(tokio::spawn(
-        codex_exec_server::run_remote_environment_until_shutdown(
-            config,
-            runtime_paths,
-            async move {
-                let _ = shutdown_rx.await;
-            },
-        ),
+        codex_exec_server::run_remote_environment_until_shutdown(config, async move {
+            let _ = shutdown_rx.await;
+        }),
     ));
 
     let environment_websocket = accept_websocket(&listener, "environment").await?;
@@ -285,7 +277,6 @@ async fn failed_noise_environment_recovers_and_reconnects_after_ready_report() -
         .read_file(
             &PathUri::from_host_native_path(skill_file)?,
             Default::default(),
-            /*sandbox*/ None,
         )
         .await?;
     assert_eq!(recovered_skill, skill_contents.to_vec());
@@ -360,17 +351,11 @@ async fn next_connection_state(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn remote_environment_routes_encrypted_exec_server_rpc() -> Result<()> {
     let relay = RelayTest::new().await?;
-    let (codex_exe, codex_linux_sandbox_exe) = common::current_test_binary_helper_paths()?;
-    let runtime_paths = ExecServerRuntimeOptions::new(codex_exe, codex_linux_sandbox_exe)?;
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let remote_environment = AbortOnDropHandle::new(tokio::spawn(
-        codex_exec_server::run_remote_environment_until_shutdown(
-            relay.config()?,
-            runtime_paths,
-            async move {
-                let _ = shutdown_rx.await;
-            },
-        ),
+        codex_exec_server::run_remote_environment_until_shutdown(relay.config()?, async move {
+            let _ = shutdown_rx.await;
+        }),
     ));
     let connection = relay.connect().await?;
     let client = &connection.client;
@@ -386,17 +371,12 @@ async fn remote_environment_routes_encrypted_exec_server_rpc() -> Result<()> {
         tty: false,
         pipe_stdin: false,
         arg0: None,
-        sandbox: None,
-        enforce_managed_network: false,
-        managed_network: None,
-        network_proxy: None,
     };
     let response = client.exec(exec_params).await?;
     assert_eq!(
         response,
         ExecResponse {
             process_id: ProcessId::from("proc-1"),
-            sandbox_type: Some(ProcessSandboxType::None),
         }
     );
 
@@ -408,7 +388,6 @@ async fn remote_environment_routes_encrypted_exec_server_rpc() -> Result<()> {
         .fs_read_file(FsReadFileParams {
             path: PathUri::from_host_native_path(large_file_path)?,
             follow_symlinks: None,
-            sandbox: None,
         })
         .await?;
     assert_eq!(

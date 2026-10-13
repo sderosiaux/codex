@@ -22,7 +22,6 @@ use codex_utils_output_truncation::formatted_truncate_text;
 use codex_utils_output_truncation::truncate_function_output_payload;
 use codex_utils_output_truncation::truncate_text;
 use codex_utils_output_truncation::with_serialization_allowance;
-use serde::Serialize;
 use serde_json::Value as JsonValue;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -56,14 +55,6 @@ pub(crate) struct ToolCallState {
 pub enum ToolCallSource {
     Direct,
     DirectPlaintextMessage,
-    CodeMode {
-        /// Runtime cell that issued the nested tool request.
-        cell_id: String,
-        /// Code-mode's per-cell tool invocation id. This is useful for
-        /// debugging the JS/runtime bridge, but it is not the Codex tool call id
-        /// because the runtime id only needs to be unique within one cell.
-        runtime_tool_call_id: String,
-    },
 }
 
 #[derive(Clone)]
@@ -80,7 +71,7 @@ pub struct ToolInvocation {
     pub payload: ToolPayload,
 }
 
-/// Identity of the model call that started a tool invocation, retained across code-mode waits.
+/// Identity of the model call that started a tool invocation.
 #[derive(Clone)]
 pub(crate) struct ToolCallOrigin {
     /// Best-effort lookup: invocations without a matching history item still
@@ -90,16 +81,8 @@ pub(crate) struct ToolCallOrigin {
 }
 
 impl ToolInvocation {
-    /// Returns the item and window that requested this call or started its code-mode cell.
-    pub(crate) async fn originating_call(&self) -> Option<ToolCallOrigin> {
-        if let ToolCallSource::CodeMode { cell_id, .. } = &self.source {
-            return self
-                .session
-                .services
-                .code_mode_service
-                .cell_originating_call(&codex_code_mode::CellId::new(cell_id.clone()));
-        }
-
+    /// Returns the item and window that requested this call.
+    pub(crate) async fn originating_call(&self) -> ToolCallOrigin {
         let item_id = self
             .session
             .clone_history()
@@ -115,10 +98,10 @@ impl ToolInvocation {
                 }
                 _ => None,
             });
-        Some(ToolCallOrigin {
+        ToolCallOrigin {
             item_id,
             window_id: self.session.current_window_id().await,
-        })
+        }
     }
 }
 
@@ -126,8 +109,6 @@ impl ToolInvocation {
 pub struct McpToolOutput {
     pub result: CallToolResult,
     pub tool_input: JsonValue,
-    // Keep the original metadata for hooks; this flag only controls analytics capture.
-    pub(crate) result_metadata_capture_allowed: bool,
     pub wall_time: Duration,
     pub original_image_detail_supported: bool,
     pub truncation_policy: TruncationPolicy,
@@ -159,17 +140,6 @@ impl ToolOutput for McpToolOutput {
             call_id: call_id.to_string(),
             output: self.response_payload(),
         }
-    }
-
-    fn code_mode_result(&self, payload: &ToolPayload) -> JsonValue {
-        self.result.code_mode_result(payload)
-    }
-
-    fn tool_result_metadata(&self) -> Option<&JsonValue> {
-        if !self.result_metadata_capture_allowed {
-            return None;
-        }
-        self.result.meta.as_ref()
     }
 
     fn post_tool_use_input(&self, _payload: &ToolPayload) -> Option<JsonValue> {
@@ -337,10 +307,6 @@ impl ToolOutput for ApplyPatchToolOutput {
     fn post_tool_use_response(&self, _call_id: &str, _payload: &ToolPayload) -> Option<JsonValue> {
         Some(JsonValue::String(self.text.clone()))
     }
-
-    fn code_mode_result(&self, _payload: &ToolPayload) -> JsonValue {
-        JsonValue::Object(serde_json::Map::new())
-    }
 }
 
 pub struct AbortedToolOutput {
@@ -444,38 +410,6 @@ impl ToolOutput for ExecCommandToolOutput {
             self.truncated_output_with_policy(self.model_output_policy()),
         ))
     }
-
-    fn code_mode_result(&self, _payload: &ToolPayload) -> JsonValue {
-        #[derive(Serialize)]
-        struct UnifiedExecCodeModeResult {
-            #[serde(skip_serializing_if = "Option::is_none")]
-            chunk_id: Option<String>,
-            wall_time_seconds: f64,
-            #[serde(skip_serializing_if = "Option::is_none")]
-            exit_code: Option<i32>,
-            #[serde(skip_serializing_if = "Option::is_none")]
-            session_id: Option<i32>,
-            #[serde(skip_serializing_if = "Option::is_none")]
-            original_token_count: Option<usize>,
-            output: String,
-        }
-
-        let result = UnifiedExecCodeModeResult {
-            chunk_id: (!self.chunk_id.is_empty()).then(|| self.chunk_id.clone()),
-            wall_time_seconds: self.wall_time.as_secs_f64(),
-            exit_code: self.exit_code,
-            session_id: self.process_id,
-            original_token_count: self.original_token_count,
-            output: match self.max_output_tokens {
-                Some(max_tokens) => self.truncated_output(max_tokens),
-                None => String::from_utf8_lossy(&self.raw_output).to_string(),
-            },
-        };
-
-        serde_json::to_value(result).unwrap_or_else(|err| {
-            JsonValue::String(format!("failed to serialize exec result: {err}"))
-        })
-    }
 }
 
 impl ExecCommandToolOutput {
@@ -488,6 +422,7 @@ impl ExecCommandToolOutput {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn truncated_output(&self, max_tokens: usize) -> String {
         self.truncated_output_with_policy(TruncationPolicy::Tokens(max_tokens))
     }

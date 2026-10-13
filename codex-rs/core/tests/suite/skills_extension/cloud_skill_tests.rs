@@ -4,9 +4,6 @@ use super::*;
 use pretty_assertions::assert_eq;
 use tokio::sync::Mutex;
 
-#[path = "yielded_skill_tests.rs"]
-mod yielded_skill_tests;
-
 struct FakeCloudSkillProvider {
     catalog: SkillCatalog,
     resources: std::collections::HashMap<String, String>,
@@ -181,16 +178,7 @@ text({ names: result.skills.map(skill => skill.name), warnings: result.warnings,
         .with_config(|config| {
             config.include_skill_instructions = true;
             config.cloud_skill_enabled = true;
-            config
-                .features
-                .enable(Feature::CodeMode)
-                .expect("code mode should be configurable in tests");
-            config
-                .features
-                .enable(Feature::CodeModeHost)
-                .expect("code mode host should be configurable in tests");
-        })
-        .with_code_mode_host_program(codex_utils_cargo_bin::cargo_bin("codex-code-mode-host")?);
+        });
     let test = builder.build_with_auto_env(&server).await?;
 
     test.submit_turn("Use $demo:explicit-only.").await?;
@@ -523,10 +511,7 @@ async fn production_turn_aliases_discovered_singleton_cloud_root() -> Result<()>
         .with_config(|config| {
             config.include_skill_instructions = true;
             config.cloud_skill_enabled = true;
-            config
-                .features
-                .enable(Feature::SkipHostSkillDiscovery)
-                .expect("cloud skills must not depend on host discovery");
+            config.features.enable(Feature::SkipHostSkillDiscovery);
         });
     let test = builder.build_with_auto_env(&server).await?;
 

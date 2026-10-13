@@ -14,7 +14,7 @@ use std::time::Duration;
 const TRUNCATION_NOTICE: &str = "[... telemetry preview truncated ...]";
 
 /// Result-recording order across all sessions in this process, not tool-start order.
-/// Independent of the optional rollout-trace writer and reset on process restart.
+/// Reset on process restart.
 fn next_tool_result_seq() -> u64 {
     static NEXT_SEQ: AtomicU64 = AtomicU64::new(1);
     NEXT_SEQ.fetch_add(/*val*/ 1, Ordering::Relaxed)

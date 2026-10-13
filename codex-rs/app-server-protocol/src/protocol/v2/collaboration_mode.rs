@@ -6,12 +6,6 @@ use codex_protocol::openai_models::ReasoningEffort;
 use serde::Deserialize;
 use serde::Serialize;
 
-/// EXPERIMENTAL - list collaboration mode presets.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-pub struct CollaborationModeListParams {}
-
 /// EXPERIMENTAL - collaboration mode preset metadata for clients.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
@@ -34,12 +28,4 @@ impl From<CoreCollaborationModeMask> for CollaborationModeMask {
             reasoning_effort: value.reasoning_effort,
         }
     }
-}
-
-/// EXPERIMENTAL - collaboration mode presets response.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-pub struct CollaborationModeListResponse {
-    pub data: Vec<CollaborationModeMask>,
 }

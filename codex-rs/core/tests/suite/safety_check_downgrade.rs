@@ -4,9 +4,7 @@ use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
 use codex_protocol::models::ContentItem;
-use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::ResponseItem;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ModelRerouteReason;
@@ -27,7 +25,6 @@ use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::local_requests;
 use core_test_support::test_codex::test_codex;
-use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
 use wiremock::ResponseTemplate;
@@ -42,17 +39,12 @@ const BIO_POLICY_MESSAGE: &str = "This request has been flagged for possible bio
 const INVALID_PROMPT_MESSAGE: &str = "This prompt was rejected.";
 
 fn disabled_text_turn(test: &TestCodex, text: &str) -> TurnInputRequest {
-    let (sandbox_policy, permission_profile) =
-        turn_permission_fields(PermissionProfile::Disabled, test.cwd_path());
     TurnInputRequest::user_input(vec![UserInput::Text {
         text: text.to_string(),
         text_elements: Vec::new(),
     }])
     .with_thread_settings(ThreadSettingsOverrides {
         environments: Some(local_requests(test.config.cwd.clone())),
-        approval_policy: Some(AskForApproval::Never),
-        sandbox_policy: Some(sandbox_policy),
-        permission_profile,
         collaboration_mode: Some(CollaborationMode {
             mode: ModeKind::Default,
             settings: Settings {

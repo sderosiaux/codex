@@ -10,13 +10,11 @@ use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnStartedEvent;
-use codex_protocol::security_risk::SecurityRiskScore;
 use codex_protocol::user_input::UserInput;
 use codex_rollout::CompactedItem;
 use codex_rollout::RolloutItem;
 use codex_rollout::RolloutLine;
 use pretty_assertions::assert_eq;
-use std::collections::BTreeMap;
 
 use super::*;
 use crate::protocol::v2::ThreadItem;
@@ -214,7 +212,6 @@ fn ignores_legacy_abort_without_turn_id_and_context_only_records() {
         message: String::new(),
         replacement_history: None,
         retained_context: None,
-        guardian_history: None,
         mcp_resource_origins: None,
         window_number: None,
         first_window_id: None,
@@ -224,16 +221,9 @@ fn ignores_legacy_abort_without_turn_id_and_context_only_records() {
         latest_token_usage_record: None,
         resume_metadata: None,
     }));
-    let security_risk = project(RolloutItem::SecurityRiskScore(SecurityRiskScore {
-        scores: BTreeMap::from([("action_risk".to_string(), 0.92)]),
-        call_id: None,
-        action: None,
-        sampled_at: None,
-    }));
 
     assert!(aborted.is_empty());
     assert!(compacted.is_empty());
-    assert!(security_risk.is_empty());
 }
 
 #[test]

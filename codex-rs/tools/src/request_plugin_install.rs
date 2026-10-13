@@ -1,5 +1,5 @@
 use codex_connectors::AppInfo;
-use codex_protocol::approvals::ElicitationRequest;
+use codex_protocol::elicitation::ElicitationRequest;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::json;

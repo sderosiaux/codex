@@ -10,7 +10,6 @@ use codex_exec_server::ExecutorFileSystemFuture;
 use codex_exec_server::FileMetadata;
 use codex_exec_server::FileSystemReadStream;
 use codex_exec_server::FileSystemResult;
-use codex_exec_server::FileSystemSandboxContext;
 use codex_exec_server::GetMetadataOptions;
 use codex_exec_server::ReadDirectoryEntry;
 use codex_exec_server::ReadFileOptions;
@@ -53,11 +52,7 @@ impl SyntheticExecutorFileSystem {
 }
 
 impl ExecutorFileSystem for SyntheticExecutorFileSystem {
-    fn canonicalize<'a>(
-        &'a self,
-        _path: &'a PathUri,
-        _sandbox: Option<&'a FileSystemSandboxContext>,
-    ) -> ExecutorFileSystemFuture<'a, PathUri> {
+    fn canonicalize<'a>(&'a self, _path: &'a PathUri) -> ExecutorFileSystemFuture<'a, PathUri> {
         Box::pin(async { Self::unsupported() })
     }
 
@@ -65,7 +60,6 @@ impl ExecutorFileSystem for SyntheticExecutorFileSystem {
         &'a self,
         path: &'a PathUri,
         _options: ReadFileOptions,
-        _sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, Vec<u8>> {
         Box::pin(async move {
             let path = path.to_abs_path()?;
@@ -85,7 +79,6 @@ impl ExecutorFileSystem for SyntheticExecutorFileSystem {
     fn read_file_stream<'a>(
         &'a self,
         _path: &'a PathUri,
-        _sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, FileSystemReadStream> {
         Box::pin(async { Self::unsupported() })
     }
@@ -95,7 +88,6 @@ impl ExecutorFileSystem for SyntheticExecutorFileSystem {
         _path: &'a PathUri,
         _contents: Vec<u8>,
         _options: WriteFileOptions,
-        _sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, ()> {
         Box::pin(async { Self::unsupported() })
     }
@@ -104,7 +96,6 @@ impl ExecutorFileSystem for SyntheticExecutorFileSystem {
         &'a self,
         _path: &'a PathUri,
         _options: CreateDirectoryOptions,
-        _sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, ()> {
         Box::pin(async { Self::unsupported() })
     }
@@ -113,7 +104,6 @@ impl ExecutorFileSystem for SyntheticExecutorFileSystem {
         &'a self,
         _path: &'a PathUri,
         _options: GetMetadataOptions,
-        _sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, FileMetadata> {
         Box::pin(async { Self::unsupported() })
     }
@@ -121,7 +111,6 @@ impl ExecutorFileSystem for SyntheticExecutorFileSystem {
     fn read_directory<'a>(
         &'a self,
         _path: &'a PathUri,
-        _sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, Vec<ReadDirectoryEntry>> {
         Box::pin(async { Self::unsupported() })
     }
@@ -130,7 +119,6 @@ impl ExecutorFileSystem for SyntheticExecutorFileSystem {
         &'a self,
         _path: &'a PathUri,
         _options: WalkOptions,
-        _sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, WalkOutcome> {
         Box::pin(async { Self::unsupported() })
     }
@@ -139,7 +127,6 @@ impl ExecutorFileSystem for SyntheticExecutorFileSystem {
         &'a self,
         _path: &'a PathUri,
         _options: RemoveOptions,
-        _sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, ()> {
         Box::pin(async { Self::unsupported() })
     }
@@ -149,7 +136,6 @@ impl ExecutorFileSystem for SyntheticExecutorFileSystem {
         _source_path: &'a PathUri,
         _destination_path: &'a PathUri,
         _options: CopyOptions,
-        _sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, ()> {
         Box::pin(async { Self::unsupported() })
     }
@@ -202,7 +188,6 @@ async fn reads_declared_config_only_through_executor_file_system() {
                     disabled_reason: None,
                     startup_timeout_sec: None,
                     tool_timeout_sec: None,
-                    default_tools_approval_mode: None,
                     enabled_tools: None,
                     disabled_tools: None,
                     scopes: None,
@@ -232,7 +217,6 @@ async fn reads_declared_config_only_through_executor_file_system() {
                     disabled_reason: None,
                     startup_timeout_sec: None,
                     tool_timeout_sec: None,
-                    default_tools_approval_mode: None,
                     enabled_tools: None,
                     disabled_tools: None,
                     scopes: None,
@@ -292,7 +276,6 @@ async fn reads_manifest_object_config_without_executor_file_system_access() {
                 disabled_reason: None,
                 startup_timeout_sec: None,
                 tool_timeout_sec: None,
-                default_tools_approval_mode: None,
                 enabled_tools: None,
                 disabled_tools: None,
                 scopes: None,

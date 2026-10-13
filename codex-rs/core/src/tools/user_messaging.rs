@@ -1,36 +1,13 @@
 //! Extracts confirmed User Messaging text after input-rewriting hooks.
-//! Tracks nested sends through cancellation and captures evidence before post-tool hooks.
+//! Captures evidence before post-tool hooks.
 
-use crate::function_tool::FunctionCallError;
-use crate::guardian::GUARDIAN_MAX_ROOT_MESSAGE_TOKENS;
-use crate::guardian::guardian_truncate_text;
-use crate::session::session::Session;
-use crate::tools::context::ToolCallSource;
 use crate::tools::context::ToolCallState;
 use crate::tools::registry::AnyToolResult;
-use codex_history::RetainedUserMessage;
-use codex_mcp::PreparedMcpCall;
-use codex_protocol::mcp::CallToolResult;
-use codex_tools::ToolName;
-use serde_json::Value;
-use std::sync::Arc;
-use tokio_util::task::task_tracker::TaskTrackerToken;
+use codex_utils_output_truncation::TruncationPolicy;
+use codex_utils_output_truncation::truncate_text;
 
-pub(super) fn admit_code_mode_send(
-    session: &Session,
-    source: &ToolCallSource,
-    tool_name: &ToolName,
-) -> Result<Option<TaskTrackerToken>, FunctionCallError> {
-    // All User Messaging aliases end in `send_message`; confirmation checks the exact identity.
-    if !matches!(source, ToolCallSource::CodeMode { .. })
-        || !tool_name.name.ends_with("send_message")
-    {
-        return Ok(None);
-    }
-    session.track_code_mode_message().map(Some).ok_or_else(|| {
-        FunctionCallError::RespondToModel("code mode nested tool call cancelled".to_owned())
-    })
-}
+/// Matches the retained-message bound applied when history replays this text.
+const MAX_DELIVERED_MESSAGE_TOKENS: usize = 900;
 
 /// Captures confirmed delivery before any further await, including post-tool hooks.
 pub(super) fn capture_delivery(result: &AnyToolResult, call_state: Option<&ToolCallState>) {
@@ -39,47 +16,6 @@ pub(super) fn capture_delivery(result: &AnyToolResult, call_state: Option<&ToolC
     {
         let _ = call_state.delivered_assistant_message.set(text);
     }
-}
-
-/// Starts persistence at the successful MCP response boundary, before result callbacks.
-pub(crate) fn record_confirmed_code_mode_send(
-    session: &Arc<Session>,
-    turn_id: &str,
-    call_id: &str,
-    source: &ToolCallSource,
-    prepared_call: &PreparedMcpCall,
-    tool_input: &Value,
-    result: &CallToolResult,
-) {
-    if !matches!(source, ToolCallSource::CodeMode { .. })
-        || result.is_error == Some(true)
-        || !prepared_call.is_host_owned_apps()
-        || !matches!(
-            prepared_call.tool_info().tool.name.as_ref(),
-            "user_message_send_message"
-                | "user_messaging_send_message"
-                | "user_message.send_message"
-                | "user_messaging.send_message"
-        )
-    {
-        return;
-    }
-    let Some(text) = tool_input.get("text").and_then(Value::as_str) else {
-        return;
-    };
-    if text.trim().is_empty() {
-        return;
-    }
-    let (text, truncated) = guardian_truncate_text(text, GUARDIAN_MAX_ROOT_MESSAGE_TOKENS);
-    let message = RetainedUserMessage {
-        origin: codex_history::UserInputOrigin::User,
-        turn_id: turn_id.to_owned(),
-        message_id: Some(call_id.to_owned()),
-        text,
-        complete: !truncated,
-        phase: None,
-    };
-    let _ = session.record_delivered_assistant_message(message);
 }
 
 impl AnyToolResult {
@@ -103,7 +39,10 @@ impl AnyToolResult {
         if text.trim().is_empty() {
             return None;
         }
-        Some(guardian_truncate_text(text, GUARDIAN_MAX_ROOT_MESSAGE_TOKENS).0)
+        Some(truncate_text(
+            text,
+            TruncationPolicy::Tokens(MAX_DELIVERED_MESSAGE_TOKENS),
+        ))
     }
 }
 

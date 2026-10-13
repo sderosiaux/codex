@@ -19,7 +19,6 @@ codex-api = { workspace = true }
 codex-agent-identity = { workspace = true }
 codex-aws-auth = { workspace = true }
 codex-http-client = { workspace = true }
-codex-feedback = { workspace = true }
 codex-login = { workspace = true }
 codex-keyring-store = { workspace = true }
 codex-model-provider-info = { workspace = true }
@@ -42,5 +41,5 @@ codex-utils-cargo-bin = { workspace = true }
 codex-utils-redacted-string = { workspace = true }
 pretty_assertions = { workspace = true }
 tempfile = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
 wiremock = { workspace = true }

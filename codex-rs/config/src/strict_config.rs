@@ -2,8 +2,6 @@
 
 use crate::CONFIG_TOML_FILE;
 use crate::ConfigLayerStack;
-use crate::ConfigRequirementsToml;
-use crate::RequirementsLayerEntry;
 use crate::config_toml::ConfigToml;
 use crate::diagnostics::ConfigDiagnosticSource;
 use crate::diagnostics::ConfigError;
@@ -13,12 +11,8 @@ use crate::diagnostics::span_for_config_path;
 use crate::diagnostics::span_for_toml_key_path;
 use crate::diagnostics::text_range_from_span;
 use crate::format_config_layer_source;
-use crate::requirements_layers::strip_cloud_auth_requirements;
-use crate::types::Tui;
 use codex_features::is_known_feature_key;
-use codex_utils_absolute_path::AbsolutePathBufGuard;
 use serde::de::DeserializeOwned;
-use std::any::TypeId;
 use std::collections::BTreeSet;
 use std::fmt::Write;
 use std::path::Path;
@@ -49,31 +43,12 @@ pub(crate) fn config_error_from_ignored_toml_value_fields<T: DeserializeOwned + 
     )
 }
 
-pub(crate) fn config_error_from_ignored_toml_value_fields_for_source_name<
-    T: DeserializeOwned + 'static,
->(
-    source_name: &str,
-    contents: &str,
-    value: TomlValue,
-) -> Option<ConfigError> {
-    config_error_from_ignored_toml_value_fields_for_source::<T>(
-        ConfigDiagnosticSource::DisplayName(source_name),
-        contents,
-        value,
-    )
-}
-
 fn config_error_from_ignored_toml_value_fields_for_source<T: DeserializeOwned + 'static>(
     source: ConfigDiagnosticSource<'_>,
     contents: &str,
     value: TomlValue,
 ) -> Option<ConfigError> {
     let unknown_feature_paths = unknown_feature_toml_value_path(&value);
-    let unknown_tui_paths = if TypeId::of::<T>() == TypeId::of::<ConfigToml>() {
-        unknown_tui_toml_value_path(&value)
-    } else {
-        Vec::new()
-    };
     let mut ignored_paths = Vec::new();
     let mut ignored_callback = |ignored_path: serde_ignored::Path<'_>| {
         let path_segments = ignored_path_segments(&ignored_path);
@@ -86,7 +61,6 @@ fn config_error_from_ignored_toml_value_fields_for_source<T: DeserializeOwned + 
 
     match result {
         Ok(_) => unknown_field_error_from_paths(source, contents, ignored_paths)
-            .or_else(|| unknown_field_error_from_paths(source, contents, unknown_tui_paths))
             .or_else(|| unknown_field_error_from_paths(source, contents, unknown_feature_paths)),
         Err(err) => {
             let path_hint = err.path().clone();
@@ -102,29 +76,6 @@ fn config_error_from_ignored_toml_value_fields_for_source<T: DeserializeOwned + 
             ))
         }
     }
-}
-
-pub(crate) fn unknown_tui_toml_value_path(value: &TomlValue) -> Vec<Vec<String>> {
-    // `serde_ignored` cannot observe keys consumed by the flattened notification settings.
-    // Round-trip the TUI config so accepted input keys stay derived from `Tui` itself.
-    let Some(tui_value) = value.as_table().and_then(|root| root.get("tui")) else {
-        return Vec::new();
-    };
-    let Some(configured_tui) = tui_value.as_table() else {
-        return Vec::new();
-    };
-    let Ok(tui) = tui_value.clone().try_into::<Tui>() else {
-        return Vec::new();
-    };
-    let Ok(TomlValue::Table(serialized_tui)) = TomlValue::try_from(tui) else {
-        return Vec::new();
-    };
-
-    configured_tui
-        .keys()
-        .filter(|key| !serialized_tui.contains_key(*key))
-        .map(|key| vec!["tui".to_string(), key.clone()])
-        .collect()
 }
 
 pub(crate) fn ignored_toml_value_fields<T: DeserializeOwned>(value: TomlValue) -> Vec<Vec<String>> {
@@ -235,10 +186,7 @@ fn push_ignored_path_segments(path: &serde_ignored::Path<'_>, segments: &mut Vec
     }
 }
 
-pub(crate) fn ignored_config_warning(
-    config: &ConfigLayerStack,
-    requirements: &[RequirementsLayerEntry],
-) -> Option<String> {
+pub(crate) fn ignored_config_warning(config: &ConfigLayerStack) -> Option<String> {
     let mut fields = BTreeSet::new();
     // Validate the merged config so incomplete layer fragments (e.g. a provider
     // override) do not hide diagnostics.
@@ -266,24 +214,6 @@ pub(crate) fn ignored_config_warning(
         }
     }
 
-    // Requirements use a different schema and lose unknown fields during
-    // composition. Inspect their original layers, with the same path bases.
-    // Normal loading remains responsible for reporting parse/type errors.
-    for layer in requirements {
-        let Ok((source, mut value, base_dir)) = layer.clone().into_raw_parts() else {
-            continue;
-        };
-        let _guard = base_dir
-            .as_ref()
-            .map(|base_dir| AbsolutePathBufGuard::new(base_dir.as_path()));
-        strip_cloud_auth_requirements(&source, &mut value);
-        fields.extend(
-            ignored_toml_value_fields::<ConfigRequirementsToml>(value)
-                .into_iter()
-                .map(|path| (format!("requirements ({source})"), path)),
-        );
-    }
-
     if fields.is_empty() {
         return None;
     }
@@ -301,15 +231,6 @@ pub(crate) fn ignored_config_warning(
             .collect::<Vec<_>>()
             .as_slice()
         {
-            ["windows", "sandbox_private_desktop"] => {
-                " Remove windows.sandbox_private_desktop; legacy Windows sandboxes always use a private desktop."
-            }
-            ["network_proxy"] => {
-                " Use [permissions.<name>.network] for network settings, or [experimental_network] in requirements.toml for enforced network policy."
-            }
-            ["allowed_permissions"] => {
-                " Use [allowed_permission_profiles] and default_permissions; the old allowlist is ignored even when both forms are present."
-            }
             ["include_view_image_tool"]
             | ["features", "include_view_image_tool"]
             | ["profiles", _, "include_view_image_tool"]

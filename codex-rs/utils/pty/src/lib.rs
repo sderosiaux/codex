@@ -13,6 +13,10 @@ mod process;
 pub mod process_group;
 pub mod pty;
 pub use pty::ChildFds;
+mod spawn;
+pub use spawn::SpawnRequest;
+pub use spawn::spawn_process;
+mod terminal_queries;
 #[cfg(test)]
 mod tests;
 #[cfg(unix)]

@@ -1,4 +1,4 @@
-//! Loads metadata within the request's sandbox and builds a bounded response.
+//! Loads capability metadata and builds a bounded response.
 
 use std::collections::HashMap;
 use std::io;
@@ -51,27 +51,14 @@ impl Default for CapabilityDiscovery {
 pub(super) async fn load_capability_discoveries(
     file_system: &LocalFileSystem,
     locations: &CapabilityLocations,
-    sandbox: Option<&crate::FileSystemSandboxContext>,
 ) -> io::Result<Arc<DiscoverV2CapabilitiesResponse>> {
-    let sandbox = sandbox.filter(|sandbox| sandbox.should_read_from_sandbox());
     let warnings = if !locations.warnings.is_empty() {
         vec!["some capability locations could not be resolved; discovery may be incomplete".into()]
     } else {
         Vec::new()
     };
-    let response = match sandbox {
-        Some(sandbox) if !locations.locations.is_empty() => {
-            file_system
-                .sandboxed()?
-                .load_sandboxed_capability_discoveries(
-                    locations.locations.clone(),
-                    warnings,
-                    sandbox,
-                )
-                .await?
-        }
-        _ => load_capability_discovery_batch(file_system, &locations.locations, warnings).await?,
-    };
+    let response =
+        load_capability_discovery_batch(file_system, &locations.locations, warnings).await?;
     Ok(Arc::new(response))
 }
 
@@ -116,7 +103,7 @@ async fn load_capability_discovery(
 ) -> io::Result<CapabilityDiscovery> {
     // Missing roots are normal.
     match file_system
-        .get_metadata(&location.root, Default::default(), /*sandbox*/ None)
+        .get_metadata(&location.root, Default::default())
         .await
     {
         Ok(metadata) if metadata.is_directory => {}
@@ -146,7 +133,6 @@ async fn load_capability_discovery(
                 .map(|plugin| plugin.id.clone())
                 .unwrap_or_default(),
             path: location.root.clone(),
-            sandbox: None,
         },
     )
     .await;

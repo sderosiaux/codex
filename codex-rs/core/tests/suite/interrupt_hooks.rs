@@ -14,7 +14,7 @@ use codex_protocol::protocol::Op;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::user_input::UserInput;
 use core_test_support::fs_wait;
-use core_test_support::hooks::trust_discovered_hooks;
+use core_test_support::hooks::enable_discovered_hooks;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_function_call;
 use core_test_support::responses::ev_response_created;
@@ -95,7 +95,7 @@ async fn build_test(server: &MockServer, system_message: Option<&str>) -> Result
                 .unwrap_or_else(|error| panic!("failed to write interrupt hook fixture: {error}"));
         })
         .with_config(|config| {
-            trust_discovered_hooks(config);
+            enable_discovered_hooks(config);
             config.agent_interrupt_message_enabled = false;
         })
         .build_with_auto_env(server)
@@ -311,7 +311,7 @@ async fn async_interrupt_hook_runs_without_delaying_turn_aborted() -> Result<()>
             );
             fs::write(script_path, gated_script).expect("write gated async interrupt script");
         })
-        .with_config(trust_discovered_hooks)
+        .with_config(enable_discovered_hooks)
         .build_with_auto_env(&server)
         .await?;
     start_interruptible_turn(&test, &server).await?;
@@ -380,7 +380,7 @@ async fn self_aborted_turn_runs_interrupt_hook_before_turn_aborted() -> Result<(
             }]);
             fs::write(hooks_path, hooks.to_string()).expect("write pre-compact hook configuration");
         })
-        .with_config(trust_discovered_hooks)
+        .with_config(enable_discovered_hooks)
         .build_with_auto_env(&server)
         .await?;
 

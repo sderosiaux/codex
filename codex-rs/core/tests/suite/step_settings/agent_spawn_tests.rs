@@ -50,20 +50,11 @@ async fn spawn_inherits_captured_settings_after_a_turn_update(
     mount_sse_once(&server, sse_completed("resp-child-notification")).await;
     let test = step_settings_test()
         .with_config(move |config| {
-            config
-                .features
-                .enable(Feature::Collab)
-                .expect("enable collab");
+            config.features.enable(Feature::Collab);
             if multi_agent_v2 {
-                config
-                    .features
-                    .enable(Feature::MultiAgentV2)
-                    .expect("enable V2");
+                config.features.enable(Feature::MultiAgentV2);
             } else {
-                config
-                    .features
-                    .disable(Feature::MultiAgentV2)
-                    .expect("disable V2");
+                config.features.disable(Feature::MultiAgentV2);
             }
             for model in &mut config.model_catalog.as_mut().expect("model catalog").models {
                 // An effort-only override must be validated against B, not the turn's initial A.

@@ -3,7 +3,6 @@
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use codex_extension_api::ApprovalReviewContributor;
 use codex_extension_api::ConfigContributor;
 use codex_extension_api::ContentItemKind;
 use codex_extension_api::ContextContributor;
@@ -193,27 +192,6 @@ impl TurnItemContributor for AllContributors {
     }
 }
 
-impl ApprovalReviewContributor for AllContributors {
-    fn decide<'a>(
-        &'a self,
-        _input: &'a codex_extension_api::ApprovalDecisionInput<'_>,
-    ) -> ExtensionFuture<'a, Option<codex_extension_api::ApprovalDecision>> {
-        Box::pin(async { Some(codex_extension_api::ApprovalDecision::AskUser) })
-    }
-}
-
-impl codex_extension_api::SynchronousApprovalReviewer for AllContributors {
-    fn review<'a>(
-        &'a self,
-        _reason: codex_protocol::approvals::GuardianReviewReason,
-        _async_approval: Option<codex_extension_api::ExtensionFuture<'a, ()>>,
-    ) -> ExtensionFuture<'a, Option<codex_protocol::protocol::ReviewDecision>> {
-        Box::pin(std::future::ready(Some(
-            codex_protocol::protocol::ReviewDecision::Approved,
-        )))
-    }
-}
-
 #[tokio::test]
 async fn build_round_trips_every_contributor_category() {
     let contributor = Arc::new(AllContributors);
@@ -227,8 +205,7 @@ async fn build_round_trips_every_contributor_category() {
     builder.turn_input_contributor(contributor.clone());
     builder.tool_contributor(contributor.clone());
     builder.tool_lifecycle_contributor(contributor.clone());
-    builder.turn_item_contributor(contributor.clone());
-    builder.approval_review_contributor(contributor);
+    builder.turn_item_contributor(contributor);
     let registry = builder.build();
 
     assert_eq!(registry.thread_lifecycle_contributors().len(), 1);
@@ -241,27 +218,6 @@ async fn build_round_trips_every_contributor_category() {
     assert_eq!(registry.tool_contributors().len(), 1);
     assert_eq!(registry.tool_lifecycle_contributors().len(), 1);
     assert_eq!(registry.turn_item_contributors().len(), 1);
-    let thread_store = ExtensionData::new("thread");
-    let input = codex_extension_api::ApprovalDecisionInput {
-        permissions: Some(&Default::default()),
-        approval_id: "approval-1",
-        tool_call_id: None,
-        action: &serde_json::Value::Null,
-        thread_id: codex_protocol::ThreadId::new(),
-        thread_store: &thread_store,
-        category: codex_protocol::openai_models::GuardianScope::Shell,
-        approval_policy: codex_protocol::protocol::AskForApproval::OnRequest,
-        approvals_reviewer: codex_protocol::config_types::ApprovalsReviewer::AutoReview,
-        require_guardian: false,
-        require_fresh_review: false,
-        full_access: false,
-        metrics: None,
-        synchronous_reviewer: &AllContributors,
-    };
-    assert_eq!(
-        registry.decide_approval(&input).await,
-        Some(codex_extension_api::ApprovalDecision::AskUser)
-    );
 }
 
 impl ConversationHistorySnapshot for AllContributors {

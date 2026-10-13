@@ -79,17 +79,11 @@ impl RegistryFixture {
             static_registry_auth_provider(),
             HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
         )?;
-        let (codex_exe, sandbox_exe) = common::current_test_binary_helper_paths()?;
-        let runtime_paths = ExecServerRuntimeOptions::new(codex_exe, sandbox_exe)?;
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let task = AbortOnDropHandle::new(tokio::spawn(
-            codex_exec_server::run_remote_environment_until_shutdown(
-                config,
-                runtime_paths,
-                async move {
-                    let _ = shutdown_rx.await;
-                },
-            ),
+            codex_exec_server::run_remote_environment_until_shutdown(config, async move {
+                let _ = shutdown_rx.await;
+            }),
         ));
         Ok((shutdown_tx, task))
     }

@@ -132,7 +132,7 @@ async fn refresh_keeps_superseded_mcp_server_alive_for_in_flight_calls() -> anyh
     let command = stdio_server_bin()?;
     let fixture = test_codex()
         .with_config(move |config| {
-            let mut servers = config.mcp_servers.get().clone();
+            let mut servers = config.mcp_servers.clone();
             servers.insert(
                 "refresh_cleanup".to_string(),
                 McpServerConfig {
@@ -157,7 +157,6 @@ async fn refresh_keeps_superseded_mcp_server_alive_for_in_flight_calls() -> anyh
                     disabled_reason: None,
                     startup_timeout_sec: Some(Duration::from_secs(10)),
                     tool_timeout_sec: None,
-                    default_tools_approval_mode: None,
                     enabled_tools: None,
                     disabled_tools: None,
                     scopes: None,
@@ -166,10 +165,7 @@ async fn refresh_keeps_superseded_mcp_server_alive_for_in_flight_calls() -> anyh
                     tools: HashMap::new(),
                 },
             );
-            config
-                .mcp_servers
-                .set(servers)
-                .expect("test MCP servers should accept any configuration");
+            config.mcp_servers = servers;
         })
         .build(&server)
         .await?;

@@ -4,8 +4,6 @@ use chrono::Utc;
 use codex_protocol::SanitizedGitUrl;
 use codex_protocol::ThreadId;
 use codex_protocol::openai_models::ReasoningEffort;
-use codex_protocol::protocol::AskForApproval;
-use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadSource;
@@ -167,10 +165,6 @@ pub struct ThreadMetadata {
     pub name: Option<String>,
     /// Best available user-facing preview for discovery and list display.
     pub preview: Option<String>,
-    /// The sandbox policy (stringified enum).
-    pub sandbox_policy: String,
-    /// The approval mode (stringified enum).
-    pub approval_mode: String,
     /// The last observed token usage.
     pub tokens_used: i64,
     /// First user message observed for this thread, if any.
@@ -232,10 +226,6 @@ pub struct ThreadMetadataBuilder {
     pub cwd: PathBuf,
     /// Version of the CLI that created the thread.
     pub cli_version: Option<String>,
-    /// The sandbox policy.
-    pub sandbox_policy: SandboxPolicy,
-    /// The approval mode.
-    pub approval_mode: AskForApproval,
     /// The archive timestamp, if the thread is archived.
     pub archived_at: Option<DateTime<Utc>>,
     /// The git commit SHA, if known.
@@ -272,8 +262,6 @@ impl ThreadMetadataBuilder {
             model_provider: None,
             cwd: PathBuf::new(),
             cli_version: None,
-            sandbox_policy: SandboxPolicy::new_read_only_policy(),
-            approval_mode: AskForApproval::OnRequest,
             archived_at: None,
             git_sha: None,
             git_branch: None,
@@ -284,8 +272,6 @@ impl ThreadMetadataBuilder {
     /// Build canonical thread metadata, filling missing values from defaults.
     pub fn build(&self, default_provider: &str) -> ThreadMetadata {
         let source = crate::extract::enum_to_string(&self.source);
-        let sandbox_policy = crate::extract::enum_to_string(&self.sandbox_policy);
-        let approval_mode = crate::extract::enum_to_string(&self.approval_mode);
         let created_at = canonicalize_datetime(self.created_at);
         let updated_at = self
             .updated_at
@@ -295,7 +281,6 @@ impl ThreadMetadataBuilder {
             .recency_at
             .map(canonicalize_datetime)
             .unwrap_or(updated_at);
-        let guardian_review = crate::is_guardian_review_source(&self.source);
         ThreadMetadata {
             originator: self.originator.clone(),
             creator_user_id: self.creator_user_id.clone(),
@@ -322,16 +307,9 @@ impl ThreadMetadataBuilder {
             reasoning_effort: None,
             cwd: self.cwd.clone(),
             cli_version: self.cli_version.clone().unwrap_or_default(),
-            title: if guardian_review {
-                crate::GUARDIAN_THREAD_TITLE.to_string()
-            } else {
-                String::new()
-            },
-            name: (guardian_review && self.history_mode == ThreadHistoryMode::Paginated)
-                .then(|| crate::GUARDIAN_THREAD_TITLE.to_string()),
-            preview: guardian_review.then(|| crate::GUARDIAN_THREAD_PREVIEW.to_string()),
-            sandbox_policy,
-            approval_mode,
+            title: String::new(),
+            name: None,
+            preview: None,
             tokens_used: 0,
             first_user_message: None,
             archived_at: self.archived_at.map(canonicalize_datetime),
@@ -383,11 +361,7 @@ impl ThreadMetadata {
         }
 
         let title = self.title.trim();
-        if title.is_empty()
-            || self.first_user_message.as_deref().map(str::trim) == Some(title)
-            || (title == crate::GUARDIAN_THREAD_TITLE
-                && crate::extract::metadata_is_guardian_review(self))
-        {
+        if title.is_empty() || self.first_user_message.as_deref().map(str::trim) == Some(title) {
             self.title = existing.title.clone();
         }
     }
@@ -451,12 +425,6 @@ impl ThreadMetadata {
         }
         if self.preview != other.preview {
             diffs.push("preview");
-        }
-        if self.sandbox_policy != other.sandbox_policy {
-            diffs.push("sandbox_policy");
-        }
-        if self.approval_mode != other.approval_mode {
-            diffs.push("approval_mode");
         }
         if self.tokens_used != other.tokens_used {
             diffs.push("tokens_used");
@@ -523,8 +491,6 @@ pub(crate) struct ThreadRow {
     title: String,
     name: Option<String>,
     preview: String,
-    sandbox_policy: String,
-    approval_mode: String,
     tokens_used: i64,
     first_user_message: String,
     archived_at: Option<i64>,
@@ -565,8 +531,6 @@ impl ThreadRow {
             title: row.try_get("title")?,
             name: row.try_get("name")?,
             preview: row.try_get("preview")?,
-            sandbox_policy: row.try_get("sandbox_policy")?,
-            approval_mode: row.try_get("approval_mode")?,
             tokens_used: row.try_get("tokens_used")?,
             first_user_message: row.try_get("first_user_message")?,
             archived_at: row.try_get("archived_at")?,
@@ -611,8 +575,6 @@ impl TryFrom<ThreadRow> for ThreadMetadata {
             title,
             name,
             preview,
-            sandbox_policy,
-            approval_mode,
             tokens_used,
             first_user_message,
             archived_at,
@@ -672,8 +634,6 @@ impl TryFrom<ThreadRow> for ThreadMetadata {
             title,
             name,
             preview: (!preview.is_empty()).then_some(preview),
-            sandbox_policy,
-            approval_mode,
             tokens_used,
             first_user_message: (!first_user_message.is_empty()).then_some(first_user_message),
             archived_at: archived_at.map(epoch_seconds_to_datetime).transpose()?,
@@ -788,8 +748,6 @@ mod tests {
             title: String::new(),
             name: None,
             preview: String::new(),
-            sandbox_policy: "read-only".to_string(),
-            approval_mode: "on-request".to_string(),
             tokens_used: 1,
             first_user_message: String::new(),
             archived_at: None,
@@ -831,8 +789,6 @@ mod tests {
             title: String::new(),
             name: None,
             preview: None,
-            sandbox_policy: "read-only".to_string(),
-            approval_mode: "on-request".to_string(),
             tokens_used: 1,
             first_user_message: None,
             archived_at: None,

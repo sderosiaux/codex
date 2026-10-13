@@ -2,12 +2,8 @@ use anyhow::Context;
 use anyhow::Result;
 use codex_core::AgentTreeShutdownFailure;
 use codex_core::AgentTreeShutdownFailureReason;
-use codex_core::windows_sandbox::WindowsSandboxLevelExt;
 use codex_exec_server::CreateDirectoryOptions;
 use codex_features::Feature;
-use codex_protocol::config_types::WindowsSandboxLevel;
-use codex_protocol::models::PermissionProfile;
-use codex_protocol::models::PermissionProfileSnapshot;
 use codex_protocol::protocol::EnvironmentConfig;
 use codex_protocol::protocol::EnvironmentConfigState;
 use codex_protocol::protocol::EventMsg;
@@ -185,14 +181,8 @@ async fn v2_nested_spawn_checks_shared_active_execution_capacity() -> Result<()>
     let mut builder = test_codex()
         .with_model("gpt-5.6-sol")
         .with_config(|config| {
-            config
-                .features
-                .enable(Feature::Collab)
-                .expect("test config should allow feature update");
-            config
-                .features
-                .enable(Feature::MultiAgentV2)
-                .expect("test config should allow feature update");
+            config.features.enable(Feature::Collab);
+            config.features.enable(Feature::MultiAgentV2);
             config.multi_agent_v2.max_concurrent_threads_per_session = 2;
         });
     let test = builder.build(&server).await?;
@@ -240,8 +230,8 @@ async fn child_turn_start_preserves_root_attribution() -> Result<()> {
                 headers: Default::default(),
                 tls: None,
             };
-            config.features.enable(Feature::Collab).unwrap();
-            config.features.enable(Feature::MultiAgentV2).unwrap();
+            config.features.enable(Feature::Collab);
+            config.features.enable(Feature::MultiAgentV2);
         })
         .build_with_auto_env(&server)
         .await?;
@@ -322,14 +312,10 @@ async fn child_turn_start_preserves_root_attribution() -> Result<()> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ResidencyReload {
     Sender,
-    OwnerNarrowsPermissions,
-    OwnerPreservesStricterChild,
     OwnerRevokesWorkspaceRoot,
 }
 
-#[test_case(ResidencyReload::Sender; "sender preserves stricter child")]
-#[test_case(ResidencyReload::OwnerNarrowsPermissions; "owner narrows cached permissions")]
-#[test_case(ResidencyReload::OwnerPreservesStricterChild; "owner preserves stricter child")]
+#[test_case(ResidencyReload::Sender; "sender preserves cached environment")]
 #[test_case(ResidencyReload::OwnerRevokesWorkspaceRoot; "owner revokes cached workspace root")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn v2_residency_reload_preserves_inherited_environment_and_tools(
@@ -376,35 +362,12 @@ async fn v2_residency_reload_preserves_inherited_environment_and_tools(
         .with_exec_server_url("none")
         .with_config(|config| {
             for feature in [Feature::Collab, Feature::MultiAgentV2] {
-                config
-                    .features
-                    .enable(feature)
-                    .expect("test config should allow feature update");
+                config.features.enable(feature);
             }
             config.multi_agent_v2.max_concurrent_threads_per_session = 2;
-            config
-                .permissions
-                .set_permission_profile(PermissionProfile::workspace_write())
-                .expect("thread permissions should allow workspace writes");
         });
     let test = builder.build_with_remote_and_local_env(&server).await?;
     let mut child_environment = test.executor_environment().selection().clone();
-    let (child_permissions, parent_permissions) = match reload {
-        ResidencyReload::Sender => (
-            PermissionProfile::read_only(),
-            PermissionProfile::workspace_write(),
-        ),
-        ResidencyReload::OwnerNarrowsPermissions => {
-            (PermissionProfile::Disabled, PermissionProfile::read_only())
-        }
-        ResidencyReload::OwnerPreservesStricterChild => {
-            (PermissionProfile::read_only(), PermissionProfile::Disabled)
-        }
-        ResidencyReload::OwnerRevokesWorkspaceRoot => (
-            PermissionProfile::workspace_write(),
-            PermissionProfile::workspace_write(),
-        ),
-    };
     if reload == ResidencyReload::OwnerRevokesWorkspaceRoot {
         child_environment.cwd = test.workspace_path_uri("retained")?;
         child_environment.workspace_roots = vec![
@@ -419,7 +382,6 @@ async fn v2_residency_reload_preserves_inherited_environment_and_tools(
                         recursive: true,
                         follow_symlinks: true,
                     },
-                    /*sandbox*/ None,
                 )
                 .await?;
         }
@@ -433,21 +395,13 @@ async fn v2_residency_reload_preserves_inherited_environment_and_tools(
                     recursive: true,
                     follow_symlinks: true,
                 },
-                /*sandbox*/ None,
             )
             .await?;
         owner_workspace_roots.push(owner_workspace_root);
         child_environment.config = EnvironmentConfigState::Ready(EnvironmentConfig {
-            allow_login_shell: test.config.permissions.allow_login_shell,
+            allow_login_shell: test.config.allow_login_shell,
             workspace_roots: owner_workspace_roots,
-            permission_profile: PermissionProfileSnapshot::legacy(child_permissions),
             shell_environment_policy: Default::default(),
-            windows_sandbox_level: WindowsSandboxLevel::from_config(&test.config),
-            windows_sandbox_type: test.config.permissions.windows_sandbox_type,
-            use_legacy_landlock: test.config.features.use_legacy_landlock(),
-            exec_policy: None,
-            mcp_policy: None,
-            network_policy: None,
             selected_capability_roots: Vec::new(),
         });
     }
@@ -484,11 +438,6 @@ async fn v2_residency_reload_preserves_inherited_environment_and_tools(
     let mut parent_environment = child_environment.clone();
     if reload == ResidencyReload::OwnerRevokesWorkspaceRoot {
         parent_environment.workspace_roots.truncate(1);
-    } else {
-        let EnvironmentConfigState::Ready(parent_config) = &mut parent_environment.config else {
-            unreachable!("child environment config should be ready");
-        };
-        parent_config.permission_profile = PermissionProfileSnapshot::legacy(parent_permissions);
     }
     if reload == ResidencyReload::Sender {
         submit_thread_settings(
@@ -536,44 +485,24 @@ async fn v2_residency_reload_preserves_inherited_environment_and_tools(
             test.codex.config_snapshot().await.environments.environments,
             vec![parent_environment]
         );
-        let result = test
+        let error = test
             .thread_manager
             .ensure_multi_agent_v2_child_loaded(first_thread_id)
-            .await;
-        let expected_error = match reload {
-            ResidencyReload::OwnerRevokesWorkspaceRoot => {
-                Some("no longer matches a ready parent environment")
-            }
-            ResidencyReload::OwnerNarrowsPermissions
-            | ResidencyReload::OwnerPreservesStricterChild
-                if test.executor_environment().environment().is_remote() =>
-            {
-                Some("permissions changed on a remote executor")
-            }
-            ResidencyReload::Sender
-            | ResidencyReload::OwnerNarrowsPermissions
-            | ResidencyReload::OwnerPreservesStricterChild => None,
-        };
-        if let Some(expected_error) = expected_error {
-            let error = result.expect_err("reload must reject stale owner authority");
-            assert!(
-                error.to_string().contains(expected_error),
-                "unexpected reload error: {error}"
-            );
-            assert!(
-                test.thread_manager
-                    .get_thread(first_thread_id)
-                    .await
-                    .is_err()
-            );
-            return Ok(());
-        }
-        result?;
-        let EnvironmentConfigState::Ready(child_config) = &mut child_environment.config else {
-            unreachable!("successfully reloaded child environment config should be ready");
-        };
-        child_config.permission_profile =
-            PermissionProfileSnapshot::legacy(PermissionProfile::read_only());
+            .await
+            .expect_err("reload must reject a revoked workspace root");
+        assert!(
+            error
+                .to_string()
+                .contains("no longer matches a ready parent environment"),
+            "unexpected reload error: {error}"
+        );
+        assert!(
+            test.thread_manager
+                .get_thread(first_thread_id)
+                .await
+                .is_err()
+        );
+        return Ok(());
     }
 
     test.submit_text_turn(FOLLOWUP_PROMPT).await?;
@@ -589,10 +518,6 @@ async fn v2_residency_reload_preserves_inherited_environment_and_tools(
             .environments
             .environments,
         vec![child_environment]
-    );
-    assert_eq!(
-        reloaded_worker.config_snapshot().await.permission_profile,
-        PermissionProfile::read_only()
     );
 
     let worker_tools = |response_mock: &ResponseMock| {
@@ -647,8 +572,8 @@ async fn tree_shutdown_waits_for_children_without_affecting_other_roots() -> Res
     let test = test_codex()
         .with_model("gpt-5.6-sol")
         .with_config(|config| {
-            config.features.enable(Feature::Collab).unwrap();
-            config.features.enable(Feature::MultiAgentV2).unwrap();
+            config.features.enable(Feature::Collab);
+            config.features.enable(Feature::MultiAgentV2);
         })
         .build_with_auto_env(&server)
         .await?;
@@ -668,7 +593,9 @@ async fn tree_shutdown_waits_for_children_without_affecting_other_roots() -> Res
         .spawn_internal_session(
             root_id,
             StartThreadOptions {
-                session_source: Some(SessionSource::Internal(InternalSessionSource::Guardian)),
+                session_source: Some(SessionSource::Internal(
+                    InternalSessionSource::MemoryConsolidation,
+                )),
                 ..StartThreadOptions::new(test.config.clone())
             },
         )
@@ -690,7 +617,9 @@ async fn tree_shutdown_waits_for_children_without_affecting_other_roots() -> Res
         .spawn_internal_session(
             root_id,
             StartThreadOptions {
-                session_source: Some(SessionSource::Internal(InternalSessionSource::Guardian)),
+                session_source: Some(SessionSource::Internal(
+                    InternalSessionSource::MemoryConsolidation,
+                )),
                 ..StartThreadOptions::new(test.config.clone())
             },
         )
@@ -756,7 +685,7 @@ async fn tree_shutdown_cancels_admitted_session_startup() -> Result<()> {
     let (http_server, control) = AppsTestServer::mount_with_startup_control(&mcp_server).await?;
     let release = control.hold_next_successful_initialize();
     let mut config = test.config.clone();
-    let mut servers = config.mcp_servers.get().clone();
+    let mut servers = config.mcp_servers.clone();
     servers.insert(
         "stalled".to_owned(),
         serde_json::from_value(json!({
@@ -766,11 +695,13 @@ async fn tree_shutdown_cancels_admitted_session_startup() -> Result<()> {
             "startup_timeout_sec": 120,
         }))?,
     );
-    config.mcp_servers.set(servers)?;
+    config.mcp_servers = servers;
     let mut start = Box::pin(test.thread_manager.spawn_internal_session(
         root_id,
         StartThreadOptions {
-            session_source: Some(SessionSource::Internal(InternalSessionSource::Guardian)),
+            session_source: Some(SessionSource::Internal(
+                InternalSessionSource::MemoryConsolidation,
+            )),
             ..StartThreadOptions::new(config)
         },
     ));

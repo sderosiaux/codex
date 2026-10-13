@@ -1,6 +1,5 @@
 use super::sanitize_user_agent;
 use super::*;
-use core_test_support::skip_if_no_network;
 use pretty_assertions::assert_eq;
 use std::io;
 use std::io::Write;
@@ -178,8 +177,6 @@ fn add_originator_header_omits_invalid_originator() {
 
 #[tokio::test]
 async fn test_create_client_sets_default_headers() {
-    skip_if_no_network!();
-
     set_default_client_residency_requirement(Some(ResidencyRequirement::Us));
 
     use wiremock::Mock;

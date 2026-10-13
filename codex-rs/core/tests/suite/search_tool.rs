@@ -18,8 +18,6 @@ use codex_protocol::dynamic_tools::DynamicToolNamespaceTool;
 use codex_protocol::dynamic_tools::DynamicToolResponse;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::models::FunctionCallOutputPayload;
-use codex_protocol::models::PermissionProfile;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::McpInvocation;
 use codex_protocol::protocol::Op;
@@ -162,12 +160,7 @@ async fn search_tool_enabled_by_default_adds_tool_search() -> Result<()> {
     let mut builder = configured_builder(apps_server.chatgpt_base_url.clone());
     let test = builder.build_with_auto_env(&server).await?;
 
-    test.submit_turn_with_approval_and_permission_profile(
-        "list tools",
-        AskForApproval::Never,
-        PermissionProfile::Disabled,
-    )
-    .await?;
+    test.submit_turn("list tools").await?;
 
     let body = mock.single_request().body_json();
     let tools = body
@@ -220,12 +213,7 @@ async fn small_app_tool_sets_are_deferred_by_default() -> Result<()> {
     let mut builder = configured_builder(apps_server.chatgpt_base_url.clone());
     let test = builder.build_with_auto_env(&server).await?;
 
-    test.submit_turn_with_approval_and_permission_profile(
-        "list tools",
-        AskForApproval::Never,
-        PermissionProfile::Disabled,
-    )
-    .await?;
+    test.submit_turn("list tools").await?;
 
     let body = mock.single_request().body_json();
     let tools = tool_names(&body);
@@ -285,12 +273,8 @@ async fn app_only_tools_are_not_visible_or_runnable_by_direct_model_calls() -> R
 
     let mut builder = configured_builder(apps_server.chatgpt_base_url.clone());
     let test = builder.build_with_auto_env(&server).await?;
-    test.submit_turn_with_approval_and_permission_profile(
-        "Try to call the app-only calendar tool.",
-        AskForApproval::Never,
-        PermissionProfile::Disabled,
-    )
-    .await?;
+    test.submit_turn("Try to call the app-only calendar tool.")
+        .await?;
 
     let requests = mock.requests();
     assert!(
@@ -350,12 +334,7 @@ async fn app_search_sources_are_hidden_for_api_key_auth() -> Result<()> {
         });
     let test = builder.build_with_auto_env(&server).await?;
 
-    test.submit_turn_with_approval_and_permission_profile(
-        "list tools",
-        AskForApproval::Never,
-        PermissionProfile::Disabled,
-    )
-    .await?;
+    test.submit_turn("list tools").await?;
 
     let body = mock.single_request().body_json();
     let tools = tool_names(&body);
@@ -391,12 +370,7 @@ async fn search_tool_adds_discovery_instructions_to_tool_description() -> Result
     let mut builder = configured_builder(apps_server.chatgpt_base_url.clone());
     let test = builder.build_with_auto_env(&server).await?;
 
-    test.submit_turn_with_approval_and_permission_profile(
-        "list tools",
-        AskForApproval::Never,
-        PermissionProfile::Disabled,
-    )
-    .await?;
+    test.submit_turn("list tools").await?;
 
     let body = mock.single_request().body_json();
     let description = tool_search_description(&body).expect("tool_search description should exist");
@@ -432,18 +406,10 @@ async fn search_tool_omits_sources_when_deferred_tool_world_state_is_enabled() -
 
     let mut builder =
         configured_builder(apps_server.chatgpt_base_url.clone()).with_config(|config| {
-            config
-                .features
-                .enable(Feature::DeferredToolWorldState)
-                .expect("test config should allow feature update");
+            config.features.enable(Feature::DeferredToolWorldState);
         });
     let test = builder.build_with_auto_env(&server).await?;
-    test.submit_turn_with_approval_and_permission_profile(
-        "list tools",
-        AskForApproval::Never,
-        PermissionProfile::Disabled,
-    )
-    .await?;
+    test.submit_turn("list tools").await?;
 
     let request = mock.single_request();
     let body = request.body_json();
@@ -484,12 +450,7 @@ async fn search_tool_hides_apps_tools_without_search() -> Result<()> {
     let mut builder = configured_builder(apps_server.chatgpt_base_url.clone());
     let test = builder.build_with_auto_env(&server).await?;
 
-    test.submit_turn_with_approval_and_permission_profile(
-        "hello tools",
-        AskForApproval::Never,
-        PermissionProfile::Disabled,
-    )
-    .await?;
+    test.submit_turn("hello tools").await?;
 
     let body = mock.single_request().body_json();
     let tools = tool_names(&body);
@@ -520,12 +481,8 @@ async fn explicit_app_mentions_leave_app_tools_deferred() -> Result<()> {
     let mut builder = configured_builder(apps_server.chatgpt_base_url.clone());
     let test = builder.build_with_auto_env(&server).await?;
 
-    test.submit_turn_with_approval_and_permission_profile(
-        "Use [$calendar](app://calendar) and then call tools.",
-        AskForApproval::Never,
-        PermissionProfile::Disabled,
-    )
-    .await?;
+    test.submit_turn("Use [$calendar](app://calendar) and then call tools.")
+        .await?;
 
     let body = mock.single_request().body_json();
     let tools = tool_names(&body);
@@ -865,12 +822,7 @@ async fn tool_search_returns_deferred_v1_multi_agent_tools() -> Result<()> {
 
     let mut builder = test_codex().with_config(configure_search_capable_model);
     let test = builder.build_with_auto_env(&server).await?;
-    test.submit_turn_with_approval_and_permission_profile(
-        "Find the spawn agent tool",
-        AskForApproval::Never,
-        PermissionProfile::Disabled,
-    )
-    .await?;
+    test.submit_turn("Find the spawn agent tool").await?;
 
     let requests = mock.requests();
     assert_eq!(requests.len(), 2);
@@ -1313,7 +1265,7 @@ async fn tool_search_indexes_only_enabled_non_app_mcp_tools() -> Result<()> {
     let environment_id = remote_aware_environment_id();
     let mut builder =
         configured_builder(apps_server.chatgpt_base_url.clone()).with_config(move |config| {
-            let mut servers = config.mcp_servers.get().clone();
+            let mut servers = config.mcp_servers.clone();
             servers.insert(
                 "rmcp".to_string(),
                 McpServerConfig {
@@ -1332,7 +1284,6 @@ async fn tool_search_indexes_only_enabled_non_app_mcp_tools() -> Result<()> {
                     disabled_reason: None,
                     startup_timeout_sec: Some(Duration::from_secs(10)),
                     tool_timeout_sec: None,
-                    default_tools_approval_mode: None,
                     enabled_tools: Some(vec!["echo".to_string(), "image".to_string()]),
                     disabled_tools: Some(vec!["image".to_string()]),
                     scopes: None,
@@ -1344,20 +1295,13 @@ async fn tool_search_indexes_only_enabled_non_app_mcp_tools() -> Result<()> {
                     tools: HashMap::new(),
                 },
             );
-            config
-                .mcp_servers
-                .set(servers)
-                .expect("test mcp servers should accept any configuration");
+            config.mcp_servers = servers;
         });
     let test = builder.build_with_auto_env(&server).await?;
     wait_for_mcp_server(&test.codex, "rmcp").await?;
 
-    test.submit_turn_with_approval_and_permission_profile(
-        "Find the rmcp echo and image tools.",
-        AskForApproval::Never,
-        PermissionProfile::Disabled,
-    )
-    .await?;
+    test.submit_turn("Find the rmcp echo and image tools.")
+        .await?;
 
     let requests = mock.requests();
     assert_eq!(requests.len(), 2);
@@ -1448,7 +1392,7 @@ async fn tool_search_surfaced_mcp_tool_errors_are_returned_to_model() -> Result<
     let environment_id = remote_aware_environment_id();
     let mut builder =
         configured_builder(apps_server.chatgpt_base_url.clone()).with_config(move |config| {
-            let mut servers = config.mcp_servers.get().clone();
+            let mut servers = config.mcp_servers.clone();
             servers.insert(
                 "rmcp".to_string(),
                 McpServerConfig {
@@ -1467,7 +1411,6 @@ async fn tool_search_surfaced_mcp_tool_errors_are_returned_to_model() -> Result<
                     disabled_reason: None,
                     startup_timeout_sec: Some(Duration::from_secs(10)),
                     tool_timeout_sec: None,
-                    default_tools_approval_mode: None,
                     enabled_tools: Some(vec!["echo".to_string()]),
                     disabled_tools: None,
                     scopes: None,
@@ -1479,10 +1422,7 @@ async fn tool_search_surfaced_mcp_tool_errors_are_returned_to_model() -> Result<
                     tools: HashMap::new(),
                 },
             );
-            config
-                .mcp_servers
-                .set(servers)
-                .expect("test mcp servers should accept any configuration");
+            config.mcp_servers = servers;
         });
     let test = builder.build_with_auto_env(&server).await?;
     wait_for_mcp_server(&test.codex, "rmcp").await?;
@@ -1599,7 +1539,7 @@ async fn tool_search_uses_non_app_mcp_server_instructions_as_namespace_descripti
     let environment_id = remote_aware_environment_id();
     let mut builder =
         configured_builder(apps_server.chatgpt_base_url.clone()).with_config(move |config| {
-            let mut servers = config.mcp_servers.get().clone();
+            let mut servers = config.mcp_servers.clone();
             servers.insert(
                 "rmcp".to_string(),
                 McpServerConfig {
@@ -1618,7 +1558,6 @@ async fn tool_search_uses_non_app_mcp_server_instructions_as_namespace_descripti
                     disabled_reason: None,
                     startup_timeout_sec: Some(Duration::from_secs(10)),
                     tool_timeout_sec: None,
-                    default_tools_approval_mode: None,
                     enabled_tools: Some(vec!["echo".to_string()]),
                     disabled_tools: None,
                     scopes: None,
@@ -1630,20 +1569,12 @@ async fn tool_search_uses_non_app_mcp_server_instructions_as_namespace_descripti
                     tools: HashMap::new(),
                 },
             );
-            config
-                .mcp_servers
-                .set(servers)
-                .expect("test mcp servers should accept any configuration");
+            config.mcp_servers = servers;
         });
     let test = builder.build_with_auto_env(&server).await?;
     wait_for_mcp_server(&test.codex, "rmcp").await?;
 
-    test.submit_turn_with_approval_and_permission_profile(
-        "Find the rmcp echo tool.",
-        AskForApproval::Never,
-        PermissionProfile::Disabled,
-    )
-    .await?;
+    test.submit_turn("Find the rmcp echo tool.").await?;
 
     let requests = mock.requests();
     assert_eq!(requests.len(), 2);
@@ -1700,12 +1631,7 @@ async fn tool_search_matches_mcp_tools_by_distinct_name_description_and_schema_t
     let mut builder = configured_builder(apps_server.chatgpt_base_url.clone());
     let test = builder.build_with_auto_env(&server).await?;
 
-    test.submit_turn_with_approval_and_permission_profile(
-        "Search for calendar tooling.",
-        AskForApproval::Never,
-        PermissionProfile::Disabled,
-    )
-    .await?;
+    test.submit_turn("Search for calendar tooling.").await?;
 
     let requests = mock.requests();
     assert_eq!(requests.len(), 2);

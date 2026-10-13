@@ -1,16 +1,8 @@
 use std::collections::HashMap;
 
 use codex_config::CONFIG_TOML_FILE;
-use codex_config::ConfigLayerSource;
 use codex_config::McpServerConfig;
-use codex_config::McpServerDisabledReason;
-use codex_config::RequirementSource;
-use codex_config::RequirementsLayerEntry;
-use codex_config::compose_requirements_for_hostname;
 use codex_config::format_config_layer_source;
-use codex_config::host_name;
-use codex_config::loader::LocalConfigLayers;
-use codex_config::loader::LocalTomlLayer;
 use codex_config::loader::LocalTomlLayerStack;
 use codex_config::loader::load_local_config_layers;
 use codex_exec_server_protocol::EnvironmentConfigLayer;
@@ -18,7 +10,6 @@ use codex_exec_server_protocol::EnvironmentConfigLayerStack;
 use codex_exec_server_protocol::EnvironmentConfigReadParams;
 use codex_exec_server_protocol::EnvironmentConfigReadResponse;
 use codex_file_system::ExecutorFileSystem;
-use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_home_dir::find_codex_home;
 use codex_utils_path_uri::PathUri;
 
@@ -36,7 +27,6 @@ pub(crate) enum ReadEnvironmentConfigError {
 pub(crate) async fn read_environment_config(
     file_system: &dyn ExecutorFileSystem,
     params: EnvironmentConfigReadParams,
-    prefer_mxc: Option<bool>,
 ) -> Result<EnvironmentConfigReadResponse, ReadEnvironmentConfigError> {
     validate_paths(&params)?;
     let cwd = params
@@ -46,52 +36,22 @@ pub(crate) async fn read_environment_config(
     let codex_home = find_codex_home().map_err(|error| {
         ReadEnvironmentConfigError::Internal(format!("failed to find Codex home: {error}"))
     })?;
-    let mut layers = load_local_config_layers(file_system, codex_home.as_path(), &cwd)
+    let layers = load_local_config_layers(file_system, codex_home.as_path(), &cwd)
         .await
         .map_err(|error| {
             ReadEnvironmentConfigError::Internal(format!(
                 "failed to load executor-local config: {error}"
             ))
         })?;
-    include_startup_preference(&mut layers, &cwd, prefer_mxc);
-    let layers = layers.project(&params.config_paths, &params.requirements_paths);
+    let layers = layers.project(&params.config_paths);
 
     Ok(EnvironmentConfigReadResponse {
         user_home_dir: dirs::home_dir()
             .and_then(|home_dir| PathUri::from_host_native_path(home_dir).ok()),
-        codex_home_dir: PathUri::from_abs_path(&codex_home),
-        hostname: host_name(),
         config: serialize_layer_stack(layers.config, |source| {
             format_config_layer_source(source, CONFIG_TOML_FILE)
         })?,
-        requirements: serialize_layer_stack(layers.requirements, ToString::to_string)?,
     })
-}
-
-fn include_startup_preference(
-    layers: &mut LocalConfigLayers,
-    cwd: &AbsolutePathBuf,
-    prefer_mxc: Option<bool>,
-) {
-    if let Some(prefer_mxc) = prefer_mxc {
-        // CLI flags follow project layers, but never outrank legacy managed/MDM.
-        // Insert before projection, which also adjusts the cloud insertion index.
-        let index = layers
-            .config
-            .layers
-            .partition_point(|layer| layer.source <= ConfigLayerSource::SessionFlags);
-        layers.config.layers.insert(
-            index,
-            LocalTomlLayer {
-                source: ConfigLayerSource::SessionFlags,
-                base_dir: cwd.clone(),
-                toml: codex_config::build_cli_overrides_layer(&[(
-                    "features.prefer_mxc".to_string(),
-                    toml::Value::Boolean(prefer_mxc),
-                )]),
-            },
-        );
-    }
 }
 
 impl Environment {
@@ -109,7 +69,6 @@ impl Environment {
                 self.read_environment_config(EnvironmentConfigReadParams {
                     cwd,
                     config_paths: vec![vec!["mcp_servers".to_string()]],
-                    requirements_paths: vec![vec!["mcp_servers".to_string()]],
                 })
                 .await
                 .map(|response| (Some(response), capabilities.http_header_env_vars))
@@ -121,16 +80,6 @@ impl Environment {
         let Some(response) = response else {
             return Ok(Vec::new());
         };
-        let requirements = compose_requirements_for_hostname(
-            response.requirements.layers.into_iter().map(|layer| {
-                RequirementsLayerEntry::from_toml(RequirementSource::Unknown, layer.toml)
-            }),
-            response.hostname.as_deref(),
-        )
-        .map_err(|error| {
-            ExecServerError::Protocol(format!("invalid executor-local MCP requirements: {error}"))
-        })?
-        .and_then(|requirements| requirements.mcp_servers);
         let mut merged = toml::Value::Table(toml::map::Map::new());
         for layer in response.config.layers {
             let config = toml::from_str::<toml::Value>(&layer.toml).map_err(|error| {
@@ -154,38 +103,17 @@ impl Environment {
                 ExecServerError::Protocol(format!("invalid executor-local MCP servers: {error}"))
             })?;
 
-        Ok(servers
-            .into_iter()
-            .map(|(name, mut server)| {
-                if let Some(requirements) = requirements.as_ref()
-                    && !requirements
-                        .value
-                        .get(&name)
-                        .is_some_and(|requirement| server.matches_requirement(requirement))
-                {
-                    server.enabled = false;
-                    server.disabled_reason = Some(McpServerDisabledReason::Requirements {
-                        source: requirements.source.clone(),
-                    });
-                }
-                (name, server)
-            })
-            .collect())
+        Ok(servers.into_iter().collect())
     }
 }
 
 fn validate_paths(params: &EnvironmentConfigReadParams) -> Result<(), ReadEnvironmentConfigError> {
-    if params.config_paths.is_empty() && params.requirements_paths.is_empty() {
+    if params.config_paths.is_empty() {
         return Err(ReadEnvironmentConfigError::InvalidParams(
-            "at least one config or requirements path is required".to_string(),
+            "at least one config path is required".to_string(),
         ));
     }
-    if params
-        .config_paths
-        .iter()
-        .chain(&params.requirements_paths)
-        .any(Vec::is_empty)
-    {
+    if params.config_paths.iter().any(Vec::is_empty) {
         return Err(ReadEnvironmentConfigError::InvalidParams(
             "TOML paths must contain at least one key segment".to_string(),
         ));
@@ -213,12 +141,5 @@ fn serialize_layer_stack<S>(
             })
         })
         .collect::<Result<Vec<_>, ReadEnvironmentConfigError>>()?;
-    Ok(EnvironmentConfigLayerStack {
-        layers,
-        cloud_insertion_index: stack.cloud_insertion_index,
-    })
+    Ok(EnvironmentConfigLayerStack { layers })
 }
-
-#[cfg(test)]
-#[path = "environment_config_tests.rs"]
-mod tests;

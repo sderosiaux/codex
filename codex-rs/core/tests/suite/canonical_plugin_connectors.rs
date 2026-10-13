@@ -79,7 +79,7 @@ async fn canonical_plugin_disable_overrides_shared_connector_and_can_be_cleared(
         .with_home(home)
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
         .with_config(move |config| {
-            config.features.enable(Feature::Apps).unwrap();
+            config.features.enable(Feature::Apps);
             config.chatgpt_base_url = apps.chatgpt_base_url;
         });
     let test = builder.build_with_auto_env(&server).await?;

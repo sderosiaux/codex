@@ -240,15 +240,9 @@ async fn steered_input_checkpoint_controls_next_request(
             if matches!(inference_completion, InferenceCompletion::Response)
                 && input_kind == InputKind::User
             {
-                config
-                    .features
-                    .disable(Feature::InstantInterrupt)
-                    .expect("disable interruption for response completion");
+                config.features.disable(Feature::InstantInterrupt);
             } else {
-                config
-                    .features
-                    .enable(Feature::InstantInterrupt)
-                    .expect("enable interruption for steered input");
+                config.features.enable(Feature::InstantInterrupt);
             }
         })
         .build_with_auto_env(&config_server)
@@ -612,10 +606,7 @@ async fn cancelled_spawn_discards_provisional_child() -> anyhow::Result<()> {
         .with_history_mode(ThreadHistoryMode::Legacy)
         .with_config(|config| {
             config.agent_max_depth = 1;
-            config
-                .features
-                .enable(Feature::Collab)
-                .expect("enable collaboration");
+            config.features.enable(Feature::Collab);
         })
         .build_with_auto_env(&server)
         .await?;

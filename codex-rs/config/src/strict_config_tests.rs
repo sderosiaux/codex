@@ -1,44 +1,9 @@
 use super::*;
-use crate::ConfigLayerEntry;
-use crate::ConfigLayerSource;
-use crate::ConfigRequirements;
 use crate::config_toml::ConfigToml;
 use crate::diagnostics::TextPosition;
 use crate::diagnostics::TextRange;
 use pretty_assertions::assert_eq;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
-
-#[test]
-fn ignored_toml_field_errors_accept_non_file_source_names() {
-    let source_name = "com.openai.codex:config_toml_base64";
-    let contents = r#"
-model = "gpt-5"
-unknown_key = true"#;
-
-    let value = toml::from_str::<TomlValue>(contents).expect("valid TOML");
-    let error = config_error_from_ignored_toml_value_fields_for_source_name::<ConfigToml>(
-        source_name,
-        contents,
-        value,
-    )
-    .expect("unknown field error");
-
-    assert_eq!(
-        error,
-        ConfigError::new(
-            PathBuf::from(source_name),
-            TextRange {
-                start: TextPosition { line: 3, column: 1 },
-                end: TextPosition {
-                    line: 3,
-                    column: 11,
-                },
-            },
-            "unknown configuration field `unknown_key`",
-        )
-    );
-}
 
 #[test]
 fn type_errors_take_precedence_over_ignored_fields() {
@@ -90,48 +55,6 @@ foo = true"#;
             "unknown configuration field `features.foo`",
         )
     );
-}
-
-#[test]
-fn strict_config_rejects_unknown_tui_key() {
-    let path = Path::new("/tmp/config.toml");
-    let contents = r#"
-[tui]
-bogus_key_xyz = 1"#;
-
-    let error = config_error_from_ignored_toml_fields::<ConfigToml>(path, contents)
-        .expect("unknown TUI key error");
-
-    assert_eq!(
-        error,
-        ConfigError::new(
-            path.to_path_buf(),
-            TextRange {
-                start: TextPosition { line: 3, column: 1 },
-                end: TextPosition {
-                    line: 3,
-                    column: 13,
-                },
-            },
-            "unknown configuration field `tui.bogus_key_xyz`",
-        )
-    );
-}
-
-#[test]
-fn strict_config_accepts_tui_notification_settings() {
-    let path = Path::new("/tmp/config.toml");
-
-    for contents in [
-        "[tui]\nnotifications = false\n",
-        "[tui]\nnotification_method = \"bel\"\n",
-        "[tui]\nnotification_condition = \"always\"\n",
-    ] {
-        assert_eq!(
-            config_error_from_ignored_toml_fields::<ConfigToml>(path, contents),
-            None
-        );
-    }
 }
 
 #[test]
@@ -213,85 +136,5 @@ foo = true"#;
             },
             "unknown configuration field `profiles.work.features.foo`",
         )
-    );
-}
-
-#[test]
-fn strict_config_accepts_opaque_desktop_keys() {
-    let path = Path::new("/tmp/config.toml");
-    let contents = r#"
-[desktop]
-appearanceTheme = "dark"
-
-[desktop.workspace]
-collapsed = true"#;
-
-    let error = config_error_from_ignored_toml_fields::<ConfigToml>(path, contents);
-
-    assert_eq!(error, None);
-}
-
-fn layer(source: ConfigLayerSource, contents: &str) -> ConfigLayerEntry {
-    ConfigLayerEntry::new(source, toml::from_str(contents).unwrap())
-}
-
-#[test]
-fn checks_merged_config_and_ignores_disabled_layers() {
-    let layers = vec![
-        layer(
-            ConfigLayerSource::EnterpriseManaged {
-                id: "cfg".into(),
-                name: "Defaults".into(),
-            },
-            r#"
-[model_providers.custom]
-name = "Custom"
-wire_api = "responses"
-unknown_timeout = 1
-[model_providers.custom.http_headers]
-custom_header = "accepted"
-"#,
-        ),
-        ConfigLayerEntry::new_disabled(
-            ConfigLayerSource::SessionFlags,
-            toml::from_str("disabled_unknown = true").unwrap(),
-            "not trusted",
-        ),
-        layer(
-            ConfigLayerSource::SessionFlags,
-            r#"
-[model_providers.custom]
-unknown_timeout = 42
-[profiles.work.features]
-include_view_image_tool = false
-"#,
-        ),
-    ];
-    let config = ConfigLayerStack::new(
-        layers,
-        ConfigRequirements::default(),
-        ConfigRequirementsToml::default(),
-    )
-    .unwrap();
-    assert_eq!(
-        ignored_config_warning(&config, &[]).unwrap(),
-        "Codex is ignoring 3 unrecognized configuration settings. Check for typos or deprecated settings.\n  enterprise-managed (Defaults, cfg): `model_providers.custom.unknown_timeout` is ignored.\n  session-flags: `model_providers.custom.unknown_timeout` is ignored.\n  session-flags: `profiles.work.features.include_view_image_tool` is ignored. Use [features].view_image to configure the image tool."
-    );
-}
-
-#[test]
-fn removed_private_desktop_setting_has_migration_hint() {
-    let config = ConfigLayerStack::new(
-        vec![layer(
-            ConfigLayerSource::SessionFlags,
-            "[windows]\nsandbox_private_desktop = false",
-        )],
-        ConfigRequirements::default(),
-        ConfigRequirementsToml::default(),
-    )
-    .unwrap();
-    assert_eq!(
-        ignored_config_warning(&config, &[]).unwrap(),
-        "Codex is ignoring 1 unrecognized configuration setting. Check for typos or deprecated settings.\n  session-flags: `windows.sandbox_private_desktop` is ignored. Remove windows.sandbox_private_desktop; legacy Windows sandboxes always use a private desktop."
     );
 }

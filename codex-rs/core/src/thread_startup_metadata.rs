@@ -2,13 +2,8 @@
 
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
-use codex_protocol::config_types::ApprovalsReviewer;
-use codex_protocol::models::ActivePermissionProfile;
-use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ReasoningEffort;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::SessionConfiguredEvent;
-use codex_protocol::protocol::SessionNetworkProxyRuntime;
 use codex_protocol::protocol::ThreadSource;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use std::path::PathBuf;
@@ -26,13 +21,8 @@ pub struct ThreadStartupMetadata {
     model: String,
     model_provider_id: String,
     service_tier: Option<String>,
-    approval_policy: AskForApproval,
-    approvals_reviewer: ApprovalsReviewer,
-    permission_profile: PermissionProfile,
-    active_permission_profile: Option<ActivePermissionProfile>,
     cwd: AbsolutePathBuf,
     reasoning_effort: Option<ReasoningEffort>,
-    network_proxy: Option<SessionNetworkProxyRuntime>,
     rollout_path: Option<PathBuf>,
 }
 
@@ -48,13 +38,8 @@ impl From<&SessionConfiguredEvent> for ThreadStartupMetadata {
             model,
             model_provider_id,
             service_tier,
-            approval_policy,
-            approvals_reviewer,
-            permission_profile,
-            active_permission_profile,
             cwd,
             reasoning_effort,
-            network_proxy,
             rollout_path,
         } = event;
         Self {
@@ -67,13 +52,8 @@ impl From<&SessionConfiguredEvent> for ThreadStartupMetadata {
             model: model.clone(),
             model_provider_id: model_provider_id.clone(),
             service_tier: service_tier.clone(),
-            approval_policy: *approval_policy,
-            approvals_reviewer: *approvals_reviewer,
-            permission_profile: permission_profile.clone(),
-            active_permission_profile: active_permission_profile.clone(),
             cwd: cwd.clone(),
             reasoning_effort: reasoning_effort.clone(),
-            network_proxy: network_proxy.clone(),
             rollout_path: rollout_path.clone(),
         }
     }
@@ -91,13 +71,8 @@ impl ThreadStartupMetadata {
             model: self.model.clone(),
             model_provider_id: self.model_provider_id.clone(),
             service_tier: self.service_tier.clone(),
-            approval_policy: self.approval_policy,
-            approvals_reviewer: self.approvals_reviewer,
-            permission_profile: self.permission_profile.clone(),
-            active_permission_profile: self.active_permission_profile.clone(),
             cwd: self.cwd.clone(),
             reasoning_effort: self.reasoning_effort.clone(),
-            network_proxy: self.network_proxy.clone(),
             rollout_path: self.rollout_path.clone(),
         }
     }

@@ -35,11 +35,10 @@ pub(super) fn apply_experimental_context(
         || !auth.is_some_and(|auth| {
             experimental_context_is_eligible(auth.auth_mode(), auth.account_plan_type())
         })
-        || config.features.enable(Feature::TokenBudget).is_err()
-        || !config.features.enabled(Feature::TokenBudget)
     {
         return Ok(());
     }
+    config.features.enable(Feature::TokenBudget);
 
     if config.token_budget.is_none() {
         let config_toml = config
@@ -143,13 +142,7 @@ pub(super) fn apply_model_defaults(config: &mut Config, model_info: &ModelInfo) 
         return;
     }
 
-    if config.features.enable(Feature::TokenBudget).is_err() {
-        return;
-    }
-    // Managed requirements can pin the feature off even when enable() succeeds.
-    if !config.features.enabled(Feature::TokenBudget) {
-        return;
-    }
+    config.features.enable(Feature::TokenBudget);
 
     // Keep prompts unresolved so later turns and model switches use their own defaults.
     config.token_budget = Some(TokenBudgetConfig {

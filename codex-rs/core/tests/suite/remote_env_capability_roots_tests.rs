@@ -25,10 +25,7 @@ async fn selected_capability_roots_survive_environment_reselection(
     let test = test_codex()
         .with_extensions(Arc::new(extensions.build()))
         .with_config(|config| {
-            config
-                .features
-                .enable(Feature::ExecutorCapabilityDiscovery)
-                .expect("enable discovery");
+            config.features.enable(Feature::ExecutorCapabilityDiscovery);
         })
         .build_with_auto_env(&server)
         .await?;
@@ -104,12 +101,8 @@ async fn selected_capability_roots_survive_environment_reselection(
     Ok(())
 }
 
-#[test_case(PermissionProfile::Disabled; "full access")]
-#[test_case(PermissionProfile::workspace_write(); "workspace write")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn stale_roots_do_not_connect_unselected_executors(
-    permission_profile: PermissionProfile,
-) -> Result<()> {
+async fn stale_roots_do_not_connect_unselected_executors() -> Result<()> {
     let server = start_mock_server().await;
     let observed_roots = Arc::new(Mutex::new(Vec::new()));
     let mut extensions = ExtensionRegistryBuilder::new();
@@ -119,14 +112,7 @@ async fn stale_roots_do_not_connect_unselected_executors(
     let test = test_codex()
         .with_extensions(Arc::new(extensions.build()))
         .with_config(move |config| {
-            config
-                .permissions
-                .set_permission_profile(permission_profile)
-                .expect("thread permissions should be configurable");
-            config
-                .features
-                .enable(Feature::ExecutorCapabilityDiscovery)
-                .expect("capability discovery should be configurable");
+            config.features.enable(Feature::ExecutorCapabilityDiscovery);
         })
         .build_with_auto_env(&server)
         .await?;

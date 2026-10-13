@@ -6,7 +6,6 @@ use crate::manifest::parse_plugin_manifest_uri;
 use codex_exec_server::CapabilityRootDiscovery;
 use codex_exec_server::EnvironmentManager;
 use codex_exec_server::ExecutorFileSystem;
-use codex_exec_server::FileSystemSandboxContext;
 use codex_exec_server::GetMetadataOptions;
 use codex_exec_server::ReadFileOptions;
 use codex_plugin::ResolvedPlugin;
@@ -129,7 +128,6 @@ impl ExecutorPluginProvider {
         &self,
         selected_root: &SelectedCapabilityRoot,
         discovery: Option<&CapabilityRootDiscovery>,
-        sandbox: Option<&FileSystemSandboxContext>,
     ) -> Result<PluginRootOwnership, ExecutorPluginProviderError> {
         let CapabilityRootLocation::Environment {
             environment_id,
@@ -168,7 +166,6 @@ impl ExecutorPluginProvider {
             selected_root,
             std::iter::successors(Some(path.clone()), PathUri::parent),
             file_system.as_ref(),
-            sandbox,
         )
         .await?;
         Ok(if manifest.is_some() {
@@ -219,11 +216,7 @@ async fn resolve_plugin_root(
     let root_id = &selected_root.id;
     let CapabilityRootLocation::Environment { environment_id, .. } = &selected_root.location;
     let root_metadata = file_system
-        .get_metadata(
-            &plugin_root,
-            GetMetadataOptions::default(),
-            /*sandbox*/ None,
-        )
+        .get_metadata(&plugin_root, GetMetadataOptions::default())
         .await
         .map_err(|source| ExecutorPluginProviderError::InspectRoot {
             root_id: root_id.clone(),
@@ -241,18 +234,13 @@ async fn resolve_plugin_root(
         selected_root,
         std::iter::once(plugin_root.clone()),
         file_system,
-        /*sandbox*/ None,
     )
     .await?
     else {
         return Ok(None);
     };
     let contents = file_system
-        .read_file_text(
-            &manifest_uri,
-            ReadFileOptions::default(),
-            /*sandbox*/ None,
-        )
+        .read_file_text(&manifest_uri, ReadFileOptions::default())
         .await
         .map_err(|source| ExecutorPluginProviderError::ReadManifest {
             root_id: root_id.clone(),
@@ -287,7 +275,6 @@ async fn find_manifest(
     selected_root: &SelectedCapabilityRoot,
     mut plugin_roots: impl Iterator<Item = PathUri> + Send,
     file_system: &dyn ExecutorFileSystem,
-    sandbox: Option<&FileSystemSandboxContext>,
 ) -> Result<Option<PathUri>, ExecutorPluginProviderError> {
     let root_id = &selected_root.id;
     let mut plugin_root = plugin_roots.next();
@@ -315,7 +302,7 @@ async fn find_manifest(
         .map(|candidate_uri| async move {
             let candidate_uri = candidate_uri?;
             match file_system
-                .get_metadata(&candidate_uri, GetMetadataOptions::default(), sandbox)
+                .get_metadata(&candidate_uri, GetMetadataOptions::default())
                 .await
             {
                 Ok(metadata) if metadata.is_file => Ok(Some(candidate_uri)),

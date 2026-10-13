@@ -6,9 +6,6 @@ use crate::agent::child_config::build_agent_resume_config;
 use crate::agent::child_config::build_agent_spawn_config;
 use crate::config::AgentRoleConfig;
 use crate::config::DEFAULT_AGENT_MAX_DEPTH;
-use crate::config::PermissionProfileSnapshot;
-use crate::environment_selection::EnvironmentConfigOrigin;
-use crate::environment_selection::TurnEnvironmentState;
 use crate::function_tool::FunctionCallError;
 use crate::init_state_db;
 use crate::local_agent_graph_store_from_state_db;
@@ -41,7 +38,6 @@ use codex_otel::MetricsClient;
 use codex_otel::MetricsConfig;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
-use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::ShellEnvironmentPolicy;
@@ -51,23 +47,14 @@ use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::BaseInstructionsProvenance;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputBody;
-use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
-use codex_protocol::models::SandboxEnforcement;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AgentStatus;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::FileSystemAccessMode;
-use codex_protocol::protocol::FileSystemPath;
-use codex_protocol::protocol::FileSystemSandboxEntry;
-use codex_protocol::protocol::FileSystemSandboxPolicy;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::ItemCompletedEvent;
-use codex_protocol::protocol::NetworkSandboxPolicy;
 use codex_protocol::protocol::Op;
-use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::TurnAbortReason;
@@ -84,7 +71,6 @@ use serde::Deserialize;
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -372,7 +358,7 @@ async fn spawn_agent_limit_failure_emits_bounded_metric() {
 }
 
 #[tokio::test]
-async fn spawn_agent_uses_explorer_role_and_preserves_approval_policy() {
+async fn spawn_agent_uses_explorer_role_and_preserves_model_provider() {
     #[derive(Debug, Deserialize)]
     struct SpawnAgentResult {
         agent_id: String,
@@ -387,11 +373,6 @@ async fn spawn_agent_uses_explorer_role_and_preserves_approval_policy() {
         built_in_model_providers(/* openai_base_url */ /*openai_base_url*/ None)["ollama"].clone();
     config.model_provider_id = "ollama".to_string();
     config.model_provider = provider_info.clone();
-    config
-        .permissions
-        .approval_policy
-        .set(AskForApproval::OnRequest)
-        .expect("approval policy should be set");
     turn.provider = create_model_provider(provider_info, turn.auth_manager.clone());
     turn.config = Arc::new(config);
 
@@ -424,7 +405,6 @@ async fn spawn_agent_uses_explorer_role_and_preserves_approval_policy() {
         .expect("spawned agent thread should exist")
         .config_snapshot()
         .await;
-    assert_eq!(snapshot.approval_policy, AskForApproval::OnRequest);
     assert_eq!(snapshot.model_provider_id, "ollama");
 }
 
@@ -474,10 +454,7 @@ async fn multi_agent_v2_spawn_fork_turns_all_applies_agent_type_override() {
     set_agent_control(&mut session, manager.agent_control());
     session.thread_id = root.thread_id;
     let mut config = (*turn.config).clone();
-    config
-        .features
-        .enable(Feature::MultiAgentV2)
-        .expect("test config should allow feature update");
+    config.features.enable(Feature::MultiAgentV2);
     let mut turn = turn;
     turn.config = Arc::new(config);
     turn.multi_agent_version = codex_protocol::protocol::MultiAgentVersion::V2;
@@ -865,10 +842,7 @@ async fn multi_agent_v2_full_history_fork_inherits_root_service_tier() {
         .await;
     let mut config = (*turn.config).clone();
     config.service_tier = Some(ServiceTier::Fast.request_value().to_string());
-    config
-        .features
-        .enable(Feature::MultiAgentV2)
-        .expect("test config should allow feature update");
+    config.features.enable(Feature::MultiAgentV2);
     set_turn_config(&mut turn, config);
     let manager = thread_manager();
     let root = manager
@@ -937,10 +911,7 @@ async fn multi_agent_v2_spawn_without_history_allows_agent_type_override() {
     set_agent_control(&mut session, manager.agent_control());
     session.thread_id = root.thread_id;
     let mut config = (*turn.config).clone();
-    config
-        .features
-        .enable(Feature::MultiAgentV2)
-        .expect("test config should allow feature update");
+    config.features.enable(Feature::MultiAgentV2);
     let mut turn = turn;
     turn.config = Arc::new(config);
     turn.multi_agent_version = codex_protocol::protocol::MultiAgentVersion::V2;
@@ -1020,10 +991,7 @@ async fn multi_agent_v2_spawn_requires_task_name() {
     set_agent_control(&mut session, manager.agent_control());
     session.thread_id = root.thread_id;
     let mut config = (*turn.config).clone();
-    config
-        .features
-        .enable(Feature::MultiAgentV2)
-        .expect("test config should allow feature update");
+    config.features.enable(Feature::MultiAgentV2);
     set_turn_config(&mut turn, config);
 
     let invocation = invocation(
@@ -1054,10 +1022,7 @@ async fn multi_agent_v2_spawn_rejects_legacy_items_field() {
     set_agent_control(&mut session, manager.agent_control());
     session.thread_id = root.thread_id;
     let mut config = (*turn.config).clone();
-    config
-        .features
-        .enable(Feature::MultiAgentV2)
-        .expect("test config should allow feature update");
+    config.features.enable(Feature::MultiAgentV2);
     set_turn_config(&mut turn, config);
 
     let invocation = invocation(
@@ -1114,10 +1079,7 @@ async fn multi_agent_v2_spawn_returns_path_and_send_message_accepts_relative_pat
     set_agent_control(&mut session, manager.agent_control());
     session.thread_id = root.thread_id;
     let mut config = (*turn.config).clone();
-    config
-        .features
-        .enable(Feature::MultiAgentV2)
-        .expect("test config should allow feature update");
+    config.features.enable(Feature::MultiAgentV2);
     set_turn_config(&mut turn, config);
 
     // V2 tools and model context must use the controller's tree, even when the
@@ -1228,10 +1190,7 @@ async fn multi_agent_v2_spawn_rejects_legacy_fork_context() {
     set_agent_control(&mut session, manager.agent_control());
     session.thread_id = root.thread_id;
     let mut config = (*turn.config).clone();
-    config
-        .features
-        .enable(Feature::MultiAgentV2)
-        .expect("test config should allow feature update");
+    config.features.enable(Feature::MultiAgentV2);
     set_turn_config(&mut turn, config);
 
     let err = SpawnAgentHandlerV2::default()
@@ -1270,10 +1229,7 @@ async fn multi_agent_v2_spawn_rejects_invalid_fork_turns_string(fork_turns: &str
     set_agent_control(&mut session, manager.agent_control());
     session.thread_id = root.thread_id;
     let mut config = (*turn.config).clone();
-    config
-        .features
-        .enable(Feature::MultiAgentV2)
-        .expect("test config should allow feature update");
+    config.features.enable(Feature::MultiAgentV2);
     set_turn_config(&mut turn, config);
 
     let err = SpawnAgentHandlerV2::default()
@@ -1302,10 +1258,7 @@ async fn multi_agent_v2_send_message_accepts_root_target_from_child() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
     let mut config = (*turn.config).clone();
-    config
-        .features
-        .enable(Feature::MultiAgentV2)
-        .expect("test config should allow feature update");
+    config.features.enable(Feature::MultiAgentV2);
     set_turn_config(&mut turn, config);
     let root = manager
         .start_thread(StartThreadOptions::new((*turn.config).clone()))
@@ -1379,10 +1332,7 @@ async fn multi_agent_v2_followup_task_rejects_root_target_from_child() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
     let mut config = (*turn.config).clone();
-    config
-        .features
-        .enable(Feature::MultiAgentV2)
-        .expect("test config should allow feature update");
+    config.features.enable(Feature::MultiAgentV2);
     set_turn_config(&mut turn, config);
     let root = manager
         .start_thread(StartThreadOptions::new((*turn.config).clone()))
@@ -2193,10 +2143,7 @@ async fn multi_agent_v2_spawn_omits_agent_id_when_named() {
     set_agent_control(&mut session, manager.agent_control());
     session.thread_id = root.thread_id;
     let mut config = (*turn.config).clone();
-    config
-        .features
-        .enable(Feature::MultiAgentV2)
-        .expect("test config should allow feature update");
+    config.features.enable(Feature::MultiAgentV2);
     set_turn_config(&mut turn, config);
 
     let output = SpawnAgentHandlerV2::default()
@@ -2232,10 +2179,7 @@ async fn multi_agent_v2_spawn_surfaces_task_name_validation_errors() {
     set_agent_control(&mut session, manager.agent_control());
     session.thread_id = root.thread_id;
     let mut config = (*turn.config).clone();
-    config
-        .features
-        .enable(Feature::MultiAgentV2)
-        .expect("test config should allow feature update");
+    config.features.enable(Feature::MultiAgentV2);
     set_turn_config(&mut turn, config);
 
     let invocation = invocation(
@@ -2255,151 +2199,6 @@ async fn multi_agent_v2_spawn_surfaces_task_name_validation_errors() {
         FunctionCallError::RespondToModel(
             "agent_name must use only lowercase letters, digits, and underscores".to_string()
         )
-    );
-}
-
-// TODO(anp): Restore this test on Linux once sandbox helpers work inside test microVMs.
-#[cfg_attr(target_os = "linux", ignore)]
-#[tokio::test]
-async fn spawn_agent_reapplies_runtime_sandbox_after_role_config() {
-    #[derive(Debug, Deserialize)]
-    struct SpawnAgentResult {
-        agent_id: String,
-        nickname: Option<String>,
-    }
-
-    let (mut session, mut turn) = make_session_and_context().await;
-    let server = core_test_support::responses::start_mock_server().await;
-    let sandbox_runtime = core_test_support::test_codex::test_codex()
-        .build_with_auto_env(&server)
-        .await
-        .expect("sandbox-capable test environment should start");
-    let environment_manager = sandbox_runtime.thread_manager.environment_manager();
-    let manager = ThreadManager::with_models_provider_and_home_for_tests(
-        CodexAuth::from_api_key("dummy"),
-        built_in_model_providers(/*openai_base_url*/ None)["openai"].clone(),
-        turn.config.codex_home.to_path_buf(),
-        Arc::clone(&environment_manager),
-    );
-    set_agent_control(&mut session, manager.agent_control());
-    let expected_sandbox = turn.config.legacy_sandbox_policy();
-    #[allow(deprecated)]
-    let mut expected_file_system_sandbox_policy =
-        FileSystemSandboxPolicy::from_legacy_sandbox_policy_for_cwd(&expected_sandbox, &turn.cwd);
-    expected_file_system_sandbox_policy
-        .entries
-        .push(FileSystemSandboxEntry {
-            path: FileSystemPath::GlobPattern {
-                pattern: "**/.env".to_string(),
-            },
-            // TODO(anp): Configure this fixture with the elevated Windows backend so it can
-            // enforce denied reads while reapplying the owner's restrictive policy.
-            access: if cfg!(windows) {
-                FileSystemAccessMode::Read
-            } else {
-                FileSystemAccessMode::Deny
-            },
-            missing_path_behavior: None,
-        });
-    let expected_network_sandbox_policy = NetworkSandboxPolicy::from(&expected_sandbox);
-    let expected_permission_profile = PermissionProfile::from_runtime_permissions_with_enforcement(
-        SandboxEnforcement::from_legacy_sandbox_policy(&expected_sandbox),
-        &expected_file_system_sandbox_policy,
-        expected_network_sandbox_policy,
-    );
-    Arc::make_mut(&mut turn.config)
-        .permissions
-        .approval_policy
-        .set(AskForApproval::OnRequest)
-        .expect("approval policy should be set");
-    let mut config = (*turn.config).clone();
-    config.approvals_reviewer = ApprovalsReviewer::AutoReview;
-    config
-        .permissions
-        .set_permission_profile(PermissionProfile::Disabled)
-        .expect("test setup should allow updating permission profile");
-    set_turn_config(&mut turn, config);
-    let role_name = install_role_with_model_override(&mut turn).await;
-    let mut role_config = (*turn.config).clone();
-    crate::agent::role::apply_role_to_config(&mut role_config, Some(role_name.as_str()))
-        .await
-        .expect("non-empty role config should apply");
-    let TurnEnvironmentState::Ready(environment) = turn
-        .initial_environments
-        .environments
-        .first_mut()
-        .expect("parent environment should exist")
-    else {
-        panic!("parent environment should be ready");
-    };
-    environment.environment = environment_manager
-        .default_environment()
-        .expect("sandbox-capable test environment should exist");
-    environment.config_mut().permission_profile =
-        PermissionProfileSnapshot::legacy(expected_permission_profile.clone());
-    environment.config_origin = EnvironmentConfigOrigin::Owner;
-    assert_ne!(
-        role_config.permissions.effective_permission_profile(),
-        expected_permission_profile,
-        "role config must discard the runtime permission override before it is reapplied"
-    );
-    assert_ne!(
-        expected_permission_profile,
-        turn.config.permissions.effective_permission_profile(),
-        "test requires an environment profile that differs from the thread profile"
-    );
-
-    let invocation = invocation(
-        Arc::new(session),
-        Arc::new(turn),
-        "spawn_agent",
-        function_payload(json!({
-            "message": "await this command",
-            "agent_type": role_name
-        })),
-    );
-    let output = SpawnAgentHandler::default()
-        .handle(invocation)
-        .await
-        .expect("spawn_agent should succeed");
-    let (content, _) = expect_text_output(output);
-    let result: SpawnAgentResult =
-        serde_json::from_str(&content).expect("spawn_agent result should be json");
-    let agent_id = parse_agent_id(&result.agent_id);
-    assert!(
-        result
-            .nickname
-            .as_deref()
-            .is_some_and(|nickname| !nickname.is_empty())
-    );
-
-    let snapshot = manager
-        .get_thread(agent_id)
-        .await
-        .expect("spawned agent thread should exist")
-        .config_snapshot()
-        .await;
-    assert_eq!(snapshot.sandbox_policy(), expected_sandbox);
-    assert_eq!(snapshot.approval_policy, AskForApproval::OnRequest);
-    assert_eq!(snapshot.approvals_reviewer, ApprovalsReviewer::AutoReview);
-    assert_eq!(snapshot.permission_profile, expected_permission_profile);
-    let child_thread = manager
-        .get_thread(agent_id)
-        .await
-        .expect("spawned agent thread should exist");
-    let child_turn = child_thread.session.new_default_turn().await;
-    assert_eq!(
-        child_turn.file_system_sandbox_policy(),
-        expected_file_system_sandbox_policy
-    );
-    assert_eq!(
-        child_turn.network_sandbox_policy(),
-        expected_network_sandbox_policy
-    );
-    assert_eq!(child_turn.permission_profile(), expected_permission_profile);
-    assert_ne!(
-        child_turn.config.permissions.permission_profile(),
-        &expected_permission_profile
     );
 }
 
@@ -2493,10 +2292,7 @@ async fn multi_agent_v2_spawn_agent_ignores_configured_max_depth() {
     let manager = thread_manager();
     let mut config = (*turn.config).clone();
     config.agent_max_depth = 1;
-    config
-        .features
-        .enable(Feature::MultiAgentV2)
-        .expect("test config should allow feature update");
+    config.features.enable(Feature::MultiAgentV2);
     let root = manager
         .start_thread(StartThreadOptions::new(config.clone()))
         .await
@@ -2978,10 +2774,7 @@ async fn multi_agent_v2_wait_agent_accepts_timeout_only_argument() {
     set_agent_control(&mut session, manager.agent_control());
     session.thread_id = root.thread_id;
     let mut config = (*turn.config).clone();
-    config
-        .features
-        .enable(Feature::MultiAgentV2)
-        .expect("test config should allow feature update");
+    config.features.enable(Feature::MultiAgentV2);
     set_turn_config(&mut turn, config);
     let session = Arc::new(session);
     let turn = Arc::new(turn);
@@ -3063,10 +2856,7 @@ async fn multi_agent_v2_wait_agent_accepts_timeout_only_argument() {
 async fn multi_agent_v2_wait_agent_clamps_timeout_below_configured_min() {
     let (session, mut turn) = make_session_and_context().await;
     let mut config = (*turn.config).clone();
-    config
-        .features
-        .enable(Feature::MultiAgentV2)
-        .expect("test config should allow feature update");
+    config.features.enable(Feature::MultiAgentV2);
     config.multi_agent_v2.min_wait_timeout_ms = 50;
     config.multi_agent_v2.max_wait_timeout_ms = 1_000;
     config.multi_agent_v2.default_wait_timeout_ms = 50;
@@ -3110,10 +2900,7 @@ async fn multi_agent_v2_wait_agent_clamps_timeout_below_configured_min() {
 async fn multi_agent_v2_wait_agent_accepts_explicit_timeout_at_configured_min() {
     let (session, mut turn) = make_session_and_context().await;
     let mut config = (*turn.config).clone();
-    config
-        .features
-        .enable(Feature::MultiAgentV2)
-        .expect("test config should allow feature update");
+    config.features.enable(Feature::MultiAgentV2);
     config.multi_agent_v2.min_wait_timeout_ms = 1;
     config.multi_agent_v2.max_wait_timeout_ms = 1_000;
     config.multi_agent_v2.default_wait_timeout_ms = 50;
@@ -3145,10 +2932,7 @@ async fn multi_agent_v2_wait_agent_accepts_explicit_timeout_at_configured_min() 
 async fn multi_agent_v2_wait_agent_uses_configured_default_timeout() {
     let (session, mut turn) = make_session_and_context().await;
     let mut config = (*turn.config).clone();
-    config
-        .features
-        .enable(Feature::MultiAgentV2)
-        .expect("test config should allow feature update");
+    config.features.enable(Feature::MultiAgentV2);
     config.multi_agent_v2.min_wait_timeout_ms = 1;
     config.multi_agent_v2.max_wait_timeout_ms = 1_000;
     config.multi_agent_v2.default_wait_timeout_ms = 50;
@@ -3200,10 +2984,7 @@ async fn multi_agent_v2_wait_agent_uses_configured_default_timeout() {
 async fn multi_agent_v2_wait_agent_allows_zero_configured_timeout() {
     let (session, mut turn) = make_session_and_context().await;
     let mut config = (*turn.config).clone();
-    config
-        .features
-        .enable(Feature::MultiAgentV2)
-        .expect("test config should allow feature update");
+    config.features.enable(Feature::MultiAgentV2);
     config.multi_agent_v2.min_wait_timeout_ms = 0;
     config.multi_agent_v2.max_wait_timeout_ms = 0;
     config.multi_agent_v2.default_wait_timeout_ms = 0;
@@ -3240,10 +3021,7 @@ async fn multi_agent_v2_wait_agent_allows_zero_configured_timeout() {
 async fn multi_agent_v2_wait_agent_rejects_timeout_above_configured_max() {
     let (session, mut turn) = make_session_and_context().await;
     let mut config = (*turn.config).clone();
-    config
-        .features
-        .enable(Feature::MultiAgentV2)
-        .expect("test config should allow feature update");
+    config.features.enable(Feature::MultiAgentV2);
     config.multi_agent_v2.min_wait_timeout_ms = 1;
     config.multi_agent_v2.max_wait_timeout_ms = 50;
     config.multi_agent_v2.default_wait_timeout_ms = 1;
@@ -3270,10 +3048,7 @@ async fn multi_agent_v2_wait_agent_rejects_timeout_above_configured_max() {
 async fn multi_agent_v2_wait_agent_accepts_explicit_timeout_at_configured_max() {
     let (session, mut turn) = make_session_and_context().await;
     let mut config = (*turn.config).clone();
-    config
-        .features
-        .enable(Feature::MultiAgentV2)
-        .expect("test config should allow feature update");
+    config.features.enable(Feature::MultiAgentV2);
     config.multi_agent_v2.min_wait_timeout_ms = 1;
     config.multi_agent_v2.max_wait_timeout_ms = 1;
     config.multi_agent_v2.default_wait_timeout_ms = 1;
@@ -3477,10 +3252,7 @@ async fn multi_agent_v2_wait_agent_returns_summary_for_mailbox_activity() {
     set_agent_control(&mut session, manager.agent_control());
     session.thread_id = root.thread_id;
     let mut config = (*turn.config).clone();
-    config
-        .features
-        .enable(Feature::MultiAgentV2)
-        .expect("test config should allow feature update");
+    config.features.enable(Feature::MultiAgentV2);
     set_turn_config(&mut turn, config);
 
     let session = Arc::new(session);
@@ -3570,10 +3342,7 @@ async fn multi_agent_v2_wait_agent_returns_for_already_queued_mail() {
     set_agent_control(&mut session, manager.agent_control());
     session.thread_id = root.thread_id;
     let mut config = (*turn.config).clone();
-    config
-        .features
-        .enable(Feature::MultiAgentV2)
-        .expect("test config should allow feature update");
+    config.features.enable(Feature::MultiAgentV2);
     set_turn_config(&mut turn, config);
     let session = Arc::new(session);
     let turn = Arc::new(turn);
@@ -3654,10 +3423,7 @@ async fn multi_agent_v2_wait_agent_wakes_on_any_mailbox_notification() {
     set_agent_control(&mut session, manager.agent_control());
     session.thread_id = root.thread_id;
     let mut config = (*turn.config).clone();
-    config
-        .features
-        .enable(Feature::MultiAgentV2)
-        .expect("test config should allow feature update");
+    config.features.enable(Feature::MultiAgentV2);
     set_turn_config(&mut turn, config);
     let session = Arc::new(session);
     let turn = Arc::new(turn);
@@ -3748,10 +3514,7 @@ async fn multi_agent_v2_wait_agent_does_not_return_completed_content() {
     set_agent_control(&mut session, manager.agent_control());
     session.thread_id = root.thread_id;
     let mut config = (*turn.config).clone();
-    config
-        .features
-        .enable(Feature::MultiAgentV2)
-        .expect("test config should allow feature update");
+    config.features.enable(Feature::MultiAgentV2);
     set_turn_config(&mut turn, config);
     let session = Arc::new(session);
     let turn = Arc::new(turn);
@@ -3840,10 +3603,7 @@ async fn multi_agent_v2_interrupt_agent_accepts_task_name_target() {
     set_agent_control(&mut session, manager.agent_control());
     session.thread_id = root.thread_id;
     let mut config = (*turn.config).clone();
-    config
-        .features
-        .enable(Feature::MultiAgentV2)
-        .expect("test config should allow feature update");
+    config.features.enable(Feature::MultiAgentV2);
     set_turn_config(&mut turn, config);
 
     let session = Arc::new(session);
@@ -3941,14 +3701,7 @@ async fn multi_agent_v2_interrupt_agent_accepts_unloaded_task_name_target() {
     let (mut session, mut turn) = make_session_and_context().await;
     let mut config = (*turn.config).clone();
     config.multi_agent_v2.max_concurrent_threads_per_session = 2;
-    config
-        .features
-        .enable(Feature::MultiAgentV2)
-        .expect("test config should allow feature update");
-    config
-        .features
-        .enable(Feature::Sqlite)
-        .expect("test config should allow sqlite");
+    config.features.enable(Feature::MultiAgentV2);
     let state_db = init_state_db(&config)
         .await
         .expect("sqlite state db should initialize");
@@ -4057,10 +3810,7 @@ async fn multi_agent_v2_interrupt_agent_rejects_root_target_and_id() {
     set_agent_control(&mut session, manager.agent_control());
     session.thread_id = root.thread_id;
     let mut config = (*turn.config).clone();
-    config
-        .features
-        .enable(Feature::MultiAgentV2)
-        .expect("test config should allow feature update");
+    config.features.enable(Feature::MultiAgentV2);
     set_turn_config(&mut turn, config);
 
     let session = Arc::new(session);
@@ -4101,10 +3851,7 @@ async fn multi_agent_v2_interrupt_agent_rejects_self_target_by_id() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
     let mut config = (*turn.config).clone();
-    config
-        .features
-        .enable(Feature::MultiAgentV2)
-        .expect("test config should allow feature update");
+    config.features.enable(Feature::MultiAgentV2);
     set_turn_config(&mut turn, config);
     let root = manager
         .start_thread(StartThreadOptions::new((*turn.config).clone()))
@@ -4169,10 +3916,7 @@ async fn multi_agent_v2_interrupt_agent_rejects_self_target_by_task_name() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
     let mut config = (*turn.config).clone();
-    config
-        .features
-        .enable(Feature::MultiAgentV2)
-        .expect("test config should allow feature update");
+    config.features.enable(Feature::MultiAgentV2);
     set_turn_config(&mut turn, config);
     let root = manager
         .start_thread(StartThreadOptions::new((*turn.config).clone()))
@@ -4276,14 +4020,6 @@ async fn tool_handlers_cascade_close_and_resume_and_keep_explicitly_closed_subtr
     let (_session, turn) = make_session_and_context().await;
     let mut config = turn.config.as_ref().clone();
     config.agent_max_depth = 3;
-    config
-        .permissions
-        .set_permission_profile(PermissionProfile::workspace_write())
-        .expect("test config should allow workspace writes");
-    config
-        .features
-        .enable(Feature::Sqlite)
-        .expect("test config should allow sqlite");
     let state_db = init_state_db(&config).await;
     let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy"));
     let manager = ThreadManager::new(
@@ -4295,7 +4031,6 @@ async fn tool_handlers_cascade_close_and_resume_and_keep_explicitly_closed_subtr
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
         empty_extension_registry(),
         Arc::new(crate::test_support::EmptyUserInstructionsProvider),
-        /*analytics_events_client*/ None,
         crate::thread_manager::passthrough_image_store(),
         thread_store_from_config(&config, state_db.clone()),
         local_agent_graph_store_from_state_db(state_db.as_ref()),
@@ -4310,22 +4045,6 @@ async fn tool_handlers_cascade_close_and_resume_and_keep_explicitly_closed_subtr
         .expect("parent thread should start");
     let parent_thread_id = parent.thread_id;
     let parent_session = parent.thread.session.clone();
-    let parent_turn = parent_session.new_default_turn().await;
-    let mut owner_config = parent_turn
-        .initial_environments
-        .primary()
-        .expect("parent should have an environment")
-        .config()
-        .clone();
-    let owner_permission_profile = PermissionProfile::read_only();
-    owner_config.permission_profile =
-        PermissionProfileSnapshot::legacy(owner_permission_profile.clone());
-    let parent_environment = parent.thread.environment_selections().await.remove(0);
-    parent
-        .thread
-        .environment_ready(&parent_environment, owner_config)
-        .await
-        .expect("owner environment should be installed");
 
     let child_turn = parent_session.new_default_turn().await;
     let child_spawn_output = SpawnAgentHandler::default()
@@ -4416,16 +4135,6 @@ async fn tool_handlers_cascade_close_and_resume_and_keep_explicitly_closed_subtr
     assert_ne!(
         manager.agent_control().get_status(child_thread_id).await,
         AgentStatus::NotFound
-    );
-    assert_eq!(
-        manager
-            .get_thread(child_thread_id)
-            .await
-            .expect("resumed child thread should exist")
-            .config_snapshot()
-            .await
-            .permission_profile,
-        owner_permission_profile
     );
     assert_ne!(
         manager
@@ -4520,29 +4229,6 @@ async fn tool_handlers_cascade_close_and_resume_and_keep_explicitly_closed_subtr
 async fn build_agent_spawn_config_uses_captured_step_settings_and_turn_context_values(
     parent_enabled: bool,
 ) {
-    fn pick_allowed_sandbox_policy(
-        permissions: &crate::config::Permissions,
-        base: SandboxPolicy,
-        cwd: &std::path::Path,
-    ) -> SandboxPolicy {
-        let candidates = [
-            SandboxPolicy::new_read_only_policy(),
-            SandboxPolicy::new_workspace_write_policy(),
-            SandboxPolicy::DangerFullAccess,
-        ];
-        candidates
-            .into_iter()
-            .find(|candidate| {
-                if *candidate == base {
-                    return false;
-                }
-                permissions
-                    .can_set_legacy_sandbox_policy(candidate, cwd)
-                    .is_ok()
-            })
-            .unwrap_or(base)
-    }
-
     let (_session, mut turn) = make_session_and_context().await;
     update_turn_settings_for_test(&mut turn, |settings| {
         update_selected_settings_for_test(settings, |selected| {
@@ -4561,51 +4247,23 @@ async fn build_agent_spawn_config_uses_captured_step_settings_and_turn_context_v
     turn.developer_instructions = Some("dev".to_string());
     let mut config = (*turn.config).clone();
     config.compact_prompt = Some("compact".to_string());
-    config.permissions.shell_environment_policy = ShellEnvironmentPolicy {
+    config.shell_environment_policy = ShellEnvironmentPolicy {
         use_profile: true,
         ..ShellEnvironmentPolicy::default()
     };
-    config.codex_linux_sandbox_exe = Some(PathBuf::from("/bin/echo"));
     turn.config = Arc::new(config);
     let temp_dir = tempfile::tempdir().expect("temp dir");
     #[allow(deprecated)]
     {
         turn.cwd = temp_dir.abs();
     }
-    #[allow(deprecated)]
-    let turn_cwd = turn.cwd.clone();
-    let sandbox_policy = pick_allowed_sandbox_policy(
-        &turn.config.permissions,
-        turn.config.legacy_sandbox_policy(),
-        turn_cwd.as_path(),
-    );
-    let file_system_sandbox_policy =
-        FileSystemSandboxPolicy::from_legacy_sandbox_policy_for_cwd(&sandbox_policy, &turn_cwd);
-    let network_sandbox_policy = NetworkSandboxPolicy::from(&sandbox_policy);
-    let permission_profile = PermissionProfile::from_runtime_permissions_with_enforcement(
-        SandboxEnforcement::from_legacy_sandbox_policy(&sandbox_policy),
-        &file_system_sandbox_policy,
-        network_sandbox_policy,
-    );
     turn.initial_environments.environments.clear();
-    Arc::make_mut(&mut turn.config)
-        .permissions
-        .set_permission_profile(permission_profile)
-        .expect("permission profile set");
-    Arc::make_mut(&mut turn.config)
-        .permissions
-        .approval_policy
-        .set(AskForApproval::OnRequest)
-        .expect("approval policy set");
 
     let parent_config = Arc::make_mut(&mut turn.config);
-    parent_config
-        .prepare_token_budget_for_startup()
-        .expect("capture configured token budget");
+    parent_config.prepare_token_budget_for_startup();
     parent_config
         .features
-        .set_enabled(Feature::TokenBudget, parent_enabled)
-        .expect("set parent experimental context");
+        .set_enabled(Feature::TokenBudget, parent_enabled);
     parent_config
         .token_budget
         .get_or_insert_default()
@@ -4646,11 +4304,6 @@ async fn build_agent_spawn_config_uses_captured_step_settings_and_turn_context_v
     {
         expected.cwd = turn.cwd.clone();
     }
-    expected
-        .permissions
-        .approval_policy
-        .set(AskForApproval::OnRequest)
-        .expect("approval policy set");
     assert_eq!(config, expected);
 }
 
@@ -4663,27 +4316,6 @@ async fn build_agent_resume_config_clears_base_instructions() {
         model: turn.model_info().slug.clone(),
     });
     turn.config = Arc::new(base_config);
-    Arc::make_mut(&mut turn.config)
-        .permissions
-        .approval_policy
-        .set(AskForApproval::OnRequest)
-        .expect("approval policy set");
-    let environment_permission_profile =
-        if turn.permission_profile() == PermissionProfile::read_only() {
-            PermissionProfile::workspace_write()
-        } else {
-            PermissionProfile::read_only()
-        };
-    let TurnEnvironmentState::Ready(environment) = turn
-        .initial_environments
-        .environments
-        .first_mut()
-        .expect("parent environment should exist")
-    else {
-        panic!("parent environment should be ready");
-    };
-    environment.config_mut().permission_profile =
-        PermissionProfileSnapshot::legacy(environment_permission_profile);
 
     let config = build_agent_resume_config(&turn).expect("resume config");
 
@@ -4699,10 +4331,5 @@ async fn build_agent_resume_config_clears_base_instructions() {
     {
         expected.cwd = turn.cwd.clone();
     }
-    expected
-        .permissions
-        .approval_policy
-        .set(AskForApproval::OnRequest)
-        .expect("approval policy set");
     assert_eq!(config, expected);
 }

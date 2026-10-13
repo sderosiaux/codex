@@ -51,7 +51,7 @@ policy:
     .expect("metadata");
 
     let root_uri = PathUri::from_host_native_path(root.path()).expect("root URI");
-    let file_system = FileSystemEnvironmentAccessor::unrestricted(&LOCAL_FS);
+    let file_system = FileSystemEnvironmentAccessor::new(&LOCAL_FS);
     let outcome =
         load_environment_skills_from_root(&file_system, &root_uri, Some(Product::Codex)).await;
 
@@ -117,7 +117,7 @@ async fn executor_bundle_parser_matches_direct_environment_loader() {
 
     let root_uri = PathUri::from_host_native_path(root.path()).expect("root URI");
     let existing = load_environment_skills_from_root(
-        &FileSystemEnvironmentAccessor::unrestricted(&LOCAL_FS),
+        &FileSystemEnvironmentAccessor::new(&LOCAL_FS),
         &root_uri,
         /*restriction_product*/ None,
     )
@@ -128,7 +128,6 @@ async fn executor_bundle_parser_matches_direct_environment_loader() {
             roots: vec![CapabilityRootDiscoverRequest {
                 id: "demo@1".to_string(),
                 path: root_uri,
-                sandbox: None,
             }],
         },
     )
@@ -185,7 +184,7 @@ async fn executor_bundle_preserves_parent_namespace_and_manifest_precedence() {
 
     let root_uri = PathUri::from_host_native_path(&skills_root).expect("skills root URI");
     let existing = load_environment_skills_from_root(
-        &FileSystemEnvironmentAccessor::unrestricted(&LOCAL_FS),
+        &FileSystemEnvironmentAccessor::new(&LOCAL_FS),
         &root_uri,
         /*restriction_product*/ None,
     )
@@ -196,7 +195,6 @@ async fn executor_bundle_preserves_parent_namespace_and_manifest_precedence() {
             roots: vec![CapabilityRootDiscoverRequest {
                 id: "skills-only".to_string(),
                 path: root_uri,
-                sandbox: None,
             }],
         },
     )

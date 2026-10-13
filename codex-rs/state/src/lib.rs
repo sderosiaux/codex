@@ -34,10 +34,6 @@ pub use model::QueuedUserSubmissionRecord;
 pub use model::RolloutMigrationCursor;
 pub use model::RolloutMigrationSkippedRollout;
 pub use model::RolloutMigrationState;
-pub use runtime::GuardianReviewRecord;
-pub use runtime::MAX_GUARDIAN_REVIEW_BYTES;
-pub use runtime::MAX_GUARDIAN_REVIEW_RECORDS;
-pub use runtime::MAX_GUARDIAN_REVIEW_RECORDS_PER_THREAD;
 /// Preferred entrypoint: owns configuration and metrics.
 pub use runtime::StateRuntime;
 pub use sqlite::SqliteConfig;
@@ -45,13 +41,10 @@ pub use sqlite::SqliteConfig;
 pub use audit::ThreadStateAuditRow;
 pub use audit::read_thread_state_audit_rows;
 pub use delegated_preview::delegated_output_preview;
-pub use extract::GUARDIAN_THREAD_PREVIEW;
-pub use extract::GUARDIAN_THREAD_TITLE;
 /// Low-level storage engine: useful for focused tests.
 ///
 /// Most consumers should prefer [`StateRuntime`].
 pub use extract::apply_rollout_item;
-pub use extract::is_guardian_review_source;
 pub use extract::rollout_item_affects_thread_metadata;
 pub use model::AddThreadAttachmentOutcome;
 pub use model::Anchor;

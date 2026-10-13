@@ -1,4 +1,3 @@
-use codex_network_proxy::NetworkProxy;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -7,23 +6,7 @@ use tokio::process::Child;
 use tokio::process::Command;
 use tracing::trace;
 
-use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::shell_environment::is_non_inheritable_env_var;
-
-/// Experimental environment variable that will be set to some non-empty value
-/// if both of the following are true:
-///
-/// 1. The process was spawned by Codex as part of a shell tool call.
-/// 2. NetworkSandboxPolicy is restricted for the tool call.
-///
-/// We may try to have just one environment variable for all sandboxing
-/// attributes, so this may change in the future.
-pub const CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR: &str = "CODEX_SANDBOX_NETWORK_DISABLED";
-
-/// Should be set when the process is spawned under a sandbox. Currently, the
-/// value is "seatbelt" for macOS, but it may change in the future to
-/// accommodate sandboxing configuration and other sandboxing mechanisms.
-pub const CODEX_SANDBOX_ENV_VAR: &str = "CODEX_SANDBOX";
 
 #[derive(Debug, Clone, Copy)]
 pub enum StdioPolicy {
@@ -31,41 +14,27 @@ pub enum StdioPolicy {
     Inherit,
 }
 
-/// Spawns the appropriate child process for the exec params and sandbox settings,
-/// ensuring the args and environment variables used to create the `Command`
-/// (and `Child`) honor the configuration.
-///
-/// For now, we take `NetworkSandboxPolicy` as a parameter to spawn_child()
-/// because we need to determine whether to set the
-/// `CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR` environment variable.
-pub(crate) struct SpawnChildRequest<'a> {
+/// Spawns a child process with exactly the args, cwd, and environment supplied.
+pub(crate) struct SpawnChildRequest {
     pub program: PathBuf,
     pub args: Vec<String>,
-    pub arg0: Option<&'a str>,
     pub cwd: AbsolutePathBuf,
-    pub network_sandbox_policy: NetworkSandboxPolicy,
-    pub network: Option<&'a NetworkProxy>,
     pub stdio_policy: StdioPolicy,
     pub env: HashMap<String, String>,
 }
 
-pub(crate) async fn spawn_child_async(request: SpawnChildRequest<'_>) -> std::io::Result<Child> {
+pub(crate) async fn spawn_child_async(request: SpawnChildRequest) -> std::io::Result<Child> {
     let SpawnChildRequest {
         program,
         args,
-        arg0,
         cwd,
-        network_sandbox_policy,
-        network,
         stdio_policy,
         mut env,
     } = request;
 
     env.retain(|name, _| !is_non_inheritable_env_var(name));
 
-    trace!(
-        "spawn_child_async: {program:?} {args:?} {arg0:?} {cwd:?} {network_sandbox_policy:?} {stdio_policy:?} {env:?}"
-    );
+    trace!("spawn_child_async: {program:?} {args:?} {cwd:?} {stdio_policy:?} {env:?}");
 
     let mut cmd = match stdio_policy {
         StdioPolicy::RedirectForShellTool => {
@@ -73,19 +42,10 @@ pub(crate) async fn spawn_child_async(request: SpawnChildRequest<'_>) -> std::io
         }
         StdioPolicy::Inherit => Command::new(&program),
     };
-    #[cfg(unix)]
-    cmd.arg0(arg0.map_or_else(|| program.to_string_lossy().to_string(), String::from));
     cmd.args(args);
     cmd.current_dir(cwd);
-    if let Some(network) = network {
-        network.apply_to_env(&mut env);
-    }
     cmd.env_clear();
     cmd.envs(env);
-
-    if !network_sandbox_policy.is_enabled() {
-        cmd.env(CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR, "1");
-    }
 
     // If this Codex process dies (including being killed via SIGKILL), we want
     // any child processes that were spawned as part of a `"shell"` tool call

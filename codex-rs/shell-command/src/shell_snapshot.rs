@@ -1,13 +1,9 @@
-//! Capture, prepare credential-safe state, and render restorable shell snapshots.
+//! Capture and render restorable shell snapshots.
 
 #[path = "shell_snapshot_capture.rs"]
 mod capture;
-#[path = "shell_snapshot_credentials.rs"]
-mod credentials;
 #[path = "shell_snapshot_exports.rs"]
 mod exports;
-#[path = "shell_snapshot_literals.rs"]
-mod literals;
 #[path = "shell_snapshot_render.rs"]
 mod render;
 
@@ -16,11 +12,6 @@ pub use capture::CapturedStartupEnvironment;
 pub use capture::SnapshotCaptureOptions;
 pub use capture::snapshot_capture_script;
 pub use capture::snapshot_source_capture_script;
-pub use credentials::PreparedSnapshot;
-pub use credentials::SnapshotCredentialEnvironment;
-pub use credentials::prepare_snapshot_credentials;
-
-use capture::BASH_SH_SNAPSHOT_HEADER;
 
 #[cfg(all(test, unix))]
 #[path = "shell_snapshot_tests.rs"]

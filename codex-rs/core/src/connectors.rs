@@ -10,10 +10,8 @@ pub use codex_connectors::AppInfo;
 pub use codex_connectors::AppMetadata;
 use codex_connectors::ConnectorDirectoryCacheContext;
 use codex_connectors::ConnectorDirectoryCacheKey;
-use codex_connectors::apps_config_from_layer_stack;
 use codex_connectors::connector_runtime_context_key;
 use codex_exec_server::EnvironmentManager;
-use codex_exec_server::ExecServerRuntimeOptions;
 use codex_tools::DiscoverableTool;
 use tokio_util::sync::CancellationToken;
 use tracing::instrument;
@@ -24,7 +22,6 @@ use crate::mcp::McpManager;
 use crate::plugins::list_tool_suggest_discoverable_plugins;
 use crate::plugins::plugins_manager_for_config;
 use crate::session::INITIAL_SUBMIT_ID;
-use codex_config::types::ApprovalsReviewer;
 use codex_config::types::ToolSuggestDiscoverableType;
 use codex_core_plugins::PluginsManager;
 use codex_features::Feature;
@@ -165,13 +162,8 @@ pub async fn list_accessible_connectors_from_mcp_tools_with_options_and_status(
     // TODO: Wire callers that already own an EnvironmentManager into
     // list_accessible_connectors_from_mcp_tools_with_environment_manager instead
     // of constructing a temporary manager here.
-    let local_runtime_paths = ExecServerRuntimeOptions::from_optional_paths(
-        config.codex_self_exe.clone(),
-        config.codex_linux_sandbox_exe.clone(),
-    )?;
     let environment_manager = EnvironmentManager::from_codex_home(
         config.codex_home.clone(),
-        Some(local_runtime_paths),
         config.http_client_factory(),
     )
     .await?;
@@ -236,7 +228,7 @@ pub async fn list_accessible_connectors_from_mcp_tools_with_mcp_manager(
 
     let mut mcp_servers = effective_mcp_servers(&mcp_config, auth.as_ref());
     mcp_servers.retain(|name, _| name == CODEX_APPS_MCP_SERVER_NAME);
-    let mcp_config = Arc::new(mcp_config.for_threadless_operations(&mcp_servers));
+    let mcp_config = Arc::new(mcp_config);
     if mcp_servers.is_empty() {
         return Ok(AccessibleConnectorsStatus {
             connectors: Vec::new(),
@@ -269,7 +261,6 @@ pub async fn list_accessible_connectors_from_mcp_tools_with_mcp_manager(
         client_mcp_extensions: ClientMcpExtensions::default(),
         auth: auth.clone(),
         auth_manager: codex_apps_auth_manager,
-        elicitation_reviewer: None,
         elicitation_lifecycle: None,
     })
     .await;
@@ -509,45 +500,6 @@ pub fn with_app_plugin_sources(
             .to_vec();
     }
     connectors
-}
-
-pub(crate) fn mcp_approvals_reviewer_from_layers(
-    config_layer_stack: &codex_config::ConfigLayerStack,
-    default_reviewer: ApprovalsReviewer,
-    model: Option<&str>,
-    server_name: &str,
-    connector_id: Option<&str>,
-    link_id: Option<&str>,
-) -> ApprovalsReviewer {
-    let requirements = config_layer_stack.requirements();
-    if model.is_some_and(|model| requirements.auto_review_required_for_model(model)) {
-        return ApprovalsReviewer::AutoReview;
-    }
-
-    let app_reviewer = if server_name == CODEX_APPS_MCP_SERVER_NAME {
-        apps_config_from_layer_stack(config_layer_stack).and_then(|apps_config| {
-            let app = connector_id.and_then(|connector_id| apps_config.apps.get(connector_id));
-            link_id
-                .and_then(|link_id| app?.links.as_ref()?.links.get(link_id))
-                .and_then(|link| link.approvals_reviewer)
-                .or_else(|| app.and_then(|app| app.approvals_reviewer))
-                .or_else(|| {
-                    apps_config
-                        .default
-                        .and_then(|defaults| defaults.approvals_reviewer)
-                })
-        })
-    } else {
-        None
-    };
-
-    if let Some(reviewer) = app_reviewer
-        && requirements.approvals_reviewer.can_set(&reviewer).is_ok()
-    {
-        return reviewer;
-    }
-
-    default_reviewer
 }
 
 #[cfg(test)]

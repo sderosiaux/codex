@@ -187,13 +187,7 @@ async fn reconnect_reuses_registration_until_url_is_rejected() -> Result<()> {
         HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
     )?;
     let environment_task =
-        tokio_util::task::AbortOnDropHandle::new(tokio::spawn(run_remote_environment(
-            config,
-            ExecServerRuntimeOptions::new(
-                std::env::current_exe()?,
-                /*codex_linux_sandbox_exe*/ None,
-            )?,
-        )));
+        tokio_util::task::AbortOnDropHandle::new(tokio::spawn(run_remote_environment(config)));
 
     let (first_socket, _peer_addr) = timeout(Duration::from_secs(5), listener.accept()).await??;
     let mut first_websocket = accept_async(first_socket).await?;

@@ -75,14 +75,8 @@ fn done() -> String {
 
 fn configure(config: &mut codex_core::config::Config) {
     super::configure_scenario_catalog(config);
-    config
-        .features
-        .enable(Feature::AgentMessageBoard)
-        .expect("enable board");
-    config
-        .features
-        .enable(Feature::MultiAgentV2)
-        .expect("enable agent paths");
+    config.features.enable(Feature::AgentMessageBoard);
+    config.features.enable(Feature::MultiAgentV2);
 }
 
 #[test_case::test_case(false, true, false; "feature_off")]
@@ -112,16 +106,10 @@ async fn unavailable_board_calls_return_model_errors(
             configure(config);
             config.multi_agent_v2.disable_direct_message = true;
             if !board_enabled {
-                config
-                    .features
-                    .disable(Feature::AgentMessageBoard)
-                    .expect("disable board");
+                config.features.disable(Feature::AgentMessageBoard);
             }
             if !multi_agent_v2 {
-                config
-                    .features
-                    .disable(Feature::MultiAgentV2)
-                    .expect("disable agent paths");
+                config.features.disable(Feature::MultiAgentV2);
             }
             config.ephemeral = ephemeral;
         })
@@ -456,10 +444,7 @@ async fn board_notifications_do_not_reopen_a_final_answer(after_final: bool) -> 
         .with_config(move |config| {
             configure(config);
             config.model_provider.base_url = Some(base_url);
-            config
-                .features
-                .disable(Feature::EnableRequestCompression)
-                .expect("read raw requests");
+            config.features.disable(Feature::EnableRequestCompression);
         })
         .with_model_info_override("gpt-5.5", |model| {
             model.multi_agent_version = Some(MultiAgentVersion::V2);
@@ -708,10 +693,7 @@ async fn board_unsubscribe_survives_post_and_resume_until_resubscribed(
             configure(config);
             config.multi_agent_v2.disable_direct_message = disable_direct_message;
             config.model_provider.base_url = Some(base_url);
-            config
-                .features
-                .disable(Feature::EnableRequestCompression)
-                .expect("read raw request bodies from the gated mock");
+            config.features.disable(Feature::EnableRequestCompression);
         })
         .with_model_info_override("gpt-5.5", |model| {
             model.multi_agent_version = Some(MultiAgentVersion::V2);
@@ -929,265 +911,5 @@ async fn board_clock_failure_does_not_fall_back_or_create_a_channel() -> anyhow:
         result,
         json!({"results":[],"n_returned":0,"has_more":false,"next_cursor":null})
     );
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn codex_instances_share_board_with_fixed_access() -> anyhow::Result<()> {
-    use codex_agent_message_board_extension::LocalBoard;
-    use codex_extension_api::ExtensionRegistryBuilder;
-    use codex_extension_api::IsolatedSessionExtensions;
-    use codex_extension_api::SessionIsolation;
-    use codex_extension_api::ToolName;
-    use codex_protocol::protocol::InternalSessionSource;
-    use codex_protocol::protocol::SessionSource;
-    use codex_state::SqliteConfig;
-    use std::sync::Arc;
-
-    let server = responses::start_mock_server().await;
-    let response = |body| vec![StreamingSseChunk { gate: None, body }];
-    let (release, gate) = oneshot::channel();
-    let mut working = ev_assistant_message("watching", "Watching the policy board.");
-    working["item"]["phase"] = json!("commentary");
-    let (streaming, _) = start_streaming_sse_server(vec![
-        response(tool(
-            "publish",
-            "post",
-            json!({"new_channel_name":"policy", "text":"A shared policy"}),
-        )),
-        response(done()),
-        response(tool("permissions", "get_channels", json!({}))),
-        response(tool("read", "search_posts", json!({}))),
-        response(tool(
-            "denied",
-            "post",
-            json!({"channel_name":"policy", "text":"Cannot publish"}),
-        )),
-        response(tool("deny-create", "create_channel", json!({"channel_name":"denied"}))),
-        response(tool("deny-new", "post", json!({"new_channel_name":"denied", "text":"Cannot publish"}))),
-        response(tool("deny-reply", "post", json!({"thread_id":"00000000-0000-4000-8000-000000000099", "text":"Cannot reply"}))),
-        response(tool("deny-subscribe", "subscribe", json!({"channel_name":"policy", "target_agent":"/root/00000000000040008000000000000000"}))),
-        response(done()),
-        response(tool(
-            "subscribe",
-            "subscribe",
-            json!({"channel_name":"policy"}),
-        )),
-        vec![
-            StreamingSseChunk {
-                gate: None,
-                body: sse(vec![ev_response_created("watching"), working]),
-            },
-            StreamingSseChunk {
-                gate: Some(gate),
-                body: tool("checkpoint", "get_channels", json!({})),
-            },
-        ],
-        response(sse(vec![
-            ev_function_call_with_namespace(
-                "wrong-board",
-                "collaboration",
-                "post",
-                &json!({
-                    "channel_name":"policy", "text":"Must not publish",
-                    "agents_to_notify":["/root/00000000000040008000000000000002"]
-                })
-                .to_string(),
-            ),
-            ev_function_call_with_namespace(
-                "update",
-                "collaboration",
-                "post",
-                &json!({"channel_name":"policy", "text":"A new policy"}).to_string(),
-            ),
-            ev_function_call_with_namespace(
-                "explicit-update",
-                "collaboration",
-                "post",
-                &json!({
-                    "channel_name":"policy", "text":"An explicit update",
-                    "agents_to_notify":["/root/00000000000040008000000000000001"]
-                })
-                .to_string(),
-            ),
-            ev_completed("update"),
-        ])),
-        response(done()),
-        response(done()),
-    ])
-    .await;
-    let base_url = format!("{}/v1", streaming.uri());
-    let test = test_codex()
-        .with_config(move |config| {
-            super::configure_scenario_catalog(config);
-            config.ephemeral = true;
-            config.model_provider.base_url = Some(base_url);
-            config
-                .features
-                .disable(Feature::EnableRequestCompression)
-                .expect("capture gated requests");
-            config.multi_agent_v2.tool_namespace = Some("collaboration".into());
-            config.current_time_reminder = Some(codex_core::config::CurrentTimeReminderConfig {
-                clock_source: codex_features::CurrentTimeSource::External,
-                ..Default::default()
-            });
-        })
-        .with_external_time_provider(Arc::new(BoardClock::Available))
-        .build_with_auto_env(&server)
-        .await?;
-    let storage = tempfile::tempdir()?;
-    let database_home = storage.path().join("data");
-    let alias = storage.path().join("alias");
-    std::fs::create_dir(&database_home)?;
-    core_test_support::create_directory_symlink(&database_home, &alias);
-    let board_id = codex_protocol::SessionId::new();
-    let writer_board = LocalBoard::new(
-        SqliteConfig::new_for_testing(database_home.try_into()?),
-        board_id,
-    );
-    let guardian_board =
-        LocalBoard::new(SqliteConfig::new_for_testing(alias.try_into()?), board_id);
-    let mut extensions = ExtensionRegistryBuilder::new();
-    codex_core::install_agent_message_board(&mut extensions, Arc::downgrade(&test.thread_manager));
-    let extensions = Arc::new(extensions.build());
-    let mut instances = Vec::new();
-    for (index, (connection, source)) in [
-        (writer_board.read_write(), SessionSource::Cli),
-        (
-            guardian_board.read_only(),
-            SessionSource::Internal(InternalSessionSource::Guardian),
-        ),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let mut options = test.start_thread_options().await;
-        let internal = source.is_internal();
-        options.session_source = Some(source);
-        options.reserved_thread_id = Some(codex_protocol::ThreadId::from_string(&format!(
-            "00000000-0000-4000-8000-00000000000{index}"
-        ))?);
-        options
-            .thread_extension_init
-            .insert(SessionIsolation::Isolated);
-        options
-            .thread_extension_init
-            .insert(IsolatedSessionExtensions(extensions.clone()));
-        let mut policy = codex_guardian_reviewer::reviewer_tool_policy();
-        policy.allowed_tools.as_mut().unwrap().extend(
-            [
-                "post",
-                "create_channel",
-                "get_channels",
-                "search_posts",
-                "subscribe",
-            ]
-            .map(|name| ToolName::namespaced("collaboration", name)),
-        );
-        options.thread_extension_init.insert(policy);
-        options.thread_extension_init.insert(connection);
-        let instance = if internal {
-            test.thread_manager
-                .spawn_internal_session(test.session_configured.thread_id, options)
-                .await?
-        } else {
-            test.thread_manager.start_thread(options).await?
-        }
-        .thread;
-        instance
-            .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
-                text: "Use the shared policy board.".into(),
-                text_elements: vec![],
-            }]))
-            .await?;
-        wait_for_event(&instance, |event| {
-            matches!(event, EventMsg::TurnComplete(_))
-        })
-        .await;
-        instances.push(instance);
-    }
-    assert_eq!(streaming.requests().await.len(), 10);
-
-    // Keep the Guardian active while the independent writer delivers a subscribed notice.
-    let writer = &instances[0];
-    let guardian = &instances[1];
-    // A same-tree internal runtime has no board access unless its host supplies a connection.
-    let writer_id =
-        codex_protocol::ThreadId::from_string(writer.thread_extension_data().level_id())?;
-    let mut options = test.start_thread_options().await;
-    options.session_source = Some(SessionSource::Internal(InternalSessionSource::Guardian));
-    options.reserved_thread_id = Some(codex_protocol::ThreadId::from_string(
-        "00000000-0000-4000-8000-000000000002",
-    )?);
-    let unconnected = test
-        .thread_manager
-        .spawn_internal_session(writer_id, options)
-        .await?;
-    assert_eq!(unconnected.session_configured.session_id, writer_id.into());
-    guardian
-        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
-            text: "Watch for updates.".into(),
-            text_elements: vec![],
-        }]))
-        .await?;
-    wait_for_event(guardian, |event| {
-        matches!(event, EventMsg::ItemCompleted(event)
-        if matches!(&event.item, TurnItem::AgentMessage(message) if message.id == "watching"))
-    })
-    .await;
-    writer
-        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
-            text: "Publish an update.".into(),
-            text_elements: vec![],
-        }]))
-        .await?;
-    wait_for_event(writer, |event| matches!(event, EventMsg::TurnComplete(_))).await;
-    release
-        .send(())
-        .expect("release Guardian after notification delivery");
-    wait_for_event(guardian, |event| matches!(event, EventMsg::TurnComplete(_))).await;
-    let requests = streaming.requests().await;
-    assert!(
-        requests
-            .iter()
-            .any(|body| String::from_utf8_lossy(body).contains("Message Type: CHANNEL_POST"))
-    );
-    let last: Value = serde_json::from_slice(requests.last().unwrap())?;
-    let checkpoint = last["input"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|item| item["call_id"] == "checkpoint" && item["type"] == "function_call_output")
-        .context("channel checkpoint")?;
-    let channels: Value = serde_json::from_str(checkpoint["output"].as_str().unwrap())?;
-    assert_eq!(channels["results"][0]["message_count"], 3); // The unconnected runtime's notice was rejected before writing.
-    let mut bodies = streaming
-        .requests()
-        .await
-        .iter()
-        .map(|body| serde_json::from_slice::<Value>(body))
-        .collect::<serde_json::Result<Vec<_>>>()?;
-    assert_eq!(bodies.len(), 15);
-    for body in &mut bodies {
-        for item in body["input"].as_array_mut().context("request input")? {
-            if let Some(Value::String(output)) = item.get_mut("output") {
-                *output = context_snapshot::normalize_json_lines(output);
-            }
-        }
-    }
-    insta::assert_snapshot!(
-        "board_connections",
-        context_snapshot::format_context_snapshot(
-            "Independent Codex runtimes share a local board: a writer publishes, an isolated Guardian reads and cannot publish.",
-            &bodies.iter().map(SnapshotEntry::body).collect::<Vec<_>>(),
-            &ContextSnapshotOptions::default().rewrite_known_segments(),
-        )
-    );
-
-    unconnected.thread.shutdown_and_wait().await?;
-    for instance in instances {
-        instance.shutdown_and_wait().await?;
-    }
-    streaming.shutdown().await;
     Ok(())
 }

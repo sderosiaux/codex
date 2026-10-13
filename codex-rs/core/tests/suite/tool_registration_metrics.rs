@@ -12,7 +12,6 @@ use codex_protocol::dynamic_tools::DynamicToolFunctionSpec;
 use codex_protocol::dynamic_tools::DynamicToolNamespaceSpec;
 use codex_protocol::dynamic_tools::DynamicToolNamespaceTool;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
-use codex_protocol::openai_models::ToolMode;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::user_input::UserInput;
 use core_test_support::responses;
@@ -60,7 +59,6 @@ async fn sampling_records_tool_registrations_once_across_stream_retry() -> Resul
         .with_model_info_override(MODEL, |model| {
             model.supports_search_tool = true;
             model.use_responses_lite = false;
-            model.tool_mode = Some(ToolMode::Direct);
             model.experimental_supported_tools.clear();
         })
         .with_config(|config| {
@@ -71,13 +69,10 @@ async fn sampling_records_tool_registrations_once_across_stream_retry() -> Resul
                 Feature::TokenBudget,
                 Feature::SendMessageToUserAsync,
             ] {
-                config.features.disable(feature).expect("disable feature");
+                config.features.disable(feature);
             }
             config.experimental_request_user_input_enabled = true;
-            config
-                .web_search_mode
-                .set(WebSearchMode::Cached)
-                .expect("enable hosted web search");
+            config.web_search_mode = WebSearchMode::Cached;
             config.model_provider.request_max_retries = Some(0);
             config.model_provider.stream_max_retries = Some(1);
         })
@@ -137,8 +132,8 @@ async fn sampling_records_tool_registrations_once_across_stream_retry() -> Resul
             .iter()
             .any(|tool| tool["name"] == "request_user_input")
     );
-    // The direct-mode request exposes every direct registration, plus the one
-    // model-only registration and hosted web search. Namespace children count separately.
+    // The request exposes every direct registration plus hosted web search.
+    // Namespace children count separately.
     let direct_count = tools
         .iter()
         .filter(|tool| tool["type"] != "web_search")
@@ -147,8 +142,7 @@ async fn sampling_records_tool_registrations_once_across_stream_retry() -> Resul
                 .and_then(Value::as_array)
                 .map_or(1, Vec::len)
         })
-        .sum::<usize>()
-        - 1;
+        .sum::<usize>();
 
     let snapshot = metrics.snapshot()?;
     let mut samples = BTreeMap::new();
@@ -165,7 +159,6 @@ async fn sampling_records_tool_registrations_once_across_stream_retry() -> Resul
                 .map(|attribute| (attribute.key.as_str(), attribute.value.as_str().to_string()))
                 .collect::<BTreeMap<_, _>>();
             assert_eq!(attributes.get("model").map(String::as_str), Some(MODEL));
-            assert_eq!(attributes["tool_mode"], "direct");
             assert!(
                 attributes.keys().all(|key| matches!(
                     *key,
@@ -176,7 +169,6 @@ async fn sampling_records_tool_registrations_once_across_stream_retry() -> Resul
                         | "model"
                         | "app.version"
                         | "exposure"
-                        | "tool_mode"
                 )),
                 "registration telemetry must not label tool names or descriptions"
             );
@@ -190,10 +182,7 @@ async fn sampling_records_tool_registrations_once_across_stream_retry() -> Resul
         samples,
         BTreeMap::from([
             ("direct".to_string(), (1, direct_count as f64)),
-            ("direct_model_only".to_string(), (1, 1.0)),
             ("deferred".to_string(), (1, 1.0)),
-            ("deferred_model_only".to_string(), (1, 0.0)),
-            ("code_mode_only".to_string(), (1, 0.0)),
             ("hidden".to_string(), (1, 0.0)),
         ])
     );

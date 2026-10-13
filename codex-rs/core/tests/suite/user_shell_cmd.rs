@@ -4,9 +4,6 @@ use codex_features::Feature;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
-use codex_protocol::models::PermissionProfile;
-use codex_protocol::permissions::NetworkSandboxPolicy;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExecCommandEndEvent;
 use codex_protocol::protocol::ExecCommandSource;
@@ -33,7 +30,6 @@ use core_test_support::submit_thread_settings;
 use core_test_support::test_codex::local;
 use core_test_support::test_codex::local_requests;
 use core_test_support::test_codex::test_codex;
-use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_match;
 use core_test_support::wait_for_event_with_timeout;
@@ -310,8 +306,6 @@ async fn user_shell_command_does_not_replace_active_turn() -> anyhow::Result<()>
     let mock = responses::mount_sse_sequence(&server, vec![first, second]).await;
 
     let cwd = fixture.config.cwd.clone();
-    let (sandbox_policy, permission_profile) =
-        turn_permission_fields(PermissionProfile::Disabled, cwd.as_path());
 
     fixture
         .codex
@@ -322,9 +316,6 @@ async fn user_shell_command_does_not_replace_active_turn() -> anyhow::Result<()>
             }])
             .with_thread_settings(ThreadSettingsOverrides {
                 environments: Some(local_requests(cwd)),
-                approval_policy: Some(AskForApproval::Never),
-                sandbox_policy: Some(sandbox_policy),
-                permission_profile,
                 collaboration_mode: Some(CollaborationMode {
                     mode: ModeKind::Default,
                     settings: Settings {
@@ -407,10 +398,7 @@ async fn user_shell_command_history_is_persisted_and_shared_with_model() -> anyh
     let server = responses::start_mock_server().await;
     // Disable it to ease command matching.
     let mut builder = core_test_support::test_codex::test_codex().with_config(move |config| {
-        config
-            .features
-            .disable(Feature::ShellSnapshot)
-            .expect("test config should allow feature update");
+        config.features.disable(Feature::ShellSnapshot);
     });
     let test = builder.build(&server).await?;
 
@@ -482,53 +470,6 @@ async fn user_shell_command_history_is_persisted_and_shared_with_model() -> anyh
         r"(?m)\A<user_shell_command>\n<command>\n{escaped_command}\n</command>\n<result>\nExit code: 0\nDuration: [0-9]+(?:\.[0-9]+)? seconds\nOutput:\nnot-set\n</result>\n</user_shell_command>\z"
     );
     assert_regex_match(&expected_pattern, &command_message);
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn user_shell_command_does_not_set_network_sandbox_env_var() -> anyhow::Result<()> {
-    let server = responses::start_mock_server().await;
-    let mut builder = core_test_support::test_codex::test_codex().with_config(|config| {
-        let file_system_sandbox_policy = config.permissions.file_system_sandbox_policy();
-        config
-            .permissions
-            .set_permission_profile(PermissionProfile::from_runtime_permissions(
-                &file_system_sandbox_policy,
-                NetworkSandboxPolicy::Restricted,
-            ))
-            .expect("set permission profile");
-    });
-    let test = builder.build(&server).await?;
-
-    #[cfg(windows)]
-    let command = r#"$val = $env:CODEX_SANDBOX_NETWORK_DISABLED; if ([string]::IsNullOrEmpty($val)) { $val = 'not-set' } ; [System.Console]::Write($val)"#.to_string();
-    #[cfg(not(windows))]
-    let command =
-        r#"sh -c "printf '%s' \"${CODEX_SANDBOX_NETWORK_DISABLED:-not-set}\"""#.to_string();
-
-    test.codex
-        .submit(Op::RunUserShellCommand {
-            command,
-            timeout_ms: None,
-        })
-        .await?;
-
-    let ExecCommandEndEvent {
-        exit_code,
-        aggregated_output,
-        ..
-    } = wait_for_event_match(&test.codex, |ev| match ev {
-        EventMsg::ExecCommandEnd(event) => Some(event.clone()),
-        _ => None,
-    })
-    .await;
-
-    assert_eq!(
-        exit_code, 0,
-        "shell command should execute successfully. output=`{aggregated_output}`",
-    );
-    assert_eq!(aggregated_output.trim(), "not-set");
 
     Ok(())
 }
@@ -641,10 +582,7 @@ async fn user_shell_command_is_truncated_only_once() -> anyhow::Result<()> {
     .await;
 
     fixture
-        .submit_turn_with_permission_profile(
-            "trigger big exec_command output",
-            PermissionProfile::Disabled,
-        )
+        .submit_turn("trigger big exec_command output")
         .await?;
 
     let output = mock2

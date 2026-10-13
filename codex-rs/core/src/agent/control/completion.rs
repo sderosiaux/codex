@@ -8,27 +8,19 @@ use crate::TurnStartOptions;
 use crate::agent::api::AgentTurnOutcome;
 use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
-use crate::session_prefix::format_guardian_interruption_message;
 use crate::session_prefix::format_inter_agent_completion_message;
 use codex_protocol::AgentPath;
 use codex_protocol::items::SubAgentActivityItem;
 use codex_protocol::protocol::AgentStatus;
-use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentActivityKind;
 use codex_protocol::protocol::SubAgentSource;
-use codex_rollout_trace::AgentResultTracePayload;
-use codex_rollout_trace::ThreadTraceContext;
 use tracing::debug;
 
 impl LocalAgentControl {
     /// Routes a captured terminal outcome without retaining the child's live turn context.
-    pub(crate) async fn notify_parent_of_terminal_turn(
-        &self,
-        outcome: AgentTurnOutcome,
-        trace: &ThreadTraceContext,
-    ) {
+    pub(crate) async fn notify_parent_of_terminal_turn(&self, outcome: AgentTurnOutcome) {
         let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id,
             agent_path: Some(child_agent_path),
@@ -89,26 +81,14 @@ impl LocalAgentControl {
             }
         }
 
-        let message = match (&status, outcome.error_info) {
-            (AgentStatus::Errored(error), Some(CodexErrorInfo::TooManyDenials)) => {
-                Some(format_guardian_interruption_message(
-                    parent_agent_path.clone(),
-                    child_agent_path.clone(),
-                    error,
-                ))
-            }
-            _ => format_inter_agent_completion_message(
-                parent_agent_path.clone(),
-                child_agent_path.clone(),
-                &status,
-            ),
-        };
+        let message = format_inter_agent_completion_message(
+            parent_agent_path.clone(),
+            child_agent_path.clone(),
+            &status,
+        );
         let Some(message) = message else {
             return;
         };
-        // `communication` owns the message. Keep a second copy only when the
-        // recorder will actually need it after parent delivery succeeds.
-        let trace_message = trace.is_enabled().then(|| message.clone());
         let communication = InterAgentCommunication::new(
             child_agent_path.clone(),
             parent_agent_path,
@@ -138,18 +118,6 @@ impl LocalAgentControl {
         }
         if let Err(err) = delivery {
             debug!("failed to notify parent thread {parent_thread_id}: {err}");
-            return;
-        }
-        if let Some(message) = trace_message {
-            trace.record_agent_result_interaction(
-                outcome.turn_id.as_str(),
-                parent_thread_id,
-                &AgentResultTracePayload {
-                    child_agent_path: child_agent_path.as_str(),
-                    message: &message,
-                    status: &status,
-                },
-            );
         }
     }
 }

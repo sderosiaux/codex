@@ -2,7 +2,7 @@
 
 use super::EnvVarGuard;
 use super::OAuthCredentialExpiry;
-use super::read_only_user_turn;
+use super::user_turn;
 use super::write_fallback_oauth_tokens;
 use std::sync::Arc;
 
@@ -83,10 +83,7 @@ async fn http_auth_challenge_reaches_agent_tool_call_events_without_replay() -> 
     }))?;
     let fixture = test_codex()
         .with_config(move |config| {
-            config
-                .mcp_servers
-                .set([("reauth".to_string(), server_config)].into())
-                .expect("test config should allow the MCP server");
+            config.mcp_servers = [("reauth".to_string(), server_config)].into();
         })
         // The mock MCP endpoint stays on the host when the executor is remote.
         .build_with_remote_and_local_env(&responses_server)
@@ -94,7 +91,7 @@ async fn http_auth_challenge_reaches_agent_tool_call_events_without_replay() -> 
     wait_for_mcp_server(&fixture.codex, "reauth").await?;
     fixture
         .codex
-        .start_or_steer_turn(read_only_user_turn(&fixture, "List calendar events."))
+        .start_or_steer_turn(user_turn(&fixture, "List calendar events."))
         .await?;
 
     let mut end_results = Vec::new();
@@ -182,13 +179,9 @@ async fn oauth_mode_refresh_replaces_the_live_connection(
         .with_config(move |config| {
             config
                 .features
-                .disable(Feature::McpOAuthRefreshCoordination)
-                .expect("test config should allow the OAuth coordination feature");
+                .disable(Feature::McpOAuthRefreshCoordination);
             config.mcp_oauth_credentials_store_mode = OAuthCredentialsStoreMode::File;
-            config
-                .mcp_servers
-                .set([(server_name.to_string(), server_config)].into())
-                .expect("test config should allow the OAuth server");
+            config.mcp_servers = [(server_name.to_string(), server_config)].into();
         })
         // The mock MCP endpoint is on the host, including when the executor is remote.
         .build_with_remote_and_local_env(&responses_server)
@@ -210,7 +203,7 @@ async fn oauth_mode_refresh_replaces_the_live_connection(
         let mut refreshed_config = fixture.config.clone();
         refreshed_config
             .features
-            .set_enabled(Feature::McpOAuthRefreshCoordination, enabled)?;
+            .set_enabled(Feature::McpOAuthRefreshCoordination, enabled);
         match refresh_path {
             ConfigRefreshPath::Runtime => {
                 let _ = fixture

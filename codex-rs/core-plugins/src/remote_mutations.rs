@@ -105,7 +105,7 @@ impl PluginsManager {
             ))));
         }
         remote::validate_remote_plugin_id(&remote_plugin_id)
-            .map_err(|err| unresolved(Error::InvalidRequest(err.message)))?;
+            .map_err(|message| unresolved(Error::InvalidRequest(message)))?;
         let service = config.remote_plugin_service_config();
         let detail = remote::fetch_remote_plugin_detail_with_download_urls(
             &service,
@@ -231,7 +231,7 @@ impl PluginsManager {
             )));
         }
         remote::validate_remote_plugin_id(remote_plugin_id)
-            .map_err(|err| unresolved(Error::InvalidRequest(err.message)))?;
+            .map_err(|message| unresolved(Error::InvalidRequest(message)))?;
         let service = config.remote_plugin_service_config();
         let target =
             remote::resolve_remote_plugin_uninstall_target(&service, auth, remote_plugin_id)

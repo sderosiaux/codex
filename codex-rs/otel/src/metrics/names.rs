@@ -42,10 +42,6 @@ pub const TURN_TOKEN_USAGE_METRIC: &str = "codex.turn.token_usage";
 pub const TURN_COST_MICROUSD_METRIC: &str = "codex.turn.cost_microusd";
 pub const TURN_UNIFIED_EXEC_RUNNING_PROCESSES_METRIC: &str =
     "codex.turn.unified_exec.running_processes";
-pub const GUARDIAN_REVIEW_COUNT_METRIC: &str = "codex.guardian.review";
-pub const GUARDIAN_REVIEW_DURATION_METRIC: &str = "codex.guardian.review.duration_ms";
-pub const GUARDIAN_REVIEW_TTFT_DURATION_METRIC: &str = "codex.guardian.review.ttft.duration_ms";
-pub const GUARDIAN_REVIEW_TOKEN_USAGE_METRIC: &str = "codex.guardian.review.token_usage";
 pub const GOAL_CREATED_METRIC: &str = "codex.goal.created";
 pub const GOAL_RESUMED_METRIC: &str = "codex.goal.resumed";
 pub const GOAL_COMPLETED_METRIC: &str = "codex.goal.completed";
@@ -77,7 +73,7 @@ pub const THREAD_SKILLS_TRUNCATED_METRIC: &str = "codex.thread.skills.truncated"
 pub const THREAD_TOOLS_NAMESPACES_TOTAL_METRIC: &str = "codex.thread.tools.namespaces_total";
 pub const THREAD_TOOLS_FRAGMENT_BYTES_METRIC: &str = "codex.thread.tools.fragment_bytes";
 
-/// Finalized tool registrations per sampling request, tagged by exposure and tool_mode.
+/// Finalized tool registrations per sampling request, tagged by exposure.
 pub const TOOL_REGISTRATIONS_METRIC: &str = "codex.tools.registered";
 pub const TOOL_REGISTRATIONS_METRIC_BUCKETS: &[f64] = &[
     0.0, 1.0, 2.0, 5.0, 10.0, 20.0, 30.0, 50.0, 75.0, 100.0, 150.0, 200.0, 300.0, 500.0, 750.0,

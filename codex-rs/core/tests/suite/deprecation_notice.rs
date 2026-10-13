@@ -1,7 +1,6 @@
 #![cfg(not(target_os = "windows"))]
 
 use anyhow::Ok;
-use codex_config::test_support::CloudConfigBundleFixture;
 use codex_features::Feature;
 use codex_protocol::protocol::DeprecationNoticeEvent;
 use codex_protocol::protocol::EventMsg;
@@ -21,13 +20,9 @@ async fn emits_deprecation_notice_for_legacy_feature_flag() -> anyhow::Result<()
     let server = start_mock_server().await;
 
     let mut builder = test_codex().with_config(|config| {
-        let mut features = config.features.get().clone();
-        features
-            .record_legacy_usage_force("use_experimental_unified_exec_tool", Feature::UnifiedExec);
         config
             .features
-            .set(features)
-            .expect("test config should allow managed feature metadata updates");
+            .record_legacy_usage_force("connectors", Feature::Apps);
     });
 
     let TestCodex { codex, .. } = builder.build(&server).await?;
@@ -41,12 +36,12 @@ async fn emits_deprecation_notice_for_legacy_feature_flag() -> anyhow::Result<()
     let DeprecationNoticeEvent { summary, details } = notice;
     assert_eq!(
         summary,
-        "`[features].use_experimental_unified_exec_tool` is deprecated. Use `[features].unified_exec` instead.".to_string(),
+        "`[features].connectors` is deprecated. Use `[features].apps` instead.".to_string(),
     );
     assert_eq!(
         details.as_deref(),
         Some(
-            "Enable it with `--enable unified_exec` or `[features].unified_exec` in config.toml. See https://developers.openai.com/codex/config-basic#feature-flags for details."
+            "Enable it with `--enable apps` or `[features].apps` in config.toml. See https://developers.openai.com/codex/config-basic#feature-flags for details."
         ),
     );
 
@@ -63,12 +58,7 @@ async fn emits_deprecation_notice_for_web_search_feature_flag_values() -> anyhow
         let mut builder = test_codex().with_config(move |config| {
             let mut entries = BTreeMap::new();
             entries.insert("web_search_request".to_string(), enabled);
-            let mut features = config.features.get().clone();
-            features.apply_map(&entries);
-            config
-                .features
-                .set(features)
-                .expect("test config should allow managed feature map updates");
+            config.features.apply_map(&entries);
         });
 
         let TestCodex { codex, .. } = builder.build(&server).await?;
@@ -101,67 +91,19 @@ async fn emits_deprecation_notice_for_web_search_feature_flag_values() -> anyhow
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn emits_deprecation_notice_for_use_legacy_landlock() -> anyhow::Result<()> {
-    skip_if_no_network!(Ok(()));
-
-    let server = start_mock_server().await;
-
-    let mut builder = test_codex().with_config(|config| {
-        let mut entries = BTreeMap::new();
-        entries.insert("use_legacy_landlock".to_string(), true);
-        let mut features = config.features.get().clone();
-        features.apply_map(&entries);
-        config
-            .features
-            .set(features)
-            .expect("test config should allow managed feature map updates");
-    });
-
-    let TestCodex { codex, .. } = builder.build(&server).await?;
-
-    let notice = wait_for_event_match(&codex, |event| match event {
-        EventMsg::DeprecationNotice(ev)
-            if ev.summary.contains("[features].use_legacy_landlock") =>
-        {
-            Some(ev.clone())
-        }
-        _ => None,
-    })
-    .await;
-
-    let DeprecationNoticeEvent { summary, details } = notice;
-    assert_eq!(
-        summary,
-        "`[features].use_legacy_landlock` is deprecated and will be removed soon.".to_string(),
-    );
-    assert_eq!(
-        details.as_deref(),
-        Some("Remove this setting to stop opting into the legacy Linux sandbox behavior."),
-    );
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn legacy_zsh_config_starts_session_with_migration_notices() -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
     let server = start_mock_server().await;
-    let mut builder = test_codex()
-        .with_pre_build_hook(|home| {
-            std::fs::write(
-                home.join("config.toml"),
-                r#"[features]
+    let mut builder = test_codex().with_pre_build_hook(|home| {
+        std::fs::write(
+            home.join("config.toml"),
+            r#"[features]
 shell_zsh_fork = true
 unified_exec_zsh_fork = true
 "#,
-            )
-            .expect("write legacy configuration");
-        })
-        .with_cloud_config_bundle(
-            CloudConfigBundleFixture::loader_with_enterprise_requirement(
-                "[features]\nshell_zsh_fork = true\nunified_exec_zsh_fork = true\n",
-            ),
-        );
+        )
+        .expect("write legacy configuration");
+    });
     let test = builder.build_with_auto_env(&server).await?;
 
     for feature in ["shell_zsh_fork", "unified_exec_zsh_fork"] {

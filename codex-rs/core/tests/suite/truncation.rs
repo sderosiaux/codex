@@ -9,8 +9,6 @@ use codex_core::TurnInputRequest;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
-use codex_protocol::models::PermissionProfile;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::protocol::TruncationPolicy;
@@ -98,12 +96,7 @@ async fn tool_call_output_configured_limit_chars_type() -> Result<()> {
     )
     .await;
 
-    fixture
-        .submit_turn_with_permission_profile(
-            "trigger big shell output",
-            PermissionProfile::Disabled,
-        )
-        .await?;
+    fixture.submit_turn("trigger big shell output").await?;
 
     // Inspect what we sent back to the model; it should contain a truncated
     // function_call_output for the shell call.
@@ -176,12 +169,7 @@ async fn tool_call_output_exceeds_limit_truncated_chars_limit() -> Result<()> {
     )
     .await;
 
-    fixture
-        .submit_turn_with_permission_profile(
-            "trigger big shell output",
-            PermissionProfile::Disabled,
-        )
-        .await?;
+    fixture.submit_turn("trigger big shell output").await?;
 
     // Inspect what we sent back to the model; it should contain a truncated
     // function_call_output for the shell call.
@@ -252,12 +240,7 @@ async fn tool_call_output_exceeds_limit_truncated_for_model() -> Result<()> {
     )
     .await;
 
-    fixture
-        .submit_turn_with_permission_profile(
-            "trigger big shell output",
-            PermissionProfile::Disabled,
-        )
-        .await?;
+    fixture.submit_turn("trigger big shell output").await?;
 
     // Inspect what we sent back to the model; it should contain a truncated
     // function_call_output for the shell call.
@@ -333,12 +316,7 @@ async fn tool_call_output_truncated_only_once() -> Result<()> {
     )
     .await;
 
-    fixture
-        .submit_turn_with_permission_profile(
-            "trigger big shell output",
-            PermissionProfile::Disabled,
-        )
-        .await?;
+    fixture.submit_turn("trigger big shell output").await?;
 
     let output = mock2
         .single_request()
@@ -398,7 +376,7 @@ async fn mcp_tool_call_output_exceeds_limit_truncated_for_model() -> Result<()> 
     let rmcp_test_server_bin = stdio_server_bin()?;
 
     let mut builder = test_codex().with_config(move |config| {
-        let mut servers = config.mcp_servers.get().clone();
+        let mut servers = config.mcp_servers.clone();
         servers.insert(
             server_name.to_string(),
             codex_config::types::McpServerConfig {
@@ -420,7 +398,6 @@ async fn mcp_tool_call_output_exceeds_limit_truncated_for_model() -> Result<()> 
                 disabled_reason: None,
                 startup_timeout_sec: Some(std::time::Duration::from_secs(10)),
                 tool_timeout_sec: None,
-                default_tools_approval_mode: None,
                 enabled_tools: None,
                 disabled_tools: None,
                 scopes: None,
@@ -429,20 +406,14 @@ async fn mcp_tool_call_output_exceeds_limit_truncated_for_model() -> Result<()> 
                 tools: HashMap::new(),
             },
         );
-        config
-            .mcp_servers
-            .set(servers)
-            .expect("test mcp servers should accept any configuration");
+        config.mcp_servers = servers;
         config.tool_output_token_limit = Some(500);
     });
     let fixture = builder.build(&server).await?;
     wait_for_mcp_server(&fixture.codex, server_name).await?;
 
     fixture
-        .submit_turn_with_permission_profile(
-            "call the rmcp echo tool with a very large message",
-            PermissionProfile::read_only(),
-        )
+        .submit_turn("call the rmcp echo tool with a very large message")
         .await?;
 
     // The MCP tool call output is converted to a function_call_output for the model.
@@ -500,7 +471,7 @@ async fn mcp_image_output_preserves_image_and_no_text_summary() -> Result<()> {
     let openai_png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
 
     let mut builder = test_codex().with_config(move |config| {
-        let mut servers = config.mcp_servers.get().clone();
+        let mut servers = config.mcp_servers.clone();
         servers.insert(
             server_name.to_string(),
             McpServerConfig {
@@ -525,7 +496,6 @@ async fn mcp_image_output_preserves_image_and_no_text_summary() -> Result<()> {
                 disabled_reason: None,
                 startup_timeout_sec: Some(Duration::from_secs(10)),
                 tool_timeout_sec: None,
-                default_tools_approval_mode: None,
                 enabled_tools: None,
                 disabled_tools: None,
                 scopes: None,
@@ -534,16 +504,11 @@ async fn mcp_image_output_preserves_image_and_no_text_summary() -> Result<()> {
                 tools: HashMap::new(),
             },
         );
-        config
-            .mcp_servers
-            .set(servers)
-            .expect("test mcp servers should accept any configuration");
+        config.mcp_servers = servers;
     });
     let fixture = builder.build(&server).await?;
     wait_for_mcp_server(&fixture.codex, server_name).await?;
     let session_model = fixture.session_configured.model.clone();
-    let permission_profile = PermissionProfile::read_only();
-    let sandbox_policy = permission_profile.to_legacy_sandbox_policy(fixture.cwd.path())?;
 
     fixture
         .codex
@@ -554,9 +519,6 @@ async fn mcp_image_output_preserves_image_and_no_text_summary() -> Result<()> {
             }])
             .with_thread_settings(ThreadSettingsOverrides {
                 environments: Some(local_requests(fixture.cwd.abs())),
-                approval_policy: Some(AskForApproval::Never),
-                sandbox_policy: Some(sandbox_policy),
-                permission_profile: Some(permission_profile),
                 collaboration_mode: Some(CollaborationMode {
                     mode: ModeKind::Default,
                     settings: Settings {
@@ -626,9 +588,7 @@ async fn token_policy_marker_reports_tokens() -> Result<()> {
     )
     .await;
 
-    fixture
-        .submit_turn_with_permission_profile("run the shell tool", PermissionProfile::Disabled)
-        .await?;
+    fixture.submit_turn("run the shell tool").await?;
 
     let output = done_mock
         .single_request()
@@ -679,9 +639,7 @@ async fn byte_policy_marker_reports_bytes() -> Result<()> {
     )
     .await;
 
-    fixture
-        .submit_turn_with_permission_profile("run the shell tool", PermissionProfile::Disabled)
-        .await?;
+    fixture.submit_turn("run the shell tool").await?;
 
     let output = done_mock
         .single_request()
@@ -734,10 +692,7 @@ async fn exec_command_output_not_truncated_with_custom_limit() -> Result<()> {
     .await;
 
     fixture
-        .submit_turn_with_permission_profile(
-            "run big output without truncation",
-            PermissionProfile::Disabled,
-        )
+        .submit_turn("run big output without truncation")
         .await?;
 
     let output = done_mock
@@ -801,10 +756,7 @@ async fn call_mcp_echo(
             "tools": { "echo": { "output_token_limit": output_token_limit } },
         }))
         .expect("test MCP server configuration");
-        config
-            .mcp_servers
-            .set(HashMap::from([(server_name.to_string(), mcp_server)]))
-            .expect("test mcp servers should accept any configuration");
+        config.mcp_servers = HashMap::from([(server_name.to_string(), mcp_server)]);
     });
     let fixture = builder.build_with_auto_env(server).await?;
     wait_for_mcp_server(&fixture.codex, server_name).await?;
@@ -876,7 +828,7 @@ async fn mcp_tool_output_limit_applies_to_hook_feedback() -> Result<()> {
             .expect("write MCP post-tool hook");
         })
         .with_config(|config| {
-            core_test_support::hooks::trust_discovered_hooks(config);
+            core_test_support::hooks::enable_discovered_hooks(config);
             config.tool_output_token_limit = Some(50);
         });
     let (_fixture, output) =

@@ -2,19 +2,15 @@ mod agents_md;
 mod apps_instructions;
 mod base_instructions;
 mod collaboration_mode;
-mod compact_permissions;
 mod context_window_guidance;
 mod environment;
 mod environments_instructions;
-mod managed_developer_instructions;
 mod model;
 mod model_catalog;
 mod multi_agent_mode;
 mod multi_agent_usage_hint;
-mod permissions;
 mod persistent_mode;
 mod plugins_instructions;
-mod realtime;
 #[cfg(test)]
 pub(crate) mod test_support;
 mod tools;
@@ -42,21 +38,15 @@ pub(crate) use agents_md::AgentsMdState;
 pub(crate) use apps_instructions::AppsInstructionsState;
 pub(crate) use base_instructions::BaseInstructionsState;
 pub(crate) use collaboration_mode::CollaborationModeState;
-pub(crate) use compact_permissions::CompactPermissionsState;
 pub(crate) use context_window_guidance::ContextWindowGuidanceState;
 pub(crate) use environment::EnvironmentsState;
 pub(crate) use environments_instructions::EnvironmentsInstructionsState;
-pub(crate) use managed_developer_instructions::ManagedDeveloperInstructions;
-pub(crate) use managed_developer_instructions::ManagedDeveloperInstructionsState;
-pub(crate) use managed_developer_instructions::validate_managed_developer_instructions;
 pub(crate) use model::ModelInstructionsState;
 pub(crate) use model_catalog::ModelCatalogState;
 pub(crate) use multi_agent_mode::MultiAgentModeState;
 pub(crate) use multi_agent_usage_hint::MultiAgentUsageHintState;
-pub(crate) use permissions::PermissionsState;
 pub(crate) use persistent_mode::PersistentModeState;
 pub(crate) use plugins_instructions::PluginsInstructionsState;
-pub(crate) use realtime::RealtimeState;
 pub(crate) use tools::ToolsState;
 pub(crate) use top_level_tools::IncrementalToolsHint;
 pub(crate) use top_level_tools::TopLevelToolsState;
@@ -471,14 +461,8 @@ impl WorldState {
             !self.sections.contains_key(id),
             "duplicate world-state section ID: {id}"
         );
-        let section = Box::new(ExtensionWorldStateSection(section));
-        if id == "host_skills"
-            && let Some(index) = self.sections.get_index_of(PermissionsState::ID)
-        {
-            self.sections.shift_insert(index, id, section);
-        } else {
-            self.sections.insert(id, section);
-        }
+        self.sections
+            .insert(id, Box::new(ExtensionWorldStateSection(section)));
     }
 
     /// Renders every section as new, preserving update order and placement.

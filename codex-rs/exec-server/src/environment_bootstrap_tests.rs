@@ -139,10 +139,9 @@ async fn prepared_environment_manager_builds_with_the_explicit_http_policy() {
         ),
     };
     let manager = prepared
-        .build(
-            /*local_runtime_paths*/ None,
-            HttpClientFactory::new(OutboundProxyPolicy::RespectSystemProxy),
-        )
+        .build(HttpClientFactory::new(
+            OutboundProxyPolicy::RespectSystemProxy,
+        ))
         .expect("environment manager");
 
     assert_eq!(

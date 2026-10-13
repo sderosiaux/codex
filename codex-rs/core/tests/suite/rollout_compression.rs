@@ -45,8 +45,7 @@ async fn compressed_shared_fork_resume_preserves_checkpoint_and_frozen_history()
             config.model_provider.name = "Local compaction test provider".to_string();
             config
                 .features
-                .disable(Feature::LocalThreadStoreCompression)
-                .expect("disable compression while building the lineage");
+                .disable(Feature::LocalThreadStoreCompression);
         })
         .build_with_auto_env(&server)
         .await?;
@@ -133,9 +132,7 @@ async fn compressed_shared_fork_resume_preserves_checkpoint_and_frozen_history()
             .set_times(FileTimes::new().set_modified(old))?;
     }
     let mut config = test.config.clone();
-    config
-        .features
-        .enable(Feature::LocalThreadStoreCompression)?;
+    config.features.enable(Feature::LocalThreadStoreCompression);
     // Use production feature wiring, rather than manually writing zstd files or calling the worker.
     let store =
         codex_core::thread_store_from_config(&config, codex_core::init_state_db(&config).await);

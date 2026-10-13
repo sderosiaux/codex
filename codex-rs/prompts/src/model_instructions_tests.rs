@@ -48,12 +48,8 @@ fn test_model(model_messages: Option<ModelMessages>) -> ModelInfo {
         supports_experimental_context: false,
         use_responses_lite: false,
         supports_reasoning_effort_updates: false,
-        guardian: None,
-        node_repl_auto_review_required: false,
         node_repl_disabled: false,
-        auto_review_model_override: None,
         model_specialty: None,
-        tool_mode: None,
         multi_agent_version: None,
         multi_agent_reasoning_effort: None,
     }

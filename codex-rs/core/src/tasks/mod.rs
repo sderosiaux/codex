@@ -37,13 +37,10 @@ use crate::state::ActiveTurn;
 use crate::state::RunningTask;
 use crate::state::TaskKind;
 use crate::state::TurnState;
-use codex_analytics::TurnProfileFact;
-use codex_analytics::TurnTokenUsageFact;
 use codex_context_fragments::RenderedFragment;
 use codex_otel::SessionTelemetry;
 use codex_otel::TURN_E2E_DURATION_METRIC;
 use codex_otel::TURN_MEMORY_METRIC;
-use codex_otel::TURN_NETWORK_PROXY_METRIC;
 use codex_otel::TURN_TOOL_CALL_METRIC;
 use codex_otel::TURN_UNIFIED_EXEC_RUNNING_PROCESSES_METRIC;
 use codex_otel::auth_storage::AuthStorageOriginator;
@@ -115,23 +112,6 @@ pub(crate) fn interrupted_turn_history_marker(
             Some(RenderedFragment::new("developer", content).into())
         }
     }
-}
-
-fn emit_turn_network_proxy_metric(
-    session_telemetry: &SessionTelemetry,
-    network_proxy_active: bool,
-    tmp_mem: (&str, &str),
-) {
-    let active = if network_proxy_active {
-        "true"
-    } else {
-        "false"
-    };
-    session_telemetry.counter(
-        TURN_NETWORK_PROXY_METRIC,
-        /*inc*/ 1,
-        &[("active", active), tmp_mem],
-    );
 }
 
 fn emit_turn_memory_metric(
@@ -276,7 +256,6 @@ impl Session {
         task: T,
     ) {
         self.abort_all_tasks(TurnAbortReason::Replaced).await;
-        self.clear_connector_selection().await;
         self.start_task(turn_context, input, task).await;
     }
 
@@ -380,12 +359,7 @@ impl Session {
                 .instrument(trace_span!("session_task.run"))
                 .await;
             let sess = Arc::clone(&session);
-            // Private reviewers save their transcript together with the terminal event.
-            // Errors and cancellation retain their existing save path.
-            if (!sess.is_private_guardian_reviewer().await
-                || task_cancellation_token.is_cancelled()
-                || task_result.is_err())
-                && let Err(err) = sess.flush_rollout().await
+            if let Err(err) = sess.flush_rollout().await
             {
                 warn!("failed to flush rollout before completing turn: {err}");
                 sess.send_event(
@@ -568,45 +542,13 @@ impl Session {
         }
 
         if let Some(active_turn) = active_turn_to_clear {
-            // Let interrupted tasks observe cancellation before dropping pending approvals, or an
-            // in-flight approval wait can surface as a model-visible rejection before TurnAborted.
+            // Let interrupted tasks observe cancellation before dropping pending requests, or an
+            // in-flight user-input wait can surface as a model-visible rejection before TurnAborted.
             self.input_queue.clear_pending(&active_turn).await;
         }
         if reason == TurnAbortReason::Interrupted && aborted_turn {
             self.maybe_start_turn_for_pending_work().await;
         }
-    }
-
-    pub(crate) async fn abort_turn_if_active(
-        self: &Arc<Self>,
-        turn_id: &str,
-        reason: TurnAbortReason,
-        error: Option<ErrorEvent>,
-    ) -> bool {
-        let active_turn = {
-            let mut active = self.active_turn.lock().await;
-            if active
-                .as_ref()
-                .and_then(|active_turn| active_turn.task.as_ref())
-                .is_some_and(|task| task.turn_context.sub_id == turn_id)
-            {
-                if matches!(
-                    reason,
-                    TurnAbortReason::Interrupted | TurnAbortReason::BudgetLimited
-                ) {
-                    self.mark_interrupted();
-                }
-                active.take()
-            } else {
-                None
-            }
-        };
-        let Some(active_turn) = active_turn else {
-            return false;
-        };
-
-        self.finish_turn_abort(active_turn, reason, error).await;
-        true
     }
 
     pub(crate) async fn finish_turn_abort(
@@ -620,8 +562,8 @@ impl Session {
             self.handle_task_abort(task, reason.clone(), &active_turn.turn_state, error)
                 .await;
         }
-        // Let interrupted tasks observe cancellation before dropping pending approvals, or an
-        // in-flight approval wait can surface as a model-visible rejection before TurnAborted.
+        // Let interrupted tasks observe cancellation before dropping pending requests, or an
+        // in-flight user-input wait can surface as a model-visible rejection before TurnAborted.
         self.input_queue.clear_pending(&active_turn).await;
 
         if reason == TurnAbortReason::Interrupted {
@@ -647,7 +589,6 @@ impl Session {
                     err.details(),
                 )
                 .await;
-                self.track_turn_codex_error(turn_context.as_ref(), &err);
                 self.send_event(
                     turn_context.as_ref(),
                     EventMsg::Error(err.to_error_event(/*message_prefix*/ None)),
@@ -713,22 +654,6 @@ impl Session {
                     "false"
                 },
             );
-            let network_proxy = self.services.network_proxy.load_full();
-            let network_proxy_active = match network_proxy.as_ref() {
-                Some(started_network_proxy) => {
-                    match started_network_proxy.proxy().current_cfg().await {
-                        Ok(config) => config.enabled,
-                        Err(err) => {
-                            warn!(
-                                "failed to read managed network proxy state for turn metrics: {err:#}"
-                            );
-                            false
-                        }
-                    }
-                }
-                None => false,
-            };
-            emit_turn_network_proxy_metric(turn_telemetry, network_proxy_active, tmp_mem);
             turn_telemetry.histogram(
                 TURN_TOOL_CALL_METRIC,
                 i64::try_from(turn_tool_calls).unwrap_or(i64::MAX),
@@ -785,13 +710,6 @@ impl Session {
                 "codex.turn.token_usage.total_tokens",
                 turn_token_usage.total_tokens,
             );
-            self.services
-                .analytics_events_client
-                .track_turn_token_usage(TurnTokenUsageFact {
-                    turn_id: turn_context.sub_id.clone(),
-                    thread_id: self.thread_id.to_string(),
-                    token_usage: turn_token_usage,
-                });
             token_usage_by_model.emit(turn_telemetry, tmp_mem);
         }
         emit_turn_memory_metric(
@@ -806,16 +724,8 @@ impl Session {
             &[],
         );
         let started_at = turn_context.turn_timing_state.started_at_unix_secs().await;
-        let (completed_at, duration_ms, profile) = turn_context
-            .turn_timing_state
-            .complete_profile_and_duration_ms()
-            .await;
-        self.services
-            .analytics_events_client
-            .track_turn_profile(TurnProfileFact {
-                turn_id: turn_context.sub_id.clone(),
-                profile,
-            });
+        let (completed_at, duration_ms) =
+            turn_context.turn_timing_state.complete_duration_ms().await;
         let idle_cause = if matches!(
             abort_reason.as_ref(),
             Some(TurnAbortReason::Interrupted | TurnAbortReason::BudgetLimited)
@@ -860,11 +770,7 @@ impl Session {
                 time_to_first_token_ms,
             })
         };
-        let saved_guardian_completion =
-            matches!(event, EventMsg::TurnComplete(_)) && self.is_private_guardian_reviewer().await;
-        if !saved_guardian_completion {
-            self.send_event(turn_context.as_ref(), event.clone()).await;
-        }
+        self.send_event(turn_context.as_ref(), event).await;
 
         let cleared_active_turn = {
             let mut active = self.active_turn.lock().await;
@@ -878,16 +784,11 @@ impl Session {
                 false
             }
         };
-        if saved_guardian_completion {
-            // The parent can request another review as soon as it receives this event.
-            self.send_event(turn_context.as_ref(), event).await;
-        }
         if cleared_active_turn {
             self.emit_thread_idle_lifecycle_if_idle(idle_cause).await;
         }
-        // Private reviewers already flushed the terminal event before delivering it.
-        // Other buffering writers still need a barrier for the terminal event.
-        if !saved_guardian_completion && let Err(err) = self.flush_rollout().await {
+        // Buffering writers need a barrier for the terminal event.
+        if let Err(err) = self.flush_rollout().await {
             warn!("failed to flush rollout after emitting terminal turn event: {err}");
         }
         if cleared_active_turn {
@@ -943,18 +844,6 @@ impl Session {
 
         trace!(task_kind = ?task.kind, sub_id, "aborting running task");
         task.cancellation_token.cancel();
-        if reason == TurnAbortReason::Interrupted
-            && task
-                .turn_context
-                .config
-                .features
-                .enabled(Feature::CodeModeInterrupt)
-        {
-            self.services
-                .code_mode_service
-                .interrupt_active_cells()
-                .await;
-        }
         task.turn_context
             .turn_metadata_state
             .cancel_git_enrichment_task();
@@ -1004,17 +893,11 @@ impl Session {
             .turn_timing_state
             .started_at_unix_secs()
             .await;
-        let (completed_at, duration_ms, profile) = task
+        let (completed_at, duration_ms) = task
             .turn_context
             .turn_timing_state
-            .complete_profile_and_duration_ms()
+            .complete_duration_ms()
             .await;
-        self.services
-            .analytics_events_client
-            .track_turn_profile(TurnProfileFact {
-                turn_id: task.turn_context.sub_id.clone(),
-                profile,
-            });
         self.emit_turn_abort_lifecycle(reason.clone(), task.turn_context.extension_data.as_ref())
             .await;
         let event = EventMsg::TurnAborted(TurnAbortedEvent {

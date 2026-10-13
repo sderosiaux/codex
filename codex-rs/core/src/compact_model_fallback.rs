@@ -1,6 +1,6 @@
+use crate::responses_metadata::CompactionImplementation;
+use crate::responses_metadata::CompactionReason;
 use crate::session::turn_context::TurnContext;
-use codex_analytics::CompactionImplementation;
-use codex_analytics::CompactionReason;
 use codex_otel::SessionTelemetry;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::CodexErrorDetails;

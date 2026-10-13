@@ -5,24 +5,16 @@ use crate::connection_manager::tests::create_ready_async_managed_client;
 use crate::mcp::auth::McpAuthStatusEntry;
 use crate::rmcp_client::StartupOutcomeError;
 use crate::server::McpCredentialPolicy;
-use codex_config::Constrained;
-use codex_config::types::AppToolApproval;
 use codex_config::types::AuthKeyringBackendKind;
 use codex_login::CodexAuth;
 use codex_plugin::AppConnectorId;
 use codex_plugin::PluginCapabilitySummary;
-use codex_protocol::models::ManagedFileSystemPermissions;
-use codex_protocol::models::PermissionProfile;
-use codex_protocol::permissions::NetworkSandboxPolicy;
-use codex_protocol::protocol::AskForApproval;
-use codex_protocol::protocol::GranularApprovalConfig;
 use codex_rmcp_client::McpAuthState;
 use futures::FutureExt;
 use pretty_assertions::assert_eq;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 #[tokio::test]
 async fn status_snapshot_only_downgrades_oauth_authentication_failures() {
@@ -98,17 +90,9 @@ pub(crate) fn test_mcp_config(codex_home: PathBuf) -> McpConfig {
         mcp_oauth_callback_url: None,
         optional_mcp_startup_grace: DEFAULT_OPTIONAL_MCP_STARTUP_GRACE,
         skill_mcp_dependency_install_enabled: true,
-        approval_policy: Constrained::allow_any(AskForApproval::OnRequest),
-        permission_profile: PermissionProfile::default(),
         config_layer_stack: codex_config::ConfigLayerStack::default(),
         plugins: Default::default(),
-        approvals_reviewer: codex_config::types::ApprovalsReviewer::default(),
         environment_cwds: HashMap::new(),
-        environment_use_mxc: HashMap::new(),
-        server_permission_profiles: HashMap::new(),
-        codex_self_exe: None,
-        codex_linux_sandbox_exe: None,
-        use_legacy_landlock: false,
         apps_enabled: false,
         prefix_mcp_tool_names: true,
         non_prefixed_mcp_tool_servers: Vec::new(),
@@ -118,20 +102,6 @@ pub(crate) fn test_mcp_config(codex_home: PathBuf) -> McpConfig {
         mcp_server_catalog: ResolvedMcpCatalog::default(),
         connector_snapshot: codex_connectors::ConnectorSnapshot::default(),
     }
-}
-
-pub(crate) fn test_elicitation_config(
-    server_name: &str,
-    approval_policy: AskForApproval,
-    permission_profile: PermissionProfile,
-) -> Arc<McpConfig> {
-    let mut config = test_mcp_config(PathBuf::new());
-    config.approval_policy = Constrained::allow_any(approval_policy);
-    config.permission_profile = permission_profile.clone();
-    config
-        .server_permission_profiles
-        .insert(server_name.to_string(), permission_profile);
-    Arc::new(config)
 }
 
 #[test]
@@ -164,10 +134,6 @@ fn ema_catalog_allows_only_configured_servers_without_widening_policy() {
         issuer: "https://idp.example".into(),
         client_id: "enterprise-client".into(),
     };
-    let deny_all = codex_protocol::mcp_policy::EnvironmentMcpPolicy {
-        servers: Some(Default::default()),
-        plugins: None,
-    };
     for (xaa_enabled, denied) in [(true, false), (true, true), (false, false)] {
         let mut catalog = catalog.clone();
         if xaa_enabled {
@@ -175,7 +141,7 @@ fn ema_catalog_allows_only_configured_servers_without_widening_policy() {
         }
         config.mcp_server_catalog = catalog.build_with_environment_authority(|_| {
             if denied {
-                crate::McpEnvironmentAuthority::Restricted(&deny_all)
+                crate::McpEnvironmentAuthority::Unavailable
             } else {
                 crate::McpEnvironmentAuthority::Unrestricted
             }
@@ -196,113 +162,6 @@ fn qualified_mcp_tool_name_prefix_sanitizes_server_names_without_lowercasing() {
         qualified_mcp_tool_name_prefix("Some-Server"),
         "mcp__Some_Server__".to_string()
     );
-}
-
-#[test]
-fn mcp_server_permissions_handle_unattached_and_threadless_servers() {
-    let mut config = test_mcp_config(PathBuf::new());
-    config.permission_profile = PermissionProfile::Disabled;
-    let mut missing_server = codex_apps_mcp_server_config(
-        "https://example.com",
-        /*apps_mcp_product_sku*/ None,
-        /*originator*/ None,
-    );
-    missing_server.environment_id = "missing".to_string();
-    let mut selected_server = missing_server.clone();
-    selected_server.environment_id = "unattached".to_string();
-    let mut catalog = ResolvedMcpCatalog::builder();
-    catalog.register(McpServerRegistration::from_config(
-        "missing".to_string(),
-        missing_server,
-    ));
-    catalog.register(McpServerRegistration::from_selected_plugin(
-        "selected".to_string(),
-        McpPluginAttribution::new("selected@test".to_string(), "Selected".to_string()),
-        /*selection_order*/ 0,
-        codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID,
-        selected_server,
-    ));
-    config.mcp_server_catalog = catalog.build();
-    let servers = effective_mcp_servers(&config, /*auth*/ None);
-    assert_eq!(config.permission_profile_for_server("selected"), None);
-    config.set_server_permission_profiles(&servers, std::iter::empty());
-
-    assert_eq!(
-        config.permission_profile_for_server("selected"),
-        Some(&PermissionProfile::Disabled)
-    );
-    assert_eq!(config.permission_profile_for_server("missing"), None);
-
-    let config = config.for_threadless_operations(&servers);
-    assert_eq!(
-        config.permission_profile_for_server("selected"),
-        Some(&PermissionProfile::default())
-    );
-}
-
-#[test]
-fn mcp_prompt_auto_approval_honors_unrestricted_managed_profiles() {
-    assert!(mcp_permission_prompt_is_auto_approved(
-        AskForApproval::Never,
-        &PermissionProfile::Managed {
-            file_system: ManagedFileSystemPermissions::Unrestricted,
-            network: NetworkSandboxPolicy::Enabled,
-        },
-        McpPermissionPromptAutoApproveContext::default(),
-    ));
-    assert!(mcp_permission_prompt_is_auto_approved(
-        AskForApproval::Never,
-        &PermissionProfile::Managed {
-            file_system: ManagedFileSystemPermissions::Unrestricted,
-            network: NetworkSandboxPolicy::Restricted,
-        },
-        McpPermissionPromptAutoApproveContext::default(),
-    ));
-    assert!(!mcp_permission_prompt_is_auto_approved(
-        AskForApproval::Never,
-        &PermissionProfile::read_only(),
-        McpPermissionPromptAutoApproveContext::default(),
-    ));
-    assert!(!mcp_permission_prompt_is_auto_approved(
-        AskForApproval::OnRequest,
-        &PermissionProfile::Managed {
-            file_system: ManagedFileSystemPermissions::Unrestricted,
-            network: NetworkSandboxPolicy::Enabled,
-        },
-        McpPermissionPromptAutoApproveContext::default(),
-    ));
-}
-
-#[test]
-fn mcp_prompt_auto_approval_honors_approved_tools_in_all_permission_modes() {
-    for approval_policy in [
-        AskForApproval::UnlessTrusted,
-        AskForApproval::OnRequest,
-        AskForApproval::Granular(GranularApprovalConfig {
-            sandbox_approval: true,
-            rules: true,
-            skill_approval: true,
-            request_permissions: true,
-            mcp_elicitations: true,
-        }),
-        AskForApproval::Never,
-    ] {
-        assert!(mcp_permission_prompt_is_auto_approved(
-            approval_policy,
-            &PermissionProfile::read_only(),
-            McpPermissionPromptAutoApproveContext {
-                tool_approval_mode: Some(AppToolApproval::Approve),
-            },
-        ));
-    }
-
-    assert!(!mcp_permission_prompt_is_auto_approved(
-        AskForApproval::OnRequest,
-        &PermissionProfile::read_only(),
-        McpPermissionPromptAutoApproveContext {
-            tool_approval_mode: Some(AppToolApproval::Auto),
-        },
-    ));
 }
 
 #[test]
@@ -648,7 +507,6 @@ async fn effective_mcp_servers_preserve_runtime_servers() {
             disabled_reason: None,
             startup_timeout_sec: None,
             tool_timeout_sec: None,
-            default_tools_approval_mode: None,
             enabled_tools: None,
             disabled_tools: None,
             scopes: None,
@@ -678,7 +536,6 @@ async fn effective_mcp_servers_preserve_runtime_servers() {
             disabled_reason: None,
             startup_timeout_sec: None,
             tool_timeout_sec: None,
-            default_tools_approval_mode: None,
             enabled_tools: None,
             disabled_tools: None,
             scopes: None,

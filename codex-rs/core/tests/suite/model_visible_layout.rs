@@ -18,12 +18,9 @@ use codex_extension_api::ExtensionRegistry;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_extension_api::TurnInputContext;
 use codex_extension_api::TurnInputContributor;
-use codex_features::Feature;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
-use codex_protocol::models::PermissionProfile;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EnvironmentConfigState;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ThreadSettingsOverrides;
@@ -45,7 +42,6 @@ use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::test_codex;
-use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
 use serde_json::json;
@@ -91,7 +87,7 @@ fn skills_extensions() -> Arc<ExtensionRegistry<Config>> {
         max_context_tokens: config.skill_max_context_tokens,
         bundled_skills_enabled: config.bundled_skills_enabled(),
         cloud_skill_enabled: config.cloud_skill_enabled,
-        shadow_selection_enabled: config.features.enabled(Feature::SkillSearch),
+        shadow_selection_enabled: false,
     });
     Arc::new(extensions.build())
 }
@@ -225,7 +221,6 @@ async fn model_visible_environment_context_preserves_foreign_workspace_roots() -
                 text_elements: Vec::new(),
             }])
             .with_thread_settings(ThreadSettingsOverrides {
-                permission_profile: Some(PermissionProfile::workspace_write()),
                 environments: Some(TurnEnvironmentRequests::new(
                     test.config.cwd.clone(),
                     vec![TurnEnvironmentRequest {
@@ -295,8 +290,6 @@ async fn snapshot_model_visible_layout_turn_overrides() -> Result<()> {
     fs::create_dir_all(&preturn_context_diff_cwd)?;
     let preturn_context_diff_cwd = preturn_context_diff_cwd.abs();
     let first_turn_cwd = test.config.cwd.clone();
-    let (first_sandbox_policy, first_permission_profile) =
-        turn_permission_fields(PermissionProfile::read_only(), first_turn_cwd.as_path());
 
     test.codex
         .start_or_steer_turn(
@@ -306,9 +299,6 @@ async fn snapshot_model_visible_layout_turn_overrides() -> Result<()> {
             }])
             .with_thread_settings(ThreadSettingsOverrides {
                 environments: Some(local_requests(first_turn_cwd)),
-                approval_policy: Some(AskForApproval::Never),
-                sandbox_policy: Some(first_sandbox_policy),
-                permission_profile: first_permission_profile,
                 collaboration_mode: Some(CollaborationMode {
                     mode: ModeKind::Default,
                     settings: Settings {
@@ -326,10 +316,6 @@ async fn snapshot_model_visible_layout_turn_overrides() -> Result<()> {
     })
     .await;
 
-    let (second_sandbox_policy, second_permission_profile) = turn_permission_fields(
-        PermissionProfile::read_only(),
-        preturn_context_diff_cwd.as_path(),
-    );
     test.codex
         .start_or_steer_turn(
             TurnInputRequest::user_input(vec![UserInput::Text {
@@ -338,9 +324,6 @@ async fn snapshot_model_visible_layout_turn_overrides() -> Result<()> {
             }])
             .with_thread_settings(ThreadSettingsOverrides {
                 environments: Some(local_requests(preturn_context_diff_cwd)),
-                approval_policy: Some(AskForApproval::OnRequest),
-                sandbox_policy: Some(second_sandbox_policy),
-                permission_profile: second_permission_profile,
                 collaboration_mode: Some(CollaborationMode {
                     mode: ModeKind::Default,
                     settings: Settings {
@@ -415,8 +398,6 @@ async fn snapshot_model_visible_layout_cwd_change_refreshes_agents() -> Result<(
     )?;
     let cwd_one = cwd_one.abs();
     let cwd_two = cwd_two.abs();
-    let (first_sandbox_policy, first_permission_profile) =
-        turn_permission_fields(PermissionProfile::read_only(), cwd_one.as_path());
 
     test.codex
         .start_or_steer_turn(
@@ -426,9 +407,6 @@ async fn snapshot_model_visible_layout_cwd_change_refreshes_agents() -> Result<(
             }])
             .with_thread_settings(ThreadSettingsOverrides {
                 environments: Some(local_requests(cwd_one.clone())),
-                approval_policy: Some(AskForApproval::Never),
-                sandbox_policy: Some(first_sandbox_policy),
-                permission_profile: first_permission_profile,
                 collaboration_mode: Some(CollaborationMode {
                     mode: ModeKind::Default,
                     settings: Settings {
@@ -446,8 +424,6 @@ async fn snapshot_model_visible_layout_cwd_change_refreshes_agents() -> Result<(
     })
     .await;
 
-    let (second_sandbox_policy, second_permission_profile) =
-        turn_permission_fields(PermissionProfile::read_only(), cwd_two.as_path());
     test.codex
         .start_or_steer_turn(
             TurnInputRequest::user_input(vec![UserInput::Text {
@@ -456,9 +432,6 @@ async fn snapshot_model_visible_layout_cwd_change_refreshes_agents() -> Result<(
             }])
             .with_thread_settings(ThreadSettingsOverrides {
                 environments: Some(local_requests(cwd_two)),
-                approval_policy: Some(AskForApproval::Never),
-                sandbox_policy: Some(second_sandbox_policy),
-                permission_profile: second_permission_profile,
                 collaboration_mode: Some(CollaborationMode {
                     mode: ModeKind::Default,
                     settings: Settings {
@@ -555,10 +528,6 @@ async fn snapshot_model_visible_layout_resume_with_personality_change() -> Resul
     let resume_override_cwd = resumed.cwd_path().join(PRETURN_CONTEXT_DIFF_CWD);
     fs::create_dir_all(&resume_override_cwd)?;
     let resume_override_cwd = resume_override_cwd.abs();
-    let (sandbox_policy, permission_profile) = turn_permission_fields(
-        PermissionProfile::read_only(),
-        resume_override_cwd.as_path(),
-    );
     resumed
         .codex
         .start_or_steer_turn(
@@ -568,9 +537,6 @@ async fn snapshot_model_visible_layout_resume_with_personality_change() -> Resul
             }])
             .with_thread_settings(ThreadSettingsOverrides {
                 environments: Some(local_requests(resume_override_cwd)),
-                approval_policy: Some(AskForApproval::Never),
-                sandbox_policy: Some(sandbox_policy),
-                permission_profile,
                 personality: Some(Personality::Friendly),
                 collaboration_mode: Some(CollaborationMode {
                     mode: ModeKind::Default,

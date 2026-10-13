@@ -1,11 +1,5 @@
-use super::AdditionalPermissionProfile;
-use super::ExecPolicyAmendment;
 use super::McpToolCallError;
 use super::McpToolCallResult;
-use super::NetworkApprovalContext;
-use super::NetworkApprovalProtocol;
-use super::NetworkPolicyAmendment;
-use super::RequestPermissionProfile;
 use super::UserInput;
 use super::shared::v2_enum_from_core;
 use crate::JsonSchema;
@@ -13,17 +7,12 @@ use crate::TS;
 use crate::protocol::item_builders::CommandExecutionPresentation;
 use crate::protocol::item_builders::convert_patch_changes;
 use crate::protocol::item_builders::review_output_text;
-use codex_experimental_api_macros::ExperimentalApi;
 use codex_extension_items::ExtensionItem;
 pub use codex_extension_items::image_generation::ImageGenerationFailure;
 pub use codex_extension_items::image_generation::ImageGenerationItem;
 pub use codex_extension_items::sleep::SleepItem;
 pub use codex_extension_items::web_search::WebSearchAction;
 pub use codex_extension_items::web_search::WebSearchItem;
-use codex_protocol::approvals::ExecApprovalKind as CoreExecApprovalKind;
-use codex_protocol::approvals::GuardianAssessmentAction as CoreGuardianAssessmentAction;
-use codex_protocol::approvals::GuardianAssessmentDecisionSource as CoreGuardianAssessmentDecisionSource;
-use codex_protocol::approvals::GuardianCommandSource as CoreGuardianCommandSource;
 use codex_protocol::items::AgentMessageContent as CoreAgentMessageContent;
 pub use codex_protocol::items::AgentMessageDelivery;
 pub use codex_protocol::items::AsyncUserInputQuestion;
@@ -39,16 +28,12 @@ use codex_protocol::memory_citation::MemoryCitation as CoreMemoryCitation;
 use codex_protocol::memory_citation::MemoryCitationEntry as CoreMemoryCitationEntry;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::MessagePhase;
-use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::parse_command::ParsedCommand as CoreParsedCommand;
 use codex_protocol::protocol::AgentStatus as CoreAgentStatus;
 use codex_protocol::protocol::ExecCommandSource as CoreExecCommandSource;
 use codex_protocol::protocol::ExecCommandStatus as CoreExecCommandStatus;
-use codex_protocol::protocol::GuardianRiskLevel as CoreGuardianRiskLevel;
-use codex_protocol::protocol::GuardianUserAuthorization as CoreGuardianUserAuthorization;
 use codex_protocol::protocol::PatchApplyStatus as CorePatchApplyStatus;
-use codex_protocol::protocol::ReviewDecision as CoreReviewDecision;
 use codex_protocol::protocol::SubAgentActivityKind as CoreSubAgentActivityKind;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::LegacyAppPathString;
@@ -57,71 +42,7 @@ use serde::Serialize;
 use serde_json::Value as JsonValue;
 use serde_with::serde_as;
 use std::collections::HashMap;
-use std::io;
 use std::path::PathBuf;
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-pub enum CommandExecutionApprovalDecision {
-    /// User approved the command.
-    Accept,
-    /// User approved the command and future prompts in the same session-scoped
-    /// approval cache should run without prompting.
-    AcceptForSession,
-    /// User approved the command, and wants to apply the proposed execpolicy amendment so future
-    /// matching commands can run without prompting.
-    AcceptWithExecpolicyAmendment {
-        execpolicy_amendment: ExecPolicyAmendment,
-    },
-    /// User chose a persistent network policy rule (allow/deny) for this host.
-    ApplyNetworkPolicyAmendment {
-        network_policy_amendment: NetworkPolicyAmendment,
-    },
-    /// User denied the command. The agent will continue the turn.
-    Decline,
-    /// User denied the command. The turn will also be immediately interrupted.
-    Cancel,
-}
-
-impl From<CoreReviewDecision> for CommandExecutionApprovalDecision {
-    fn from(value: CoreReviewDecision) -> Self {
-        match value {
-            CoreReviewDecision::Approved => Self::Accept,
-            // MCP approvals are handled through elicitations, so an MCP policy amendment should
-            // never appear in a command execution approval. To be cautious here, we fail closed.
-            CoreReviewDecision::ApprovedMcpPolicyAmendment => Self::Decline,
-            CoreReviewDecision::ApprovedExecpolicyAmendment {
-                proposed_execpolicy_amendment,
-            } => Self::AcceptWithExecpolicyAmendment {
-                execpolicy_amendment: proposed_execpolicy_amendment.into(),
-            },
-            CoreReviewDecision::ApprovedForSession => Self::AcceptForSession,
-            CoreReviewDecision::NetworkPolicyAmendment {
-                network_policy_amendment,
-            } => Self::ApplyNetworkPolicyAmendment {
-                network_policy_amendment: network_policy_amendment.into(),
-            },
-            CoreReviewDecision::Abort => Self::Cancel,
-            CoreReviewDecision::Denied { .. } => Self::Decline,
-            CoreReviewDecision::TimedOut => Self::Decline,
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-pub enum FileChangeApprovalDecision {
-    /// User approved the file changes.
-    Accept,
-    /// User approved the file changes and future changes to the same files should run without prompting.
-    AcceptForSession,
-    /// User denied the file changes. The agent will continue the turn.
-    Decline,
-    /// User denied the file changes. The turn will also be immediately interrupted.
-    Cancel,
-}
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(tag = "type", rename_all = "camelCase")]
@@ -289,10 +210,6 @@ pub enum ThreadItem {
     #[serde(rename_all = "camelCase")]
     #[ts(rename_all = "camelCase")]
     CommandExecution {
-        #[serde(skip)]
-        #[schemars(skip)]
-        #[ts(skip)]
-        sandbox_type: Option<codex_protocol::sandbox::SandboxType>,
         #[serde(skip)]
         #[schemars(skip)]
         #[ts(skip)]
@@ -477,382 +394,6 @@ impl ThreadItem {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-/// [UNSTABLE] Lifecycle state for an approval auto-review.
-pub enum GuardianApprovalReviewStatus {
-    InProgress,
-    Approved,
-    Denied,
-    TimedOut,
-    Aborted,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-/// [UNSTABLE] Source that produced a terminal approval auto-review decision.
-pub enum AutoReviewDecisionSource {
-    Agent,
-}
-
-impl From<CoreGuardianAssessmentDecisionSource> for AutoReviewDecisionSource {
-    fn from(value: CoreGuardianAssessmentDecisionSource) -> Self {
-        match value {
-            CoreGuardianAssessmentDecisionSource::Agent => Self::Agent,
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
-#[serde(rename_all = "lowercase")]
-#[ts(export_to = "v2/")]
-/// [UNSTABLE] Risk level assigned by approval auto-review.
-pub enum GuardianRiskLevel {
-    Low,
-    Medium,
-    High,
-    Critical,
-}
-
-impl From<CoreGuardianRiskLevel> for GuardianRiskLevel {
-    fn from(value: CoreGuardianRiskLevel) -> Self {
-        match value {
-            CoreGuardianRiskLevel::Low => Self::Low,
-            CoreGuardianRiskLevel::Medium => Self::Medium,
-            CoreGuardianRiskLevel::High => Self::High,
-            CoreGuardianRiskLevel::Critical => Self::Critical,
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
-#[serde(rename_all = "lowercase")]
-#[ts(export_to = "v2/")]
-/// [UNSTABLE] Authorization level assigned by approval auto-review.
-pub enum GuardianUserAuthorization {
-    Unknown,
-    Low,
-    Medium,
-    High,
-}
-
-impl From<CoreGuardianUserAuthorization> for GuardianUserAuthorization {
-    fn from(value: CoreGuardianUserAuthorization) -> Self {
-        match value {
-            CoreGuardianUserAuthorization::Unknown => Self::Unknown,
-            CoreGuardianUserAuthorization::Low => Self::Low,
-            CoreGuardianUserAuthorization::Medium => Self::Medium,
-            CoreGuardianUserAuthorization::High => Self::High,
-        }
-    }
-}
-
-/// [UNSTABLE] Temporary approval auto-review payload used by
-/// `item/autoApprovalReview/*` notifications. This shape is expected to change
-/// soon.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-pub struct GuardianApprovalReview {
-    pub status: GuardianApprovalReviewStatus,
-    pub risk_level: Option<GuardianRiskLevel>,
-    pub user_authorization: Option<GuardianUserAuthorization>,
-    pub rationale: Option<String>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-pub enum GuardianCommandSource {
-    Shell,
-    UnifiedExec,
-}
-
-impl From<CoreGuardianCommandSource> for GuardianCommandSource {
-    fn from(value: CoreGuardianCommandSource) -> Self {
-        match value {
-            CoreGuardianCommandSource::Shell => Self::Shell,
-            CoreGuardianCommandSource::UnifiedExec => Self::UnifiedExec,
-        }
-    }
-}
-
-impl From<GuardianCommandSource> for CoreGuardianCommandSource {
-    fn from(value: GuardianCommandSource) -> Self {
-        match value {
-            GuardianCommandSource::Shell => Self::Shell,
-            GuardianCommandSource::UnifiedExec => Self::UnifiedExec,
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-pub struct GuardianCommandReviewAction {
-    pub source: GuardianCommandSource,
-    pub command: String,
-    pub cwd: LegacyAppPathString,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-pub struct GuardianExecveReviewAction {
-    pub source: GuardianCommandSource,
-    pub program: String,
-    pub argv: Vec<String>,
-    pub cwd: AbsolutePathBuf,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-pub struct GuardianApplyPatchReviewAction {
-    pub cwd: LegacyAppPathString,
-    pub files: Vec<LegacyAppPathString>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-pub struct GuardianNetworkAccessReviewAction {
-    pub target: String,
-    pub host: String,
-    pub protocol: NetworkApprovalProtocol,
-    pub port: u16,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-pub struct GuardianMcpToolCallReviewAction {
-    pub server: String,
-    pub tool_name: String,
-    pub connector_id: Option<String>,
-    pub connector_name: Option<String>,
-    pub tool_title: Option<String>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-pub struct GuardianRequestPermissionsReviewAction {
-    pub reason: Option<String>,
-    pub permissions: RequestPermissionProfile,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
-#[serde(tag = "type", rename_all = "camelCase")]
-#[ts(tag = "type", rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-pub enum GuardianApprovalReviewAction {
-    #[serde(rename_all = "camelCase")]
-    #[ts(rename_all = "camelCase")]
-    Command {
-        source: GuardianCommandSource,
-        command: String,
-        cwd: LegacyAppPathString,
-    },
-    #[serde(rename_all = "camelCase")]
-    #[ts(rename_all = "camelCase")]
-    Execve {
-        source: GuardianCommandSource,
-        program: String,
-        argv: Vec<String>,
-        cwd: AbsolutePathBuf,
-    },
-    /// A child approval for input to an existing command execution item.
-    #[serde(rename_all = "camelCase")]
-    #[ts(rename_all = "camelCase")]
-    WriteStdin {
-        approval_id: String,
-        process_id: String,
-        stdin: String,
-        cwd: LegacyAppPathString,
-    },
-    #[serde(rename_all = "camelCase")]
-    #[ts(rename_all = "camelCase")]
-    ApplyPatch {
-        cwd: LegacyAppPathString,
-        files: Vec<LegacyAppPathString>,
-    },
-    #[serde(rename_all = "camelCase")]
-    #[ts(rename_all = "camelCase")]
-    NetworkAccess {
-        target: String,
-        host: String,
-        protocol: NetworkApprovalProtocol,
-        port: u16,
-    },
-    #[serde(rename_all = "camelCase")]
-    #[ts(rename_all = "camelCase")]
-    McpToolCall {
-        server: String,
-        tool_name: String,
-        connector_id: Option<String>,
-        connector_name: Option<String>,
-        tool_title: Option<String>,
-    },
-    #[serde(rename_all = "camelCase")]
-    #[ts(rename_all = "camelCase")]
-    RequestPermissions {
-        reason: Option<String>,
-        permissions: RequestPermissionProfile,
-    },
-}
-
-impl From<CoreGuardianAssessmentAction> for GuardianApprovalReviewAction {
-    fn from(value: CoreGuardianAssessmentAction) -> Self {
-        match value {
-            CoreGuardianAssessmentAction::Command {
-                source,
-                command,
-                cwd,
-            } => Self::Command {
-                source: source.into(),
-                command,
-                cwd,
-            },
-            CoreGuardianAssessmentAction::Execve {
-                source,
-                program,
-                argv,
-                cwd,
-            } => Self::Execve {
-                source: source.into(),
-                program,
-                argv,
-                cwd,
-            },
-            CoreGuardianAssessmentAction::WriteStdin {
-                approval_id,
-                process_id,
-                stdin,
-                cwd,
-            } => Self::WriteStdin {
-                approval_id,
-                process_id,
-                stdin,
-                cwd: cwd.into(),
-            },
-            CoreGuardianAssessmentAction::ApplyPatch { cwd, files } => {
-                Self::ApplyPatch { cwd, files }
-            }
-            CoreGuardianAssessmentAction::NetworkAccess {
-                target,
-                host,
-                protocol,
-                port,
-            } => Self::NetworkAccess {
-                target,
-                host,
-                protocol: protocol.into(),
-                port,
-            },
-            CoreGuardianAssessmentAction::McpToolCall {
-                server,
-                tool_name,
-                connector_id,
-                connector_name,
-                tool_title,
-            } => Self::McpToolCall {
-                server,
-                tool_name,
-                connector_id,
-                connector_name,
-                tool_title,
-            },
-            CoreGuardianAssessmentAction::RequestPermissions {
-                reason,
-                permissions,
-            } => Self::RequestPermissions {
-                reason,
-                permissions: permissions.into(),
-            },
-        }
-    }
-}
-
-impl TryFrom<GuardianApprovalReviewAction> for CoreGuardianAssessmentAction {
-    type Error = io::Error;
-
-    fn try_from(value: GuardianApprovalReviewAction) -> Result<Self, Self::Error> {
-        Ok(match value {
-            GuardianApprovalReviewAction::Command {
-                source,
-                command,
-                cwd,
-            } => Self::Command {
-                source: source.into(),
-                command,
-                cwd,
-            },
-            GuardianApprovalReviewAction::Execve {
-                source,
-                program,
-                argv,
-                cwd,
-            } => Self::Execve {
-                source: source.into(),
-                program,
-                argv,
-                cwd,
-            },
-            GuardianApprovalReviewAction::WriteStdin {
-                approval_id,
-                process_id,
-                stdin,
-                cwd,
-            } => Self::WriteStdin {
-                approval_id,
-                process_id,
-                stdin,
-                cwd: cwd
-                    .try_into()
-                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?,
-            },
-            GuardianApprovalReviewAction::ApplyPatch { cwd, files } => {
-                Self::ApplyPatch { cwd, files }
-            }
-            GuardianApprovalReviewAction::NetworkAccess {
-                target,
-                host,
-                protocol,
-                port,
-            } => Self::NetworkAccess {
-                target,
-                host,
-                protocol: protocol.to_core(),
-                port,
-            },
-            GuardianApprovalReviewAction::McpToolCall {
-                server,
-                tool_name,
-                connector_id,
-                connector_name,
-                tool_title,
-            } => Self::McpToolCall {
-                server,
-                tool_name,
-                connector_id,
-                connector_name,
-                tool_title,
-            },
-            GuardianApprovalReviewAction::RequestPermissions {
-                reason,
-                permissions,
-            } => Self::RequestPermissions {
-                reason,
-                permissions: permissions.try_into()?,
-            },
-        })
-    }
-}
-
 pub(crate) fn web_search_action_from_core(
     value: codex_protocol::models::WebSearchAction,
 ) -> WebSearchAction {
@@ -927,7 +468,6 @@ impl From<CoreTurnItem> for ThreadItem {
                 ThreadItem::CommandExecution {
                     id: command.id,
                     model_context: command.model_context,
-                    sandbox_type: command.sandbox_type,
                     plugin_id: command.plugin_id,
                     script_path: command.script_path,
                     command: presentation.command,
@@ -1352,72 +892,6 @@ pub struct ItemStartedNotification {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
-/// [UNSTABLE] Temporary notification payload for approval auto-review. This
-/// shape is expected to change soon.
-pub struct ItemGuardianApprovalReviewStartedNotification {
-    pub thread_id: String,
-    pub turn_id: String,
-    /// Unix timestamp (in milliseconds) when this review started.
-    #[ts(type = "number")]
-    pub started_at_ms: i64,
-    /// Stable identifier for this review.
-    pub review_id: String,
-    /// Identifier for the reviewed item or tool call when one exists.
-    ///
-    /// In most cases, one review maps to one target item. The exceptions are
-    /// - execve reviews, where a single command may contain multiple execve
-    ///   calls to review (only possible when using the shell_zsh_fork feature)
-    /// - stdin reviews, which refer to the existing parent command item and
-    ///   have a separate approval ID in the action payload
-    /// - network policy reviews, where there is no target item
-    ///
-    /// A network call is triggered by a CommandExecution item, so having a
-    /// target_item_id set to the CommandExecution item would be misleading
-    /// because the review is about the network call, not the command execution.
-    /// Therefore, target_item_id is set to None for network policy reviews.
-    pub target_item_id: Option<String>,
-    pub review: GuardianApprovalReview,
-    pub action: GuardianApprovalReviewAction,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-/// [UNSTABLE] Temporary notification payload for approval auto-review. This
-/// shape is expected to change soon.
-pub struct ItemGuardianApprovalReviewCompletedNotification {
-    pub thread_id: String,
-    pub turn_id: String,
-    /// Unix timestamp (in milliseconds) when this review started.
-    #[ts(type = "number")]
-    pub started_at_ms: i64,
-    /// Unix timestamp (in milliseconds) when this review completed.
-    #[ts(type = "number")]
-    pub completed_at_ms: i64,
-    /// Stable identifier for this review.
-    pub review_id: String,
-    /// Identifier for the reviewed item or tool call when one exists.
-    ///
-    /// In most cases, one review maps to one target item. The exceptions are
-    /// - execve reviews, where a single command may contain multiple execve
-    ///   calls to review (only possible when using the shell_zsh_fork feature)
-    /// - stdin reviews, which refer to the existing parent command item and
-    ///   have a separate approval ID in the action payload
-    /// - network policy reviews, where there is no target item
-    ///
-    /// A network call is triggered by a CommandExecution item, so having a
-    /// target_item_id set to the CommandExecution item would be misleading
-    /// because the review is about the network call, not the command execution.
-    /// Therefore, target_item_id is set to None for network policy reviews.
-    pub target_item_id: Option<String>,
-    pub decision_source: AutoReviewDecisionSource,
-    pub review: GuardianApprovalReview,
-    pub action: GuardianApprovalReviewAction,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
 pub struct ItemCompletedNotification {
     pub item: ThreadItem,
     pub thread_id: String,
@@ -1427,83 +901,7 @@ pub struct ItemCompletedNotification {
     pub completed_at_ms: i64,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-pub struct RawResponseItemCompletedNotification {
-    pub thread_id: String,
-    pub turn_id: String,
-    pub item: ResponseItem,
-}
-
 // Item-specific progress notifications
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-pub struct AgentMessageDeltaNotification {
-    pub thread_id: String,
-    pub turn_id: String,
-    pub item_id: String,
-    pub delta: String,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-/// EXPERIMENTAL - proposed plan streaming deltas for plan items. Clients should
-/// not assume concatenated deltas match the completed plan item content.
-pub struct PlanDeltaNotification {
-    pub thread_id: String,
-    pub turn_id: String,
-    pub item_id: String,
-    pub delta: String,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-pub struct ReasoningSummaryTextDeltaNotification {
-    pub thread_id: String,
-    pub turn_id: String,
-    pub item_id: String,
-    pub delta: String,
-    #[ts(type = "number")]
-    pub summary_index: i64,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-pub struct ReasoningSummaryPartAddedNotification {
-    pub thread_id: String,
-    pub turn_id: String,
-    pub item_id: String,
-    #[ts(type = "number")]
-    pub summary_index: i64,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-pub struct ReasoningTextDeltaNotification {
-    pub thread_id: String,
-    pub turn_id: String,
-    pub item_id: String,
-    pub delta: String,
-    #[ts(type = "number")]
-    pub content_index: i64,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-pub struct TerminalInteractionNotification {
-    pub thread_id: String,
-    pub turn_id: String,
-    pub item_id: String,
-    pub process_id: String,
-    pub stdin: String,
-}
 
 #[serde_as]
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -1514,159 +912,6 @@ pub struct CommandExecutionOutputDeltaNotification {
     pub turn_id: String,
     pub item_id: String,
     pub delta: String,
-}
-/// Deprecated legacy notification for `apply_patch` textual output.
-///
-/// The server no longer emits this notification.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-pub struct FileChangeOutputDeltaNotification {
-    pub thread_id: String,
-    pub turn_id: String,
-    pub item_id: String,
-    pub delta: String,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-pub struct FileChangePatchUpdatedNotification {
-    pub thread_id: String,
-    pub turn_id: String,
-    pub item_id: String,
-    pub changes: Vec<FileUpdateChange>,
-}
-
-v2_enum_from_core! {
-    /// Distinguishes a command approval from input sent to an existing terminal.
-    #[derive(Default)]
-    #[ts(rename_all = "camelCase")]
-    pub enum CommandExecutionApprovalKind from CoreExecApprovalKind {
-        #[default]
-        Command,
-        WriteStdin,
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS, ExperimentalApi)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-pub struct CommandExecutionRequestApprovalParams {
-    /// Kind of action under review. Defaults to `command` for older servers.
-    #[serde(default)]
-    pub kind: CommandExecutionApprovalKind,
-    pub thread_id: String,
-    pub turn_id: String,
-    pub item_id: String,
-    /// Unix timestamp (in milliseconds) when this approval request started.
-    #[ts(type = "number")]
-    pub started_at_ms: i64,
-    /// Unique identifier for this specific approval callback.
-    ///
-    /// For regular shell/unified_exec approvals, this is null.
-    ///
-    /// For zsh-exec-bridge subcommand approvals, multiple callbacks can belong to
-    /// one parent `itemId`, so `approvalId` is a distinct opaque callback id
-    /// (a UUID) used to disambiguate routing.
-    /// Stdin approvals also use a distinct callback id; inspect `kind` to distinguish them.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional = nullable)]
-    pub approval_id: Option<String>,
-    /// Environment in which the command will run.
-    #[serde(default)]
-    pub environment_id: Option<String>,
-    /// Optional explanatory reason (e.g. request for network access).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional = nullable)]
-    pub reason: Option<String>,
-    /// Optional context for a managed-network approval prompt.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional = nullable)]
-    pub network_approval_context: Option<NetworkApprovalContext>,
-    /// The command to be executed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional = nullable)]
-    pub command: Option<String>,
-    /// The command's working directory.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional = nullable)]
-    pub cwd: Option<LegacyAppPathString>,
-    /// Best-effort parsed command actions for friendly display.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional = nullable)]
-    pub command_actions: Option<Vec<CommandAction>>,
-    /// Optional additional permissions requested for this command.
-    #[experimental("item/commandExecution/requestApproval.additionalPermissions")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional = nullable)]
-    pub additional_permissions: Option<AdditionalPermissionProfile>,
-    /// Optional proposed execpolicy amendment to allow similar commands without prompting.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional = nullable)]
-    pub proposed_execpolicy_amendment: Option<ExecPolicyAmendment>,
-    /// Optional proposed network policy amendments (allow/deny host) for future requests.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional = nullable)]
-    pub proposed_network_policy_amendments: Option<Vec<NetworkPolicyAmendment>>,
-    /// Ordered list of decisions the client may present for this prompt.
-    #[experimental("item/commandExecution/requestApproval.availableDecisions")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional = nullable)]
-    pub available_decisions: Option<Vec<CommandExecutionApprovalDecision>>,
-}
-
-impl CommandExecutionRequestApprovalParams {
-    pub fn strip_experimental_fields(&mut self) {
-        // TODO: Avoid hardcoding individual experimental fields here.
-        // We need a generic outbound compatibility design for stripping or
-        // otherwise handling experimental server->client payloads.
-        self.additional_permissions = None;
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-pub struct CommandExecutionRequestApprovalResponse {
-    pub decision: CommandExecutionApprovalDecision,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-pub struct FileChangeRequestApprovalParams {
-    pub thread_id: String,
-    pub turn_id: String,
-    pub item_id: String,
-    /// Unix timestamp (in milliseconds) when this approval request started.
-    #[ts(type = "number")]
-    pub started_at_ms: i64,
-    /// Optional explanatory reason (e.g. request for extra write access).
-    #[ts(optional = nullable)]
-    pub reason: Option<String>,
-    /// [UNSTABLE] When set, the agent is asking the user to allow writes under this root
-    /// for the remainder of the session (unclear if this is honored today).
-    #[ts(optional = nullable)]
-    pub grant_root: Option<PathBuf>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
-#[ts(export_to = "v2/")]
-pub struct FileChangeRequestApprovalResponse {
-    pub decision: FileChangeApprovalDecision,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-pub struct DynamicToolCallParams {
-    pub thread_id: String,
-    pub turn_id: String,
-    pub call_id: String,
-    pub namespace: Option<String>,
-    pub tool: String,
-    pub arguments: JsonValue,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -1790,20 +1035,4 @@ impl<'de> Deserialize<'de> for ToolRequestUserInputParams {
             auto_resolution_ms: wire.auto_resolution_ms,
         })
     }
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-/// EXPERIMENTAL. Captures a user's answer to a request_user_input question.
-pub struct ToolRequestUserInputAnswer {
-    pub answers: Vec<String>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-/// EXPERIMENTAL. Response payload mapping question ids to answers.
-pub struct ToolRequestUserInputResponse {
-    pub answers: HashMap<String, ToolRequestUserInputAnswer>,
 }

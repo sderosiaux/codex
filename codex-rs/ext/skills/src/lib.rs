@@ -39,6 +39,8 @@ pub use host_service::HostSkillsLoadInput;
 pub use host_service::HostSkillsRequest;
 pub use host_service::HostSkillsService;
 pub use host_snapshot::HostSkillsSnapshot;
+pub use invocation::SkillInvocation;
+pub use invocation::SkillInvocationLocation;
 pub use invocation::detect_implicit_skill_invocation;
 pub use provider::ExecutorSkillProvider;
 pub use provider::HostSkillProvider;

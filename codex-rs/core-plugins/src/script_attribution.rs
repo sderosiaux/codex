@@ -6,9 +6,6 @@ use crate::loader::curated_plugin_cache_version;
 use crate::marketplace::MarketplacePluginSource;
 use crate::marketplace::find_marketplace_plugin;
 use crate::marketplace_policy::primary_runtime_marketplace_root;
-use crate::plugin_metrics::PluginMetricsOperation;
-use crate::plugin_metrics::ResolvedPluginMetricsOperation;
-use crate::plugin_metrics::load_plugin_metrics_operations;
 use crate::remote::REMOTE_GLOBAL_MARKETPLACE_NAME;
 use crate::startup_sync::curated_plugins_api_marketplace_path;
 use crate::startup_sync::curated_plugins_repo_path;
@@ -16,7 +13,6 @@ use crate::startup_sync::read_curated_plugins_sha;
 use crate::store::DEFAULT_PLUGIN_VERSION;
 use crate::store::PluginStore;
 use crate::store::plugin_version_for_source;
-use crate::store::validate_plugin_version_segment;
 use codex_exec_server::ExecutorFileSystem;
 use codex_exec_server::GetMetadataOptions;
 use codex_exec_server::ReadFileOptions;
@@ -26,9 +22,7 @@ use codex_shell_command::bash::extract_bash_command;
 use codex_shell_command::bash::parse_shell_lc_plain_commands;
 use codex_shell_command::parse_command::is_pathish;
 use codex_utils_absolute_path::AbsolutePathBuf;
-use codex_utils_path_uri::PathConvention;
 use codex_utils_path_uri::PathUri;
-use std::collections::BTreeMap;
 use std::collections::HashSet;
 use std::path::Component;
 use std::path::Path;
@@ -38,7 +32,6 @@ struct TrustedPluginRoot {
     plugin_id: PluginId,
     version: String,
     root: AbsolutePathBuf,
-    metrics_operations_by_path: BTreeMap<String, PluginMetricsOperation>,
 }
 
 /// Trusted plugin command attribution safe to carry into command analytics.
@@ -66,90 +59,7 @@ pub struct TrustedPluginRoots {
     roots: Vec<TrustedPluginRoot>,
 }
 
-/// An untrusted hint from a canonical executor script path, never authorization.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PluginMeasurementTarget {
-    pub(crate) plugin_id: PluginId,
-    pub(crate) version: String,
-    pub(crate) path_convention: PathConvention,
-}
-
-impl PluginMeasurementTarget {
-    /// Selects one remote plugin using the same command parser as attribution.
-    /// Skip paths outside the remote plugin cache before consulting the executor.
-    pub async fn from_command(
-        command: &[String],
-        cwd: &PathUri,
-        file_system: &dyn ExecutorFileSystem,
-    ) -> Option<Self> {
-        let command = single_plain_command(command)?;
-        let invocation = script_invocation(&command)?;
-        let script = cwd.join(invocation.script).ok()?;
-        Self::from_script_path(&script)?;
-        let script = file_system
-            .canonicalize(&script, /*sandbox*/ None)
-            .await
-            .ok()?;
-        Self::from_script_path(&script)
-    }
-
-    fn from_script_path(script: &PathUri) -> Option<Self> {
-        let path_convention = script.infer_path_convention()?;
-        let native_path = script.inferred_native_path_string();
-        // Normalize only the hint so equivalent Windows paths share preparation.
-        // Store identities must retain the authenticated catalog's spelling.
-        let native_path = match path_convention {
-            PathConvention::Windows => native_path.to_ascii_lowercase(),
-            PathConvention::Posix => native_path,
-        };
-        let components = path_convention
-            .path_segments(&native_path)
-            .collect::<Vec<_>>();
-        let mut candidates = components.windows(6).filter_map(|parts| {
-            if parts[..3] != ["plugins", "cache", REMOTE_GLOBAL_MARKETPLACE_NAME]
-                || parts[4] == DEFAULT_PLUGIN_VERSION
-            {
-                return None;
-            }
-            validate_plugin_version_segment(parts[4]).ok()?;
-            Some(Self {
-                plugin_id: PluginId::new(parts[3].to_owned(), parts[2].to_owned()).ok()?,
-                version: parts[4].to_owned(),
-                path_convention,
-            })
-        });
-        let target = candidates.next()?;
-        candidates.next().is_none().then_some(target)
-    }
-}
-
 impl TrustedPluginRoots {
-    /// Called only after the authenticated remote bundle installer has prepared
-    /// an isolated store. Read declarations without loading plugin capabilities.
-    pub(crate) fn from_measurement_reference(
-        codex_home: &Path,
-        plugin_id: &PluginId,
-        version: &str,
-        remote_id: &str,
-    ) -> Option<Self> {
-        let store = PluginStore::try_new(codex_home.to_owned()).ok()?;
-        if store.active_plugin_version(plugin_id).as_deref() != Some(version)
-            || store.remote_plugin_id(plugin_id).ok()?.as_deref() != Some(remote_id)
-        {
-            return None;
-        }
-        let root = store.plugin_root(plugin_id, version).canonicalize().ok()?;
-        let metrics_operations_by_path = load_plugin_metrics_operations(&root).unwrap_or_default();
-        Some(Self {
-            roots: vec![TrustedPluginRoot {
-                plugin_id: plugin_id.clone(),
-                version: version.to_owned(),
-                root,
-                metrics_operations_by_path,
-            }],
-        })
-    }
-
     /// Adds already-trusted roots, preserving the existing root for each plugin and version.
     /// Distinct versions remain eligible for exact executor-version matching.
     pub fn extend(&mut self, other: &Self) {
@@ -190,11 +100,9 @@ impl TrustedPluginRoots {
                 }
                 let version = expected_root.as_path().file_name()?.to_str()?.to_owned();
                 let root = expected_root.canonicalize().ok()?;
-                root.as_path().is_dir().then(|| TrustedPluginRoot {
+                root.as_path().is_dir().then_some(TrustedPluginRoot {
                     plugin_id,
                     version,
-                    metrics_operations_by_path: load_plugin_metrics_operations(&root)
-                        .unwrap_or_default(),
                     root,
                 })
             })
@@ -284,15 +192,6 @@ impl TrustedPluginRoots {
             .map(|candidate| candidate.attribution())
     }
 
-    /// Resolves one exact command to one trusted manifest-declared operation.
-    pub fn resolve_metrics_operation(
-        &self,
-        command: &[String],
-        cwd: &AbsolutePathBuf,
-    ) -> Option<ResolvedPluginMetricsOperation> {
-        self.local_candidate(command, cwd)?.metrics_operation()
-    }
-
     fn local_candidate(
         &self,
         command: &[String],
@@ -338,23 +237,9 @@ impl TrustedPluginRoots {
         cwd: &PathUri,
         file_system: &dyn ExecutorFileSystem,
     ) -> Option<PluginCommandAttribution> {
-        self.executor_candidate(command, cwd, file_system, PluginVersionMatch::Any)
+        self.executor_candidate(command, cwd, file_system)
             .await
             .map(|candidate| candidate.matched.attribution())
-    }
-
-    /// Resolves one trusted executor script to one manifest-declared operation,
-    /// requiring the executor's version to match the trusted declaration's version.
-    pub async fn resolve_metrics_operation_in_filesystem(
-        &self,
-        command: &[String],
-        cwd: &PathUri,
-        file_system: &dyn ExecutorFileSystem,
-    ) -> Option<ResolvedPluginMetricsOperation> {
-        self.executor_candidate(command, cwd, file_system, PluginVersionMatch::Exact)
-            .await?
-            .matched
-            .metrics_operation()
     }
 
     async fn executor_candidate(
@@ -362,7 +247,6 @@ impl TrustedPluginRoots {
         command: &[String],
         cwd: &PathUri,
         file_system: &dyn ExecutorFileSystem,
-        version_match: PluginVersionMatch,
     ) -> Option<ExecutorAttributionCandidate<'_>> {
         if self.roots.is_empty() {
             return None;
@@ -375,26 +259,19 @@ impl TrustedPluginRoots {
         let suffixes = normalized_script_suffixes(&script);
         if !self.roots.iter().any(|root| {
             suffixes.iter().any(|suffix| {
-                executor_plugin_root_matches(&script, root, suffix, PluginVersionMatch::Any)
+                executor_plugin_root_matches(&script, root, suffix)
                     || root.root.join(suffix).as_path().is_file()
             })
         }) {
             return None;
         }
-        let script = file_system
-            .canonicalize(&script, /*sandbox*/ None)
-            .await
-            .ok()?;
-        let candidates = self.local_candidates_for_executor_script(&script, version_match);
+        let script = file_system.canonicalize(&script).await.ok()?;
+        let candidates = self.local_candidates_for_executor_script(&script);
         if candidates.is_empty() {
             return None;
         }
         let metadata = file_system
-            .get_metadata(
-                &script,
-                GetMetadataOptions::default(),
-                /*sandbox*/ None,
-            )
+            .get_metadata(&script, GetMetadataOptions::default())
             .await
             .ok()?;
         if !metadata.is_file
@@ -405,32 +282,28 @@ impl TrustedPluginRoots {
             return None;
         }
         let contents = file_system
-            .read_file(&script, ReadFileOptions::default(), /*sandbox*/ None)
+            .read_file(&script, ReadFileOptions::default())
             .await
             .ok()?;
         let mut matches = candidates
             .into_iter()
             .filter(|candidate| contents == candidate.contents);
         let candidate = matches.next()?;
-        match version_match {
-            PluginVersionMatch::Any => matches
-                .all(|other| other.matched.attribution() == candidate.matched.attribution())
-                .then_some(candidate),
-            PluginVersionMatch::Exact => matches.next().is_none().then_some(candidate),
-        }
+        matches
+            .all(|other| other.matched.attribution() == candidate.matched.attribution())
+            .then_some(candidate)
     }
 
     fn local_candidates_for_executor_script(
         &self,
         script: &PathUri,
-        version_match: PluginVersionMatch,
     ) -> Vec<ExecutorAttributionCandidate<'_>> {
         let suffixes = normalized_script_suffixes(script);
         self.roots
             .iter()
             .filter_map(|root| {
                 let (script, normalized_relative_path) = suffixes.iter().find_map(|suffix| {
-                    if !executor_plugin_root_matches(script, root, suffix, version_match) {
+                    if !executor_plugin_root_matches(script, root, suffix) {
                         return None;
                     }
                     let script = root.root.join(suffix).canonicalize().ok()?;
@@ -465,28 +338,11 @@ impl MatchedPluginScript<'_> {
             normalized_relative_path: self.normalized_relative_path.clone(),
         }
     }
-
-    fn metrics_operation(&self) -> Option<ResolvedPluginMetricsOperation> {
-        Some(ResolvedPluginMetricsOperation {
-            plugin_id: self.root.plugin_id.clone(),
-            operation: self
-                .root
-                .metrics_operations_by_path
-                .get(&self.normalized_relative_path)?
-                .clone(),
-        })
-    }
 }
 
 struct ExecutorAttributionCandidate<'a> {
     matched: MatchedPluginScript<'a>,
     contents: Vec<u8>,
-}
-
-#[derive(Clone, Copy)]
-enum PluginVersionMatch {
-    Any,
-    Exact,
 }
 
 fn normalized_script_suffixes(script: &PathUri) -> Vec<String> {
@@ -507,7 +363,6 @@ fn executor_plugin_root_matches(
     script: &PathUri,
     trusted: &TrustedPluginRoot,
     relative_path: &str,
-    version_match: PluginVersionMatch,
 ) -> bool {
     let relative_depth = relative_path.split('/').count();
     let Some(root) = script.ancestors().nth(relative_depth) else {
@@ -522,12 +377,7 @@ fn executor_plugin_root_matches(
     )) else {
         return false;
     };
-    match version_match {
-        PluginVersionMatch::Any => root.parent().as_ref() == Some(&plugin_root),
-        PluginVersionMatch::Exact => plugin_root
-            .join(&trusted.version)
-            .is_ok_and(|expected| expected == root),
-    }
+    root.parent().as_ref() == Some(&plugin_root)
 }
 
 /// Returns the structurally parsed arguments following a single script command.

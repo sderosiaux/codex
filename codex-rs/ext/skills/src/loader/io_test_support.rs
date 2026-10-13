@@ -9,7 +9,6 @@ use codex_exec_server::ExecutorFileSystem;
 use codex_exec_server::ExecutorFileSystemFuture;
 use codex_exec_server::FileMetadata;
 use codex_exec_server::FileSystemReadStream;
-use codex_exec_server::FileSystemSandboxContext;
 use codex_exec_server::GetMetadataOptions;
 use codex_exec_server::ReadDirectoryEntry;
 use codex_exec_server::ReadFileOptions;
@@ -88,19 +87,14 @@ impl<'a> RecordingFileSystem<'a> {
 }
 
 impl ExecutorFileSystem for RecordingFileSystem<'_> {
-    fn canonicalize<'a>(
-        &'a self,
-        path: &'a PathUri,
-        sandbox: Option<&'a FileSystemSandboxContext>,
-    ) -> ExecutorFileSystemFuture<'a, PathUri> {
-        self.inner.canonicalize(path, sandbox)
+    fn canonicalize<'a>(&'a self, path: &'a PathUri) -> ExecutorFileSystemFuture<'a, PathUri> {
+        self.inner.canonicalize(path)
     }
 
     fn read_file<'a>(
         &'a self,
         path: &'a PathUri,
         options: ReadFileOptions,
-        sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, Vec<u8>> {
         self.read_files
             .lock()
@@ -110,15 +104,14 @@ impl ExecutorFileSystem for RecordingFileSystem<'_> {
             self.skill_read_started.store(true, Ordering::Release);
             self.skill_read_started_notify.notify_waiters();
         }
-        self.inner.read_file(path, options, sandbox)
+        self.inner.read_file(path, options)
     }
 
     fn read_file_stream<'a>(
         &'a self,
         path: &'a PathUri,
-        sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, FileSystemReadStream> {
-        self.inner.read_file_stream(path, sandbox)
+        self.inner.read_file_stream(path)
     }
 
     fn write_file<'a>(
@@ -126,25 +119,22 @@ impl ExecutorFileSystem for RecordingFileSystem<'_> {
         path: &'a PathUri,
         contents: Vec<u8>,
         options: WriteFileOptions,
-        sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, ()> {
-        self.inner.write_file(path, contents, options, sandbox)
+        self.inner.write_file(path, contents, options)
     }
 
     fn create_directory<'a>(
         &'a self,
         path: &'a PathUri,
         options: CreateDirectoryOptions,
-        sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, ()> {
-        self.inner.create_directory(path, options, sandbox)
+        self.inner.create_directory(path, options)
     }
 
     fn get_metadata<'a>(
         &'a self,
         path: &'a PathUri,
         options: GetMetadataOptions,
-        sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, FileMetadata> {
         self.metadata_files
             .lock()
@@ -163,30 +153,28 @@ impl ExecutorFileSystem for RecordingFileSystem<'_> {
                     }
                     notified.await;
                 }
-                self.inner.get_metadata(path, options, sandbox).await
+                self.inner.get_metadata(path, options).await
             });
         }
-        self.inner.get_metadata(path, options, sandbox)
+        self.inner.get_metadata(path, options)
     }
 
     fn read_directory<'a>(
         &'a self,
         path: &'a PathUri,
-        sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, Vec<ReadDirectoryEntry>> {
-        self.inner.read_directory(path, sandbox)
+        self.inner.read_directory(path)
     }
 
     fn walk<'a>(
         &'a self,
         path: &'a PathUri,
         options: WalkOptions,
-        sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, WalkOutcome> {
         self.walks.fetch_add(/*val*/ 1, Ordering::AcqRel);
         self.walk_started.notify_waiters();
         if self.blocked_walk_root.as_ref() != Some(path) {
-            return self.inner.walk(path, options, sandbox);
+            return self.inner.walk(path, options);
         }
         Box::pin(async move {
             self.blocked_walk_gate
@@ -194,7 +182,7 @@ impl ExecutorFileSystem for RecordingFileSystem<'_> {
                 .await
                 .expect("blocked walk gate should remain open")
                 .forget();
-            self.inner.walk(path, options, sandbox).await
+            self.inner.walk(path, options).await
         })
     }
 
@@ -202,9 +190,8 @@ impl ExecutorFileSystem for RecordingFileSystem<'_> {
         &'a self,
         path: &'a PathUri,
         options: RemoveOptions,
-        sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, ()> {
-        self.inner.remove(path, options, sandbox)
+        self.inner.remove(path, options)
     }
 
     fn copy<'a>(
@@ -212,9 +199,7 @@ impl ExecutorFileSystem for RecordingFileSystem<'_> {
         source_path: &'a PathUri,
         destination_path: &'a PathUri,
         options: CopyOptions,
-        sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, ()> {
-        self.inner
-            .copy(source_path, destination_path, options, sandbox)
+        self.inner.copy(source_path, destination_path, options)
     }
 }

@@ -232,7 +232,6 @@ async fn live_global_removal_preserves_repository_instructions(
                 &executor_path_uri(cwd.join(GLOBAL_AGENTS_FILENAME))?,
                 PROJECT_INSTRUCTIONS.as_bytes().to_vec(),
                 Default::default(),
-                /*sandbox*/ None,
             )
             .await?;
             Ok(())
@@ -299,10 +298,7 @@ async fn global_instructions_refresh_after_a_tool_in_the_same_turn() -> Result<(
     let mut builder = test_codex()
         .with_home(Arc::clone(&home))
         .with_config(|config| {
-            config
-                .features
-                .enable(Feature::DefaultModeRequestUserInput)
-                .expect("test config should allow request-user-input feature");
+            config.features.enable(Feature::DefaultModeRequestUserInput);
         });
     let test = builder.build_with_auto_env(&server).await?;
     test.codex

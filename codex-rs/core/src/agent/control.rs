@@ -13,7 +13,6 @@ use crate::config::Config;
 use crate::config::RolloutBudgetConfig;
 use crate::context::SubagentNotification;
 use crate::environment_selection::TurnEnvironmentSnapshot;
-use crate::session::emit_subagent_session_started;
 use crate::session_prefix::format_inter_agent_completion_message;
 use crate::thread_manager::ResumeThreadWithHistoryOptions;
 use crate::thread_manager::ThreadIdGenerator;
@@ -75,16 +74,13 @@ mod mailbox;
 mod residency;
 pub use residency::ThreadEvictionOutcome;
 mod resume;
-mod root_handoff;
 mod runtime;
 mod runtime_context;
-mod sender_context;
 mod service_tier;
 mod spawn;
 mod spawn_guard;
 mod spawn_telemetry;
 mod target;
-mod user_authorization;
 mod watch;
 
 /// Per-session controller handle for a local agent tree.
@@ -640,28 +636,6 @@ impl LocalAgentControl {
                 .snapshot()
                 .await,
         )
-    }
-
-    async fn inherited_exec_policy_for_source(
-        &self,
-        state: &Arc<ThreadManagerState>,
-        session_source: Option<&SessionSource>,
-        child_config: &Config,
-    ) -> Option<Arc<crate::exec_policy::ExecPolicyManager>> {
-        let Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-            parent_thread_id, ..
-        })) = session_source
-        else {
-            return None;
-        };
-
-        let parent_thread = state.get_thread(*parent_thread_id).await.ok()?;
-        let parent_config = parent_thread.session.get_config().await;
-        if !crate::exec_policy::child_uses_parent_exec_policy(&parent_config, child_config) {
-            return None;
-        }
-
-        Some(Arc::clone(&parent_thread.session.services.exec_policy))
     }
 
     async fn persist_thread_spawn_edge_for_source(

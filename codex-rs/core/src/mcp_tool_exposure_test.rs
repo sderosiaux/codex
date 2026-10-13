@@ -125,7 +125,7 @@ async fn agent_plugin_budget_hides_only_overflow_agent_tools() {
         .build()
         .await
         .expect("config should build");
-    let agent_config = config.mcp_servers.get()["agent"].clone();
+    let agent_config = config.mcp_servers["agent"].clone();
     let legacy_config = agent_config.clone();
     let mut catalog = ResolvedMcpCatalog::builder();
     catalog.register(McpServerRegistration::from_plugin(

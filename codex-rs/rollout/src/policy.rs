@@ -35,16 +35,12 @@ pub fn persisted_rollout_item(
                 Cow::Owned(event) => Cow::Owned(RolloutItem::EventMsg(event)),
             })
         }
-        RolloutItem::RealtimeItem(_) => {
-            matches!(history_mode, ThreadHistoryMode::Paginated).then_some(Cow::Borrowed(item))
-        }
         // Persist Codex executive markers so we can analyze flows (e.g., compaction, API turns).
         RolloutItem::Compacted(_)
         | RolloutItem::TurnContext(_)
         | RolloutItem::TokenUsageRecord(_)
         | RolloutItem::WorldState(_)
         | RolloutItem::RetainedContext(_)
-        | RolloutItem::SecurityRiskScore(_)
         | RolloutItem::SessionMeta(_) => Some(Cow::Borrowed(item)),
     }
 }
@@ -160,7 +156,6 @@ fn persisted_event_msg(
         // Transient, non-durable events.
         EventMsg::Error(_)
         | EventMsg::ThreadQueueChanged(_)
-        | EventMsg::GuardianAssessment(_)
         | EventMsg::ExecCommandEnd(_)
         | EventMsg::ViewImageToolCall(_)
         | EventMsg::CollabAgentSpawnEnd(_)
@@ -173,11 +168,6 @@ fn persisted_event_msg(
         | EventMsg::Warning(_)
         | EventMsg::AuthRecoveryStarted(_)
         | EventMsg::AuthRecoveryCompleted(_)
-        | EventMsg::GuardianWarning(_)
-        | EventMsg::RealtimeConversationStarted(_)
-        | EventMsg::RealtimeConversationSdp(_)
-        | EventMsg::RealtimeConversationRealtime(_)
-        | EventMsg::RealtimeConversationClosed(_)
         | EventMsg::SafetyBuffering(_)
         | EventMsg::ModelReroute(_)
         | EventMsg::ModelVerification(_)
@@ -192,17 +182,13 @@ fn persisted_event_msg(
         | EventMsg::ExecCommandBegin(_)
         | EventMsg::TerminalInteraction(_)
         | EventMsg::ExecCommandOutputDelta(_)
-        | EventMsg::ExecApprovalRequest(_)
-        | EventMsg::RequestPermissions(_)
         | EventMsg::RequestUserInput(_)
         | EventMsg::ElicitationRequest(_)
         | EventMsg::ElicitationAbandoned(_)
-        | EventMsg::ApplyPatchApprovalRequest(_)
         | EventMsg::StreamError(_)
         | EventMsg::PatchApplyBegin(_)
         | EventMsg::PatchApplyUpdated(_)
         | EventMsg::TurnDiff(_)
-        | EventMsg::RealtimeConversationListVoicesResponse(_)
         | EventMsg::McpStartupUpdate(_)
         | EventMsg::McpStartupComplete(_)
         | EventMsg::WebSearchBegin(_)

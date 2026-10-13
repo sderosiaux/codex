@@ -26,7 +26,6 @@ pub use app_info::AppInfo;
 pub use app_info::AppMetadata;
 pub use app_info::AppReview;
 pub use app_info::AppScreenshot;
-pub use app_tool_policy::AppToolPolicy;
 pub use app_tool_policy::AppToolPolicyEvaluator;
 pub use app_tool_policy::AppToolPolicyInput;
 pub use app_tool_policy::app_is_enabled;

@@ -15,7 +15,6 @@ use codex_core::ThreadManager;
 use codex_core::TurnInputRequest;
 use codex_core::compact::SUMMARIZATION_PROMPT;
 use codex_core::config::Config;
-use codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_history::CodexHarnessMetadata;
 use codex_history::RolloutItem;
@@ -48,7 +47,7 @@ const AFTER_SECOND_RESUME: &str = "AFTER_SECOND_RESUME";
 const CHECKPOINT_METADATA_KEY: &str = "replacement_history_metadata";
 
 fn network_disabled() -> bool {
-    std::env::var(CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok()
+    std::env::var(core_test_support::sandbox_network_env_var()).is_ok()
 }
 
 fn body_contains_text(body: &str, text: &str) -> bool {

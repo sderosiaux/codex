@@ -55,7 +55,7 @@ pub(crate) enum McpEnvironmentScope<'a> {
 }
 
 impl<'a> McpEnvironmentScope<'a> {
-    pub(crate) fn authority_for(&self, environment_id: &str) -> McpEnvironmentAuthority<'a> {
+    pub(crate) fn authority_for(&self, environment_id: &str) -> McpEnvironmentAuthority {
         let Self::Selected(selections) = *self else {
             return McpEnvironmentAuthority::Unrestricted;
         };
@@ -70,16 +70,12 @@ impl<'a> McpEnvironmentScope<'a> {
             };
         };
         match &selection.config {
-            EnvironmentConfigState::FromThread => McpEnvironmentAuthority::Unrestricted,
+            EnvironmentConfigState::FromThread | EnvironmentConfigState::Ready(_) => {
+                McpEnvironmentAuthority::Unrestricted
+            }
             EnvironmentConfigState::Pending | EnvironmentConfigState::Failed(_) => {
                 McpEnvironmentAuthority::Unavailable
             }
-            EnvironmentConfigState::Ready(config) => config
-                .mcp_policy
-                .as_ref()
-                .map_or(McpEnvironmentAuthority::Unrestricted, |policy| {
-                    McpEnvironmentAuthority::Restricted(policy)
-                }),
         }
     }
 }

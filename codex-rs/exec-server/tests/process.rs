@@ -18,7 +18,6 @@ use codex_exec_server::WriteStatus;
 use codex_exec_server_protocol::JSONRPCError;
 use codex_exec_server_protocol::JSONRPCMessage;
 use codex_exec_server_protocol::JSONRPCResponse;
-use codex_exec_server_protocol::ProcessSandboxType;
 use codex_utils_path_uri::PathUri;
 use common::exec_server::exec_server;
 use common::exec_server::exec_server_with_env;
@@ -87,7 +86,6 @@ async fn exec_server_starts_process_over_websocket() -> anyhow::Result<()> {
         process_start_response,
         ExecResponse {
             process_id: ProcessId::from("proc-1"),
-            sandbox_type: Some(ProcessSandboxType::None),
         }
     );
 
@@ -240,7 +238,6 @@ async fn exec_server_runs_ordinary_requests_serially_by_default() -> anyhow::Res
         serde_json::from_value::<ExecResponse>(result)?,
         ExecResponse {
             process_id: ProcessId::from("proc-serial-queued"),
-            sandbox_type: Some(ProcessSandboxType::None),
         }
     );
 
@@ -356,7 +353,6 @@ async fn exec_server_keeps_control_requests_live_during_long_reads_and_queued_re
         serde_json::from_value::<ExecResponse>(result)?,
         ExecResponse {
             process_id: ProcessId::from("proc-concurrent"),
-            sandbox_type: Some(ProcessSandboxType::None),
         }
     );
     for _ in 1..32 {
@@ -513,7 +509,6 @@ async fn exec_server_defaults_omitted_pipe_stdin_to_closed_stdin() -> anyhow::Re
         process_start_response,
         ExecResponse {
             process_id: ProcessId::from("proc-default-stdin"),
-            sandbox_type: Some(ProcessSandboxType::None),
         }
     );
 

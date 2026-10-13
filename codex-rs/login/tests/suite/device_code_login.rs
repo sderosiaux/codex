@@ -20,8 +20,6 @@ use wiremock::ResponseTemplate;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
 
-use core_test_support::skip_if_no_network;
-
 // ---------- Small helpers  ----------
 
 const WORKSPACE_ID_ALLOWED: &str = "123e4567-e89b-42d3-a456-426614174000";
@@ -121,8 +119,6 @@ fn server_opts(
 
 #[tokio::test]
 async fn device_code_login_integration_succeeds() -> anyhow::Result<()> {
-    skip_if_no_network!(Ok(()));
-
     let codex_home = tempdir().unwrap();
     let mock_server = MockServer::start().await;
 
@@ -168,8 +164,6 @@ async fn device_code_login_integration_succeeds() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn device_code_login_rejects_workspace_mismatch() -> anyhow::Result<()> {
-    skip_if_no_network!(Ok(()));
-
     let codex_home = tempdir().unwrap();
     let mock_server = MockServer::start().await;
 
@@ -215,8 +209,6 @@ async fn device_code_login_rejects_workspace_mismatch() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn device_code_login_integration_handles_usercode_http_failure() -> anyhow::Result<()> {
-    skip_if_no_network!(Ok(()));
-
     let codex_home = tempdir().unwrap();
     let mock_server = MockServer::start().await;
 
@@ -251,8 +243,6 @@ async fn device_code_login_integration_handles_usercode_http_failure() -> anyhow
 #[tokio::test]
 async fn device_code_login_integration_persists_without_api_key_on_exchange_failure()
 -> anyhow::Result<()> {
-    skip_if_no_network!(Ok(()));
-
     let codex_home = tempdir().unwrap();
 
     let mock_server = MockServer::start().await;
@@ -304,8 +294,6 @@ async fn device_code_login_integration_persists_without_api_key_on_exchange_fail
 
 #[tokio::test]
 async fn device_code_login_integration_handles_error_payload() -> anyhow::Result<()> {
-    skip_if_no_network!(Ok(()));
-
     let codex_home = tempdir().unwrap();
 
     // Start WireMock

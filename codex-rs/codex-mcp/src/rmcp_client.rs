@@ -92,9 +92,6 @@ use tracing::Instrument;
 use tracing::instrument;
 use tracing::warn;
 
-/// MCP server capability indicating that Codex should include [`SandboxState`]
-/// in tool-call request `_meta` under this key.
-pub const MCP_SANDBOX_STATE_META_CAPABILITY: &str = "codex/sandbox-state-meta";
 /// Experimental MCP server capability for development and testing only; production servers should
 /// not use it. Its `cacheable: false` property disables sharing tool definitions across connections.
 const MCP_TOOL_CATALOG_CACHE_CAPABILITY: &str = "codex/tool-catalog-cache";
@@ -125,7 +122,6 @@ pub(crate) struct ManagedClient {
     pub(crate) tool_catalog: Arc<ClientToolCatalog>,
     pub(crate) tool_timeout: Option<Duration>,
     pub(crate) server_instructions: Option<String>,
-    pub(crate) server_supports_sandbox_state_meta_capability: bool,
     pub(crate) codex_apps_tools_cache_context: Option<ConnectorRuntimeContext<ToolInfo>>,
 }
 
@@ -935,8 +931,7 @@ async fn start_server_task(
         catalog_item_limit,
         server_capabilities,
     } = params;
-    let send_elicitation =
-        elicitation_requests.make_sender(server_name.clone(), tx_event, &client_mcp_extensions);
+    let send_elicitation = elicitation_requests.make_sender(server_name.clone(), tx_event);
     let mut params =
         mcp_initialize_request_params(client_elicitation_capability, client_mcp_extensions);
     if auth_changes.is_some() {
@@ -988,12 +983,6 @@ async fn start_server_task(
     {
         cache_context.disable();
     }
-    let server_supports_sandbox_state_meta_capability = initialize_result
-        .capabilities
-        .experimental
-        .as_ref()
-        .and_then(|exp| exp.get(MCP_SANDBOX_STATE_META_CAPABILITY))
-        .is_some();
     let codex_apps_tools_cache_context = codex_apps_tools_cache_context.map(|context| {
         if server_disables_tool_catalog_cache {
             context.without_live_scope()
@@ -1065,7 +1054,6 @@ async fn start_server_task(
         )),
         tool_timeout: None,
         server_instructions: initialize_result.instructions,
-        server_supports_sandbox_state_meta_capability,
         codex_apps_tools_cache_context,
     };
 

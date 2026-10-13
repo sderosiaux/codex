@@ -237,14 +237,8 @@ async fn model_switch_program_pair(
                     history,
                     History::ApiKeyEnabledResume | History::ApiKeyCustomProviderResume
                 ) {
-                    config
-                        .features
-                        .enable(Feature::ApiKeyModelDiscovery)
-                        .expect("enable API-key model discovery");
-                    config
-                        .features
-                        .enable(Feature::ApiKeyCyberAccessPrograms)
-                        .expect("enable API-key Cyber access programs");
+                    config.features.enable(Feature::ApiKeyModelDiscovery);
+                    config.features.enable(Feature::ApiKeyCyberAccessPrograms);
                 }
                 if matches!(history, History::ApiKeyCustomProviderResume) {
                     config.model_provider_id = "custom".to_owned();
@@ -452,14 +446,8 @@ async fn api_key_resume_compaction_retries_current_program(
         .with_config(move |config| {
             config.model_catalog = Some(ModelsResponse { models });
             config.model_provider = provider;
-            config
-                .features
-                .enable(Feature::ApiKeyModelDiscovery)
-                .expect("enable API-key model discovery");
-            config
-                .features
-                .enable(Feature::ApiKeyCyberAccessPrograms)
-                .expect("enable API-key Cyber access programs");
+            config.features.enable(Feature::ApiKeyModelDiscovery);
+            config.features.enable(Feature::ApiKeyCyberAccessPrograms);
         });
     let resumed = builder
         .resume(

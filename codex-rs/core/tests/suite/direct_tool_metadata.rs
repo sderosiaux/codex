@@ -23,8 +23,6 @@ use wiremock::matchers::method;
 use wiremock::matchers::path;
 use wiremock::matchers::path_regex;
 
-use codex_protocol::models::PermissionProfile;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_protocol::user_input::UserInput;
@@ -76,22 +74,8 @@ async fn message_budget_sheds_arguments_without_losing_inventory_completeness(
     let mut builder = test_codex().with_config(move |config| {
         config.model_context_window = Some(20_000_000);
         config.model_auto_compact_token_limit = Some(20_000_000);
-        config
-            .features
-            .disable(Feature::TokenBudget)
-            .expect("disable token budget");
-        config
-            .features
-            .disable(Feature::CodeModeOnly)
-            .expect("disable code-mode-only tools");
-        config
-            .features
-            .disable(Feature::CodeMode)
-            .expect("disable code mode");
-        config
-            .features
-            .enable(Feature::ExecutedToolCallMetadata)
-            .expect("enable tool-call metadata");
+        config.features.disable(Feature::TokenBudget);
+        config.features.enable(Feature::ExecutedToolCallMetadata);
         config.update_plan_enabled = true;
         config.model_provider.request_max_retries = Some(0);
         config.model_provider.stream_max_retries = Some(0);
@@ -349,10 +333,7 @@ async fn direct_call_metadata_during_compaction_respects_provider_support(
     skip_if_no_network!(Ok(()));
     let server = start_mock_server().await;
     let mut builder = test_codex().with_config(move |config| {
-        config
-            .features
-            .enable(Feature::ExecutedToolCallMetadata)
-            .expect("enable tool-call metadata");
+        config.features.enable(Feature::ExecutedToolCallMetadata);
         config.update_plan_enabled = true;
         if remote_compaction == RemoteCompactionSupport::Unsupported {
             config.model_provider.name = "OpenAI-compatible test provider".to_string();
@@ -417,7 +398,7 @@ async fn direct_call_metadata_during_compaction_respects_provider_support(
     if !metadata_enabled {
         let current_config = test.codex.config().await;
         let mut config = test.config.clone();
-        config.features.disable(Feature::ExecutedToolCallMetadata)?;
+        config.features.disable(Feature::ExecutedToolCallMetadata);
         let _ = test
             .codex
             .refresh_runtime_config(current_config, config)
@@ -578,12 +559,7 @@ async fn direct_function_and_tool_search_mark_complete_attempts(
         ],
     )
     .await;
-    test.submit_turn_with_approval_and_permission_profile(
-        "exercise direct attempts",
-        AskForApproval::Never,
-        PermissionProfile::Disabled,
-    )
-    .await?;
+    test.submit_turn("exercise direct attempts").await?;
 
     let requests = mock.requests();
     assert_eq!(requests.len(), 2);
@@ -746,32 +722,15 @@ async fn direct_metadata_limit_respects_provider_support(
             Some(format!("{mock_url}/v1").as_str())
         );
         config.model_provider.include_internal_metadata = include_internal_metadata;
-        config.analytics_enabled = Some(true);
-        config
-            .features
-            .enable(Feature::ExecutedToolCallMetadata)
-            .expect("enable executed tool call metadata");
-        config
-            .features
-            .disable(Feature::CodeMode)
-            .expect("disable code mode");
-        config
-            .features
-            .disable(Feature::CodeModeOnly)
-            .expect("disable code-mode-only tools");
+        config.features.enable(Feature::ExecutedToolCallMetadata);
     };
     let mut builder = search_capable_apps_builder(apps.chatgpt_base_url.clone())
         .with_config(configure_metadata.clone());
     // build() always selects the local test environment; all network destinations are the mock.
     let test = builder.build(&server).await?;
-    assert!(test.codex.analytics_enabled());
     wait_for_mcp_server(&test.codex, CODEX_APPS_MCP_SERVER_NAME).await?;
-    test.submit_turn_with_approval_and_permission_profile(
-        "Use [$calendar](app://calendar) to list events twice.",
-        AskForApproval::OnRequest,
-        PermissionProfile::read_only(),
-    )
-    .await?;
+    test.submit_turn("Use [$calendar](app://calendar) to list events twice.")
+        .await?;
 
     let calls = recorded_apps_tool_calls(&server).await;
     assert_eq!(calls.len(), 2);

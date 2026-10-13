@@ -1,10 +1,8 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use codex_exec_server::LOCAL_ENVIRONMENT_ID;
 use codex_exec_server::MAX_SELECTED_CAPABILITY_ROOTS;
 use codex_exec_server::SelectedCapabilityRootsStatus;
-use codex_execpolicy::Policy;
 use codex_protocol::capabilities::CapabilityRootLocation;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
@@ -12,11 +10,7 @@ use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::EnvironmentConfig;
 use codex_protocol::protocol::EnvironmentConfigState;
 use codex_protocol::protocol::TurnEnvironmentSelection;
-use codex_protocol::sandbox::SandboxType;
 
-use crate::config::ConstraintError;
-use crate::config::ConstraintResult;
-use crate::config::NetworkProxySpec;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::session::session::Session;
 use crate::session::session::SessionConfiguration;
@@ -25,31 +19,23 @@ use crate::session::session::SessionSettingsUpdate;
 /// Defaults for environments that inherit their configuration from the running turn.
 pub(crate) struct ThreadEnvironmentDefaults {
     pub(crate) common: EnvironmentConfig,
-    // Chosen once when the session starts; it does not apply to remote environments.
-    local_windows_sandbox_type: SandboxType,
 }
 
 impl ThreadEnvironmentDefaults {
-    pub(crate) fn new(common: EnvironmentConfig, local_windows_sandbox_type: SandboxType) -> Self {
-        Self {
-            common,
-            local_windows_sandbox_type,
-        }
+    pub(crate) fn new(common: EnvironmentConfig) -> Self {
+        Self { common }
     }
 
     pub(crate) fn for_selection(&self, selection: &TurnEnvironmentSelection) -> EnvironmentConfig {
         let mut config = self.common.clone();
         config.workspace_roots = selection.workspace_roots.clone();
-        if selection.environment_id == LOCAL_ENVIRONMENT_ID {
-            config.windows_sandbox_type = self.local_windows_sandbox_type;
-        }
         config
     }
 }
 
 pub(super) fn validate_environment_configs(
     selections: &[TurnEnvironmentSelection],
-) -> ConstraintResult<()> {
+) -> CodexResult<()> {
     for selection in selections {
         match &selection.config {
             EnvironmentConfigState::FromThread
@@ -57,12 +43,7 @@ pub(super) fn validate_environment_configs(
             | EnvironmentConfigState::Failed(_) => {}
             EnvironmentConfigState::Ready(config) => {
                 validate_environment_config(selection, config).map_err(|error| {
-                    ConstraintError::InvalidValue {
-                        field_name: "environments",
-                        candidate: "environment configuration".to_string(),
-                        allowed: format!("valid environment configuration ({error})"),
-                        requirement_source: codex_config::RequirementSource::Unknown,
-                    }
+                    CodexErr::InvalidRequest(format!("invalid environment configuration: {error}"))
                 })?;
             }
         }
@@ -73,7 +54,7 @@ pub(super) fn validate_environment_configs(
 pub(super) fn ensure_configs_stay_owner_provided(
     current: &[TurnEnvironmentSelection],
     proposed: &[TurnEnvironmentSelection],
-) -> ConstraintResult<()> {
+) -> CodexResult<()> {
     if let Some(environment) = proposed.iter().find(|environment| {
         environment.config == EnvironmentConfigState::FromThread
             && current.iter().any(|current| {
@@ -81,12 +62,10 @@ pub(super) fn ensure_configs_stay_owner_provided(
                     && current.config != EnvironmentConfigState::FromThread
             })
     }) {
-        return Err(ConstraintError::InvalidValue {
-            field_name: "environments",
-            candidate: environment.environment_id.clone(),
-            allowed: "owner-provided environment configuration".to_string(),
-            requirement_source: codex_config::RequirementSource::Unknown,
-        });
+        return Err(CodexErr::InvalidRequest(format!(
+            "environment `{}` must keep its owner-provided configuration",
+            environment.environment_id
+        )));
     }
     Ok(())
 }
@@ -95,48 +74,11 @@ fn validate_environment_config(
     selection: &TurnEnvironmentSelection,
     config: &EnvironmentConfig,
 ) -> CodexResult<()> {
-    if let Some(policy) = config.network_policy.as_ref() {
-        if selection.environment_id == LOCAL_ENVIRONMENT_ID {
-            return Err(CodexErr::InvalidRequest(
-                "attachment-owned network policy requires a remote executor".to_string(),
-            ));
-        }
-        if config
-            .exec_policy
-            .as_ref()
-            .is_some_and(|policy| !policy.as_ref().network_rules().is_empty())
-        {
-            return Err(CodexErr::InvalidRequest(
-                "environment network restrictions must use network_policy".to_string(),
-            ));
-        }
-        // Validate owner policy on its own; controller compatibility is checked at execution.
-        NetworkProxySpec::for_environment(
-            /*controller*/ None,
-            policy,
-            config.permission_profile.permission_profile(),
-            &Policy::empty(),
-            codex_network_proxy::LocalBindingPolicy::DefaultFalse,
-        )
-        .map_err(|error| {
-            CodexErr::InvalidRequest(format!("invalid environment network policy: {error}"))
-        })?;
-    }
     if config.selected_capability_roots.len() > MAX_SELECTED_CAPABILITY_ROOTS {
         return Err(CodexErr::InvalidRequest(format!(
             "environment readiness contains more than {MAX_SELECTED_CAPABILITY_ROOTS} selected capability roots"
         )));
     }
-    if config
-        .exec_policy
-        .as_ref()
-        .is_some_and(|policy| !policy.as_ref().get_allowed_prefixes().is_empty())
-    {
-        return Err(CodexErr::InvalidRequest(
-            "environment command policy cannot contain allow rules".to_string(),
-        ));
-    }
-
     let mut root_ids = HashSet::with_capacity(config.selected_capability_roots.len());
     for root in &config.selected_capability_roots {
         let CapabilityRootLocation::Environment { environment_id, .. } = &root.location;
@@ -163,7 +105,7 @@ impl Session {
         &self,
         current: &SessionConfiguration,
         updates: &SessionSettingsUpdate,
-    ) -> ConstraintResult<SessionConfiguration> {
+    ) -> CodexResult<SessionConfiguration> {
         let current_environments = &current.environments;
         if let Some(environments) = &updates.environments {
             ensure_configs_stay_owner_provided(current_environments, &environments.environments)?;

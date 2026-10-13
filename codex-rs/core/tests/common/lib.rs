@@ -8,9 +8,7 @@ use ctor::ctor;
 use std::sync::OnceLock;
 use tempfile::TempDir;
 
-use codex_config::CloudConfigBundleLoader;
 use codex_config::LoaderOverrides;
-use codex_config::test_support::CloudConfigBundleFixture;
 use codex_core::CodexThread;
 use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
@@ -25,17 +23,15 @@ use std::path::Path;
 use std::path::PathBuf;
 
 pub mod apps_test_server;
-#[cfg(unix)]
-pub mod code_mode_host;
 pub mod context_snapshot;
 pub mod exec_server;
 pub mod hooks;
 pub mod process;
+pub mod proxy_env;
 pub mod responses;
 pub mod startup;
 pub mod streaming_sse;
 pub mod test_codex;
-pub mod test_codex_exec;
 mod test_environment;
 pub mod tracing;
 
@@ -197,69 +193,13 @@ pub fn fetch_dotslash_file(
 /// temporary directory. Using a per-test directory keeps tests hermetic and
 /// avoids clobbering a developer’s real `~/.codex`.
 pub async fn load_default_config_for_test(codex_home: &TempDir) -> Config {
-    load_default_config_for_test_with_cloud_config_bundle(
-        codex_home,
-        CloudConfigBundleLoader::default(),
-    )
-    .await
-}
-
-/// Returns a default `Config` with test-provided cloud bundle requirements applied.
-/// during config construction.
-pub async fn load_default_config_for_test_with_cloud_config_bundle(
-    codex_home: &TempDir,
-    cloud_config_bundle: CloudConfigBundleLoader,
-) -> Config {
     ConfigBuilder::default()
         .loader_overrides(LoaderOverrides::without_managed_config_for_tests())
         .codex_home(codex_home.path().to_path_buf())
-        .harness_overrides(default_test_overrides())
-        .cloud_config_bundle(cloud_config_bundle)
+        .harness_overrides(ConfigOverrides::default())
         .build()
         .await
         .expect("defaults for test should always succeed")
-}
-
-pub fn managed_network_requirements_loader() -> CloudConfigBundleLoader {
-    CloudConfigBundleFixture::loader_with_enterprise_requirement(
-        r#"
-[experimental_network]
-enabled = true
-allow_local_binding = true
-"#,
-    )
-}
-
-#[cfg(target_os = "linux")]
-fn default_test_overrides() -> ConfigOverrides {
-    ConfigOverrides {
-        codex_linux_sandbox_exe: Some(
-            find_codex_linux_sandbox_exe().expect("should find binary for codex-linux-sandbox"),
-        ),
-        ..ConfigOverrides::default()
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-fn default_test_overrides() -> ConfigOverrides {
-    ConfigOverrides::default()
-}
-
-#[cfg(target_os = "linux")]
-pub fn find_codex_linux_sandbox_exe() -> Result<PathBuf, CargoBinError> {
-    if let Some(path) = TEST_ARG0_PATH_ENTRY
-        .get()
-        .and_then(Option::as_ref)
-        .and_then(|path_entry| path_entry.paths().codex_linux_sandbox_exe.clone())
-    {
-        return Ok(path);
-    }
-
-    if let Ok(path) = std::env::current_exe() {
-        return Ok(path);
-    }
-
-    codex_utils_cargo_bin::cargo_bin("codex-linux-sandbox")
 }
 
 pub async fn wait_for_event<F>(
@@ -400,12 +340,15 @@ where
     }
 }
 
+/// Set by an outer Codex sandbox when these tests themselves run inside one (for example when
+/// another Codex agent runs `cargo test`); nothing in this workspace sets it anymore.
 pub fn sandbox_env_var() -> &'static str {
-    codex_core::spawn::CODEX_SANDBOX_ENV_VAR
+    "CODEX_SANDBOX"
 }
 
+/// Set by an outer Codex sandbox that disables network access for the test process.
 pub fn sandbox_network_env_var() -> &'static str {
-    codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
+    "CODEX_SANDBOX_NETWORK_DISABLED"
 }
 
 pub fn format_with_current_shell(command: &str) -> Vec<String> {
@@ -709,42 +652,6 @@ macro_rules! skip_if_target_windows {
             "a Windows target environment",
             $reason,
         );
-    }};
-}
-
-#[macro_export]
-macro_rules! codex_linux_sandbox_exe_or_skip {
-    () => {{
-        #[cfg(target_os = "linux")]
-        {
-            match $crate::find_codex_linux_sandbox_exe() {
-                Ok(path) => Some(path),
-                Err(err) => {
-                    eprintln!("codex-linux-sandbox binary not available, skipping test: {err}");
-                    return;
-                }
-            }
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            None
-        }
-    }};
-    ($return_value:expr $(,)?) => {{
-        #[cfg(target_os = "linux")]
-        {
-            match $crate::find_codex_linux_sandbox_exe() {
-                Ok(path) => Some(path),
-                Err(err) => {
-                    eprintln!("codex-linux-sandbox binary not available, skipping test: {err}");
-                    return $return_value;
-                }
-            }
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            None
-        }
     }};
 }
 

@@ -41,7 +41,7 @@ struct WebSearchExtensionConfig {
 
 impl From<&Config> for WebSearchExtensionConfig {
     fn from(config: &Config) -> Self {
-        let web_search_mode = config.web_search_mode.value();
+        let web_search_mode = config.web_search_mode;
         Self {
             // Core selects this executor per turn using the feature flag or model metadata.
             available: (config.model_provider.is_openai()

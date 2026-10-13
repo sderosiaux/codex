@@ -67,11 +67,6 @@ impl ElicitationService {
         self.inner.paused.subscribe()
     }
 
-    pub(crate) async fn wait_until_clear(&self) {
-        let mut paused = self.subscribe();
-        let _ = paused.wait_for(|paused| !*paused).await;
-    }
-
     fn decrement(&self) {
         let mut state = self
             .inner

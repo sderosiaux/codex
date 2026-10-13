@@ -157,7 +157,6 @@ pub(super) fn completed_item(
                 id: event.call_id.clone(),
                 changes: event.changes.clone(),
                 status: Some(event.status.clone()),
-                auto_approved: None,
                 stdout: (!event.stdout.is_empty()).then(|| event.stdout.clone()),
                 stderr: (!event.stderr.is_empty()).then(|| event.stderr.clone()),
             }),
@@ -270,7 +269,6 @@ pub(super) fn completed_item(
         EventMsg::ExecCommandEnd(event) => Some((
             TurnItem::CommandExecution(CommandExecutionItem {
                 model_context: None,
-                sandbox_type: None,
                 id: event.call_id.clone(),
                 plugin_id: event.plugin_id.clone(),
                 script_path: event.script_path.clone(),

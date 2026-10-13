@@ -1,6 +1,5 @@
 use super::*;
 use crate::config::ConfigBuilder;
-use crate::config::PermissionProfileSnapshot;
 use crate::context::ContextualUserFragment;
 use crate::environment_selection::EnvironmentConfigOrigin;
 use crate::environment_selection::TurnEnvironmentSnapshot;
@@ -8,15 +7,12 @@ use crate::environment_selection::TurnEnvironmentState;
 use crate::session::turn_context::TurnEnvironment;
 use codex_config::ConfigLayerEntry;
 use codex_config::ConfigLayerStack;
-use codex_config::ConfigRequirements;
-use codex_config::ConfigRequirementsToml;
 use codex_exec_server::CopyOptions;
 use codex_exec_server::CreateDirectoryOptions;
 use codex_exec_server::Environment;
 use codex_exec_server::ExecutorFileSystemFuture;
 use codex_exec_server::FileMetadata;
 use codex_exec_server::FileSystemReadStream;
-use codex_exec_server::FileSystemSandboxContext;
 use codex_exec_server::GetMetadataOptions;
 use codex_exec_server::LOCAL_FS;
 use codex_exec_server::ReadDirectoryEntry;
@@ -27,8 +23,6 @@ use codex_exec_server::WalkOutcome;
 use codex_exec_server::WriteFileOptions;
 use codex_extension_api::Instructions;
 use codex_features::Feature;
-use codex_protocol::config_types::WindowsSandboxLevel;
-use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::EnvironmentConfig;
 use codex_protocol::protocol::EnvironmentConfigState;
 use codex_protocol::protocol::TurnEnvironmentSelection;
@@ -82,26 +76,17 @@ impl Default for MetadataCallCounts {
 }
 
 impl FailingFileSystem {
-    async fn canonicalize(
-        &self,
-        _path: &PathUri,
-        _sandbox: Option<&FileSystemSandboxContext>,
-    ) -> io::Result<PathUri> {
+    async fn canonicalize(&self, _path: &PathUri) -> io::Result<PathUri> {
         unreachable!("canonicalize should not be called")
     }
 
-    async fn read_file(
-        &self,
-        path: &PathUri,
-        options: ReadFileOptions,
-        sandbox: Option<&FileSystemSandboxContext>,
-    ) -> io::Result<Vec<u8>> {
+    async fn read_file(&self, path: &PathUri, options: ReadFileOptions) -> io::Result<Vec<u8>> {
         if path.to_abs_path()? == self.path
             && let InjectedFailure::Read(kind) = self.failure
         {
             return Err(io::Error::new(kind, "injected read failure"));
         }
-        LOCAL_FS.read_file(path, options, sandbox).await
+        LOCAL_FS.read_file(path, options).await
     }
 
     async fn write_file(
@@ -109,7 +94,6 @@ impl FailingFileSystem {
         _path: &PathUri,
         _contents: Vec<u8>,
         _options: WriteFileOptions,
-        _sandbox: Option<&FileSystemSandboxContext>,
     ) -> io::Result<()> {
         unreachable!("write_file should not be called")
     }
@@ -118,7 +102,6 @@ impl FailingFileSystem {
         &self,
         _path: &PathUri,
         _create_directory_options: CreateDirectoryOptions,
-        _sandbox: Option<&FileSystemSandboxContext>,
     ) -> io::Result<()> {
         unreachable!("create_directory should not be called")
     }
@@ -127,7 +110,6 @@ impl FailingFileSystem {
         &self,
         path: &PathUri,
         options: GetMetadataOptions,
-        sandbox: Option<&FileSystemSandboxContext>,
     ) -> io::Result<FileMetadata> {
         self.metadata_calls
             .paths
@@ -150,7 +132,7 @@ impl FailingFileSystem {
                     .await
                     .expect("metadata release semaphore")
                     .forget();
-                LOCAL_FS.get_metadata(path, options, sandbox).await
+                LOCAL_FS.get_metadata(path, options).await
             }
             InjectedFailure::MetadataBlockedByFilenamePrefix(prefix)
                 if path_abs
@@ -164,7 +146,7 @@ impl FailingFileSystem {
                     .await
                     .expect("metadata release semaphore")
                     .forget();
-                LOCAL_FS.get_metadata(path, options, sandbox).await
+                LOCAL_FS.get_metadata(path, options).await
             }
             InjectedFailure::MetadataPending if path_abs == self.path => {
                 std::future::pending().await
@@ -174,24 +156,15 @@ impl FailingFileSystem {
             | InjectedFailure::MetadataBlocked
             | InjectedFailure::MetadataBlockedByFilenamePrefix(_)
             | InjectedFailure::MetadataPending
-            | InjectedFailure::Read(_) => LOCAL_FS.get_metadata(path, options, sandbox).await,
+            | InjectedFailure::Read(_) => LOCAL_FS.get_metadata(path, options).await,
         }
     }
 
-    async fn read_directory(
-        &self,
-        _path: &PathUri,
-        _sandbox: Option<&FileSystemSandboxContext>,
-    ) -> io::Result<Vec<ReadDirectoryEntry>> {
+    async fn read_directory(&self, _path: &PathUri) -> io::Result<Vec<ReadDirectoryEntry>> {
         unreachable!("read_directory should not be called")
     }
 
-    async fn remove(
-        &self,
-        _path: &PathUri,
-        _remove_options: RemoveOptions,
-        _sandbox: Option<&FileSystemSandboxContext>,
-    ) -> io::Result<()> {
+    async fn remove(&self, _path: &PathUri, _remove_options: RemoveOptions) -> io::Result<()> {
         unreachable!("remove should not be called")
     }
 
@@ -200,34 +173,27 @@ impl FailingFileSystem {
         _source_path: &PathUri,
         _destination_path: &PathUri,
         _copy_options: CopyOptions,
-        _sandbox: Option<&FileSystemSandboxContext>,
     ) -> io::Result<()> {
         unreachable!("copy should not be called")
     }
 }
 
 impl ExecutorFileSystem for FailingFileSystem {
-    fn canonicalize<'a>(
-        &'a self,
-        path: &'a PathUri,
-        sandbox: Option<&'a FileSystemSandboxContext>,
-    ) -> ExecutorFileSystemFuture<'a, PathUri> {
-        Box::pin(FailingFileSystem::canonicalize(self, path, sandbox))
+    fn canonicalize<'a>(&'a self, path: &'a PathUri) -> ExecutorFileSystemFuture<'a, PathUri> {
+        Box::pin(FailingFileSystem::canonicalize(self, path))
     }
 
     fn read_file<'a>(
         &'a self,
         path: &'a PathUri,
         options: ReadFileOptions,
-        sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, Vec<u8>> {
-        Box::pin(FailingFileSystem::read_file(self, path, options, sandbox))
+        Box::pin(FailingFileSystem::read_file(self, path, options))
     }
 
     fn read_file_stream<'a>(
         &'a self,
         _path: &'a PathUri,
-        _sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, FileSystemReadStream> {
         Box::pin(async {
             Err(io::Error::new(
@@ -242,48 +208,37 @@ impl ExecutorFileSystem for FailingFileSystem {
         path: &'a PathUri,
         contents: Vec<u8>,
         options: WriteFileOptions,
-        sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, ()> {
-        Box::pin(FailingFileSystem::write_file(
-            self, path, contents, options, sandbox,
-        ))
+        Box::pin(FailingFileSystem::write_file(self, path, contents, options))
     }
 
     fn create_directory<'a>(
         &'a self,
         path: &'a PathUri,
         options: CreateDirectoryOptions,
-        sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, ()> {
-        Box::pin(FailingFileSystem::create_directory(
-            self, path, options, sandbox,
-        ))
+        Box::pin(FailingFileSystem::create_directory(self, path, options))
     }
 
     fn get_metadata<'a>(
         &'a self,
         path: &'a PathUri,
         options: GetMetadataOptions,
-        sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, FileMetadata> {
-        Box::pin(FailingFileSystem::get_metadata(
-            self, path, options, sandbox,
-        ))
+        Box::pin(FailingFileSystem::get_metadata(self, path, options))
     }
 
     fn read_directory<'a>(
         &'a self,
         path: &'a PathUri,
-        sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, Vec<ReadDirectoryEntry>> {
-        Box::pin(FailingFileSystem::read_directory(self, path, sandbox))
+        Box::pin(FailingFileSystem::read_directory(self, path))
     }
 
     fn walk<'a>(
         &'a self,
         _path: &'a PathUri,
         _options: WalkOptions,
-        _sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, WalkOutcome> {
         Box::pin(async { unreachable!("walk should not be called") })
     }
@@ -292,9 +247,8 @@ impl ExecutorFileSystem for FailingFileSystem {
         &'a self,
         path: &'a PathUri,
         options: RemoveOptions,
-        sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, ()> {
-        Box::pin(FailingFileSystem::remove(self, path, options, sandbox))
+        Box::pin(FailingFileSystem::remove(self, path, options))
     }
 
     fn copy<'a>(
@@ -302,14 +256,12 @@ impl ExecutorFileSystem for FailingFileSystem {
         source_path: &'a PathUri,
         destination_path: &'a PathUri,
         options: CopyOptions,
-        sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, ()> {
         Box::pin(FailingFileSystem::copy(
             self,
             source_path,
             destination_path,
             options,
-            sandbox,
         ))
     }
 }
@@ -354,7 +306,6 @@ async fn agents_md_paths(config: &TestConfig) -> std::io::Result<Vec<PathUri>> {
         &config.config,
         &PathUri::from_abs_path(&config.cwd),
         LOCAL_FS.as_ref(),
-        /*sandbox*/ None,
     )
     .await
 }
@@ -375,16 +326,7 @@ fn resolved_local_environments<const N: usize>(
                         config: EnvironmentConfigState::Ready(EnvironmentConfig {
                             allow_login_shell: true,
                             workspace_roots: Vec::new(),
-                            windows_sandbox_level: WindowsSandboxLevel::Disabled,
-                            windows_sandbox_type: codex_protocol::sandbox::SandboxType::None,
-                            use_legacy_landlock: false,
-                            permission_profile: PermissionProfileSnapshot::legacy(
-                                PermissionProfile::read_only(),
-                            ),
                             shell_environment_policy: Default::default(),
-                            exec_policy: None,
-                            mcp_policy: None,
-                            network_policy: None,
                             selected_capability_roots: Vec::new(),
                         }),
                     },
@@ -739,7 +681,6 @@ async fn read_agents_md_loads_cwd_instructions_when_parent_markers_are_unreadabl
         "local",
         &PathUri::from_abs_path(&cwd),
         config.project_doc_max_bytes,
-        /*sandbox*/ None,
     )
     .await
     .expect("unreadable parent markers should not hide cwd instructions")
@@ -766,7 +707,6 @@ async fn read_agents_md_propagates_read_errors() {
         "local",
         &PathUri::from_abs_path(&cwd),
         config.project_doc_max_bytes,
-        /*sandbox*/ None,
     )
     .await
     .expect_err("read error");
@@ -792,7 +732,6 @@ async fn read_agents_md_ignores_files_removed_after_discovery() {
         "local",
         &PathUri::from_abs_path(&cwd),
         config.project_doc_max_bytes,
-        /*sandbox*/ None,
     )
     .await
     .expect("removed file is recoverable");
@@ -825,7 +764,7 @@ async fn marker_search_does_not_wait_for_a_higher_ancestor() {
 
     let paths = tokio::time::timeout(
         std::time::Duration::from_secs(1),
-        super::agents_md_paths(&config.config, &cwd, &fs, /*sandbox*/ None),
+        super::agents_md_paths(&config.config, &cwd, &fs),
     )
     .await
     .expect("nearest marker should complete")
@@ -930,7 +869,7 @@ async fn project_root_marker_search_limits_concurrent_probes_and_preserves_order
         metadata_calls.release.add_permits(max_probe_count);
     };
     let (paths, ()) = tokio::join!(
-        super::agents_md_paths(&config.config, &cwd, &fs, /*sandbox*/ None),
+        super::agents_md_paths(&config.config, &cwd, &fs),
         assertions
     );
     let paths = paths.expect("AGENTS.md discovery");
@@ -976,9 +915,8 @@ async fn agents_md_search_starts_all_directory_probes() {
         failure: InjectedFailure::MetadataBlocked,
         metadata_calls: Arc::clone(&metadata_calls),
     };
-    let search = tokio::spawn(async move {
-        super::agents_md_paths(&config.config, &cwd, &fs, /*sandbox*/ None).await
-    });
+    let search =
+        tokio::spawn(async move { super::agents_md_paths(&config.config, &cwd, &fs).await });
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
             let started = metadata_calls.started.notified();
@@ -1052,7 +990,7 @@ async fn empty_project_root_markers_only_probe_cwd_candidates() {
     };
     let cwd = PathUri::from_abs_path(&config.cwd);
 
-    let paths = super::agents_md_paths(&config.config, &cwd, &fs, /*sandbox*/ None)
+    let paths = super::agents_md_paths(&config.config, &cwd, &fs)
         .await
         .expect("AGENTS.md discovery");
 
@@ -1467,14 +1405,10 @@ async fn project_layers_do_not_override_project_root_markers() {
             ),
         )
     };
-    config.config_layer_stack = ConfigLayerStack::new(
-        vec![
-            project_layer(root.path().join(".codex").abs(), ".ignored-root-marker"),
-            project_layer(config.cwd.join(".codex"), ".ignored-nested-marker"),
-        ],
-        ConfigRequirements::default(),
-        ConfigRequirementsToml::default(),
-    )
+    config.config_layer_stack = ConfigLayerStack::new(vec![
+        project_layer(root.path().join(".codex").abs(), ".ignored-root-marker"),
+        project_layer(config.cwd.join(".codex"), ".ignored-nested-marker"),
+    ])
     .expect("valid project layer ordering");
 
     let discovery = agents_md_paths(&config).await.expect("discover paths");
@@ -1621,7 +1555,7 @@ async fn fallback_paths_are_rejected_before_filesystem_probes() {
             failure: InjectedFailure::MetadataNotFound,
             metadata_calls: Arc::clone(&metadata_calls),
         };
-        let paths = super::agents_md_paths(&cfg, &cwd, &filesystem, /*sandbox*/ None)
+        let paths = super::agents_md_paths(&cfg, &cwd, &filesystem)
             .await
             .expect("discover paths");
 
@@ -1768,9 +1702,7 @@ async fn skills_are_not_appended_to_agents_md() {
 async fn apps_feature_does_not_emit_user_instructions_by_itself() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut cfg = make_config(&tmp, /*limit*/ 4096, /*instructions*/ None).await;
-    cfg.features
-        .enable(Feature::Apps)
-        .expect("test config should allow apps");
+    cfg.features.enable(Feature::Apps);
 
     let res = get_user_instructions(&cfg).await;
     assert_eq!(res, None);
@@ -1782,9 +1714,7 @@ async fn apps_feature_does_not_append_to_agents_md_user_instructions() {
     fs::write(tmp.path().join("AGENTS.md"), "base doc").unwrap();
 
     let mut cfg = make_config(&tmp, /*limit*/ 4096, /*instructions*/ None).await;
-    cfg.features
-        .enable(Feature::Apps)
-        .expect("test config should allow apps");
+    cfg.features.enable(Feature::Apps);
 
     let res = get_user_instructions(&cfg)
         .await

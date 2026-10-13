@@ -20,7 +20,6 @@ use tracing::warn;
 
 use super::LocalThreadStore;
 use super::helpers::git_info_from_parts;
-use super::helpers::permission_profile_to_metadata_value;
 use super::live_writer;
 use super::pending_thread_metadata;
 use super::thread_rollout_resolver;
@@ -493,12 +492,6 @@ async fn apply_metadata_update(
             if let Some(cli_version) = patch.cli_version {
                 metadata.cli_version = cli_version;
             }
-            if let Some(approval_mode) = patch.approval_mode {
-                metadata.approval_mode = enum_to_string(&approval_mode);
-            }
-            if let Some(permission_profile) = patch.permission_profile {
-                metadata.sandbox_policy = permission_profile_to_metadata_value(&permission_profile);
-            }
             if let Some(token_usage) = patch.token_usage {
                 metadata.tokens_used = token_usage.total_tokens.max(0);
             }
@@ -771,8 +764,6 @@ fn has_observed_metadata_facts(patch: &ThreadMetadataPatch) -> bool {
         || patch.agent_path.is_some()
         || patch.cwd.is_some()
         || patch.cli_version.is_some()
-        || patch.approval_mode.is_some()
-        || patch.permission_profile.is_some()
         || patch.token_usage.is_some()
         || patch.first_user_message.is_some()
 }
@@ -939,7 +930,6 @@ fn rollout_path_is_archived(store: &LocalThreadStore, path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use codex_protocol::models::PermissionProfile;
     use codex_protocol::openai_models::ReasoningEffort;
     use codex_protocol::protocol::ThreadHistoryMode;
     use codex_utils_absolute_path::test_support::PathExt;
@@ -1593,7 +1583,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn update_thread_metadata_updates_permission_profile_and_reasoning_effort() {
+    async fn update_thread_metadata_updates_reasoning_effort() {
         let home = TempDir::new().expect("temp dir");
         let config = test_config(home.path());
         let runtime = codex_state::StateRuntime::init(
@@ -1611,17 +1601,16 @@ mod tests {
             .update_thread_metadata(UpdateThreadMetadataParams {
                 thread_id,
                 patch: ThreadMetadataPatch {
-                    permission_profile: Some(PermissionProfile::Disabled),
                     reasoning_effort: Some(Some(ReasoningEffort::Ultra)),
                     ..Default::default()
                 },
                 include_archived: false,
             })
             .await
-            .expect("set permission profile")
+            .expect("set reasoning effort")
             .expect("local store returns updated thread");
 
-        assert_eq!(thread.permission_profile, PermissionProfile::Disabled);
+        assert_eq!(thread.reasoning_effort, Some(ReasoningEffort::Ultra));
         let thread = store
             .update_thread_metadata(UpdateThreadMetadataParams {
                 thread_id,
@@ -1641,11 +1630,6 @@ mod tests {
             .await
             .expect("sqlite metadata read")
             .expect("sqlite metadata");
-        let permission_profile: PermissionProfile = PermissionProfile::Disabled;
-        assert_eq!(
-            metadata.sandbox_policy,
-            serde_json::to_string(&permission_profile).expect("serialize profile")
-        );
         assert_eq!(metadata.reasoning_effort, None);
     }
 

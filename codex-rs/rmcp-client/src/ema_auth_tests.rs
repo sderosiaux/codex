@@ -353,36 +353,20 @@ async fn legacy_challenges_require_a_recognized_discovery_rejection() -> Result<
 }
 
 #[test]
-fn discovery_rejects_private_or_ambiguous_issuer_destinations() -> Result<()> {
-    let resource = Url::parse("https://mcp.example/mcp")?;
+fn discovery_rejects_ambiguous_issuer_destinations() -> Result<()> {
     for issuer in [
         "http://issuer.example",
-        "https://10.0.0.1",
-        "https://127.0.0.1",
-        "https://169.254.169.254",
-        "https://100.64.0.1",
-        "https://198.19.0.1",
-        "https://192.0.2.1",
-        "https://[::ffff:192.0.2.1]",
-        "https://[fd00::1]",
-        "https://[::ffff:169.254.169.254]",
-        "https://metadata.google.internal",
-        "https://metadata.azure.internal",
-        "https://test.localhost",
         "https://issuer.example?query=1",
         "https://issuer.example#fragment",
         "https://credentials@issuer.example",
     ] {
         assert!(
-            validate_ema_metadata_issuer(&resource, &Url::parse(issuer)?).is_err(),
+            validate_ema_metadata_issuer(&Url::parse(issuer)?).is_err(),
             "{issuer}"
         );
     }
-    validate_ema_metadata_issuer(&resource, &Url::parse("https://issuer.example/tenant")?)?;
-    validate_ema_metadata_issuer(
-        &Url::parse("http://127.0.0.1/mcp")?,
-        &Url::parse("http://[::1]:1234")?,
-    )?;
+    validate_ema_metadata_issuer(&Url::parse("https://issuer.example/tenant")?)?;
+    validate_ema_metadata_issuer(&Url::parse("http://[::1]:1234")?)?;
     Ok(())
 }
 

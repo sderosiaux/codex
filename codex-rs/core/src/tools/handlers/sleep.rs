@@ -72,7 +72,7 @@ impl ToolExecutor<ToolInvocation> for SleepHandler {
     }
 
     fn exposure(&self) -> ToolExposure {
-        ToolExposure::DirectModelOnly
+        ToolExposure::Direct
     }
 
     fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
@@ -160,8 +160,4 @@ impl ToolExecutor<ToolInvocation> for SleepHandler {
     }
 }
 
-impl CoreToolRuntime for SleepHandler {
-    fn is_builtin_control_tool(&self) -> bool {
-        true
-    }
-}
+impl CoreToolRuntime for SleepHandler {}

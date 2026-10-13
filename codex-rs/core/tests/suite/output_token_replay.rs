@@ -84,8 +84,7 @@ async fn output_token_replay_respects_provider_and_preserves_history(
         config.update_plan_enabled = true;
         config
             .features
-            .set_enabled(Feature::OutputTokenReplay, enabled)
-            .expect("configure token replay");
+            .set_enabled(Feature::OutputTokenReplay, enabled);
         if !openai_provider {
             config.model_provider.name = "mock".to_string();
         }
@@ -99,10 +98,7 @@ async fn output_token_replay_respects_provider_and_preserves_history(
     builder = builder.with_config(move |config| {
         configure(config);
         config.model_provider.name = "OpenAI".to_string();
-        config
-            .features
-            .disable(Feature::OutputTokenReplay)
-            .expect("disable token replay");
+        config.features.disable(Feature::OutputTokenReplay);
     });
     let resumed = builder.restart_with_auto_env(&server, &test).await?;
     resumed

@@ -1,9 +1,7 @@
-//! Retains watched global locations and sandbox-scoped response snapshots.
+//! Retains watched global locations and their response snapshots.
 //! Replacement snapshots isolate in-flight loads; unavailable watchers force request-time reloads.
 
-use crate::DiscoverV2CapabilitiesRequest;
 use crate::DiscoverV2CapabilitiesResponse;
-use crate::FileSystemSandboxContext;
 use crate::LocalFileSystem;
 use crate::discover_v2::capability_discoveries::load_capability_discoveries;
 use crate::discover_v2::capability_locations::CapabilityLocationRequest;
@@ -21,8 +19,6 @@ use tokio::sync::Semaphore;
 mod capability_watchers;
 use capability_watchers::CapabilityWatchers;
 
-const MAX_CACHED_SANDBOX_CONTEXTS: usize = 16;
-
 pub(crate) struct CapabilityManager {
     file_system: LocalFileSystem,
     prewarmed_locations: OnceCell<(CapabilityLocationRequest, CapabilityLocations)>,
@@ -34,13 +30,8 @@ pub(crate) struct CapabilityManager {
 struct LocationState {
     dirty: AtomicBool,
     locations: CapabilityLocations,
-    sandbox_discoveries: Mutex<Vec<Arc<CachedSandboxDiscovery>>>,
+    discovery: OnceCell<Arc<DiscoverV2CapabilitiesResponse>>,
     _registration: WatchRegistration,
-}
-
-struct CachedSandboxDiscovery {
-    sandbox: Option<FileSystemSandboxContext>,
-    response: OnceCell<Arc<DiscoverV2CapabilitiesResponse>>,
 }
 
 impl CapabilityManager {
@@ -80,7 +71,6 @@ impl CapabilityManager {
     pub(crate) async fn get_or_refresh_discovery(
         self: &Arc<Self>,
         location_request: CapabilityLocationRequest,
-        params: DiscoverV2CapabilitiesRequest,
     ) -> io::Result<Arc<DiscoverV2CapabilitiesResponse>> {
         let (location_request, _) = match self.prewarm_locations(location_request).await {
             Ok(prewarmed) => prewarmed,
@@ -95,45 +85,16 @@ impl CapabilityManager {
             }
         };
         let location_state = self.get_or_refresh_locations(location_request).await?;
-        let discovery = {
-            let mut discoveries = location_state.sandbox_discoveries.lock().await;
-            if let Some(discovery) = discoveries
-                .iter()
-                .find(|discovery| discovery.sandbox == params.sandbox)
-            {
-                Arc::clone(discovery)
-            } else {
-                let discovery = Arc::new(CachedSandboxDiscovery {
-                    sandbox: params.sandbox,
-                    response: OnceCell::new(),
-                });
-                if discoveries.len() == MAX_CACHED_SANDBOX_CONTEXTS {
-                    // Evict the oldest context (FIFO); in-flight requests retain their own Arc.
-                    discoveries.remove(0);
-                }
-                discoveries.push(Arc::clone(&discovery));
-                discovery
-            }
-        };
         if self.watchers.has_subscription() {
-            return discovery
-                .response
+            return location_state
+                .discovery
                 .get_or_try_init(|| {
-                    load_capability_discoveries(
-                        &self.file_system,
-                        &location_state.locations,
-                        discovery.sandbox.as_ref(),
-                    )
+                    load_capability_discoveries(&self.file_system, &location_state.locations)
                 })
                 .await
                 .map(Arc::clone);
         }
-        load_capability_discoveries(
-            &self.file_system,
-            &location_state.locations,
-            discovery.sandbox.as_ref(),
-        )
-        .await
+        load_capability_discoveries(&self.file_system, &location_state.locations).await
     }
 
     async fn get_or_refresh_locations(
@@ -172,7 +133,7 @@ impl CapabilityManager {
             dirty: AtomicBool::new(false),
             _registration: self.watchers.register_paths(&locations),
             locations,
-            sandbox_discoveries: Mutex::default(),
+            discovery: OnceCell::new(),
         });
         *self.current_state.lock().await = Some(Arc::clone(&next));
         Ok(next)

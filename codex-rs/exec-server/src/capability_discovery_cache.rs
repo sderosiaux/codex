@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -13,12 +12,11 @@ use crate::CapabilityRootDiscovery;
 use crate::CapabilityRootsDiscoverParams;
 use crate::EnvironmentManager;
 use crate::ExecutorCapabilityDiscoverySnapshot;
-use crate::FileSystemSandboxContext;
 
 /// Thread-scoped cache shared by capability consumers using the high-level executor API.
 ///
 /// A single miss batches every requested root by environment. Successful discoveries and
-/// permanent failures remain cached by root and sandbox; transient failures are retried on the
+/// permanent failures remain cached by root; transient failures are retried on the
 /// next request. Recovery is reported so dependent MCP projections can be invalidated.
 pub struct ExecutorCapabilityDiscoveryCache {
     environment_manager: Arc<EnvironmentManager>,
@@ -36,7 +34,6 @@ impl std::fmt::Debug for ExecutorCapabilityDiscoveryCache {
 
 struct CachedRoot {
     selected_root: SelectedCapabilityRoot,
-    sandbox: Option<FileSystemSandboxContext>,
     result: Result<Arc<CapabilityRootDiscovery>, String>,
     // Preserve transport classification after the public snapshot reduces errors to strings.
     retryable: bool,
@@ -65,33 +62,27 @@ impl ExecutorCapabilityDiscoveryCache {
     pub async fn discover(
         &self,
         selected_roots: &[SelectedCapabilityRoot],
-        sandbox_contexts: &HashMap<String, FileSystemSandboxContext>,
     ) -> Vec<Result<Arc<CapabilityRootDiscovery>, String>> {
         let missing = {
             let entries = self.entries.lock().await;
             selected_roots
                 .iter()
                 .filter(|selected_root| {
-                    let CapabilityRootLocation::Environment { environment_id, .. } =
-                        &selected_root.location;
-                    let sandbox = sandbox_contexts.get(environment_id);
-                    !entries.iter().any(|cached| {
-                        cached.selected_root == **selected_root
-                            && cached.sandbox.as_ref() == sandbox
-                            && !cached.retryable
-                    })
+                    !entries
+                        .iter()
+                        .any(|cached| cached.selected_root == **selected_root && !cached.retryable)
                 })
                 .cloned()
                 .collect::<Vec<_>>()
         };
-        let discovered = self.discover_missing(missing, sandbox_contexts).await;
+        let discovered = self.discover_missing(missing).await;
         let mut entries = self.entries.lock().await;
         for discovered_root in discovered {
             if let Some(cached) = entries
                 .iter_mut()
                 .find(|cached| cached.selected_root == discovered_root.selected_root)
             {
-                if cached.sandbox != discovered_root.sandbox || cached.result.is_err() {
+                if cached.result.is_err() {
                     if cached.result.is_err() && discovered_root.result.is_ok() {
                         self.recovered_discovery.store(true, Ordering::Release);
                     }
@@ -104,12 +95,10 @@ impl ExecutorCapabilityDiscoveryCache {
         selected_roots
             .iter()
             .map(|selected_root| {
-                let CapabilityRootLocation::Environment { environment_id, .. } =
-                    &selected_root.location;
-                let sandbox = sandbox_contexts.get(environment_id);
-                match entries.iter().find(|cached| {
-                    cached.selected_root == *selected_root && cached.sandbox.as_ref() == sandbox
-                }) {
+                match entries
+                    .iter()
+                    .find(|cached| cached.selected_root == *selected_root)
+                {
                     Some(cached) => cached.result.clone(),
                     None => Err(format!(
                         "selected capability root `{}` was not discovered",
@@ -124,20 +113,14 @@ impl ExecutorCapabilityDiscoveryCache {
     pub async fn snapshot(
         &self,
         selected_roots: &[SelectedCapabilityRoot],
-        sandbox_contexts: &HashMap<String, FileSystemSandboxContext>,
     ) -> ExecutorCapabilityDiscoverySnapshot {
         ExecutorCapabilityDiscoverySnapshot::new(
             selected_roots,
-            self.discover(selected_roots, sandbox_contexts).await,
-            sandbox_contexts.clone(),
+            self.discover(selected_roots).await,
         )
     }
 
-    async fn discover_missing(
-        &self,
-        missing: Vec<SelectedCapabilityRoot>,
-        sandbox_contexts: &HashMap<String, FileSystemSandboxContext>,
-    ) -> Vec<CachedRoot> {
+    async fn discover_missing(&self, missing: Vec<SelectedCapabilityRoot>) -> Vec<CachedRoot> {
         let mut grouped = BTreeMap::<String, Vec<SelectedCapabilityRoot>>::new();
         for selected_root in missing {
             let CapabilityRootLocation::Environment { environment_id, .. } =
@@ -156,7 +139,6 @@ impl ExecutorCapabilityDiscoveryCache {
         });
         let discoveries =
             futures::future::join_all(batches.map(|(environment_id, selected_roots)| async move {
-                let sandbox = sandbox_contexts.get(&environment_id).cloned();
                 let Some(environment) = self.environment_manager.get_environment(&environment_id)
                 else {
                     let error = format!("environment `{environment_id}` is unavailable");
@@ -164,7 +146,6 @@ impl ExecutorCapabilityDiscoveryCache {
                         .into_iter()
                         .map(|selected_root| CachedRoot {
                             selected_root,
-                            sandbox: sandbox.clone(),
                             result: Err(error.clone()),
                             retryable: true,
                         })
@@ -179,7 +160,6 @@ impl ExecutorCapabilityDiscoveryCache {
                             CapabilityRootDiscoverRequest {
                                 id: selected_root.id.clone(),
                                 path: path.clone(),
-                                sandbox: sandbox.clone(),
                             }
                         })
                         .collect(),
@@ -187,13 +167,12 @@ impl ExecutorCapabilityDiscoveryCache {
                 let response = match environment.discover_capability_roots(params).await {
                     Ok(response) => response,
                     Err(error) => {
-                        let retryable = crate::client::can_retry_connection_attempt(&error);
+                        let retryable = crate::client::is_retryable_recovery_error(&error);
                         let error = error.to_string();
                         return selected_roots
                             .into_iter()
                             .map(|selected_root| CachedRoot {
                                 selected_root,
-                                sandbox: sandbox.clone(),
                                 result: Err(error.clone()),
                                 retryable,
                             })
@@ -210,7 +189,6 @@ impl ExecutorCapabilityDiscoveryCache {
                         .into_iter()
                         .map(|selected_root| CachedRoot {
                             selected_root,
-                            sandbox: sandbox.clone(),
                             result: Err(error.clone()),
                             retryable: false,
                         })
@@ -233,7 +211,6 @@ impl ExecutorCapabilityDiscoveryCache {
                         };
                         CachedRoot {
                             selected_root,
-                            sandbox: sandbox.clone(),
                             result,
                             retryable: false,
                         }

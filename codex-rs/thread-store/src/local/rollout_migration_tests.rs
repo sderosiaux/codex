@@ -25,12 +25,10 @@ use codex_protocol::models::ImageReference;
 use codex_protocol::models::InternalChatMessageMetadataPassthrough;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::AgentMessageEvent;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ImageGenerationEndEvent;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::ItemCompletedEvent;
-use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionMeta;
 use codex_protocol::protocol::SessionMetaLine;
 use codex_protocol::protocol::SessionSource;
@@ -244,7 +242,6 @@ fn compacted(replacement_history: Vec<ResponseItem>) -> RolloutItem {
         message: "checkpoint".to_string(),
         replacement_history: Some(replacement_history.into_iter().map(Into::into).collect()),
         retained_context: None,
-        guardian_history: None,
         mcp_resource_origins: None,
         window_number: Some(1),
         first_window_id: None,
@@ -2074,7 +2071,6 @@ async fn migration_compacts_subagent_prefix_and_does_not_project_it() {
                 message: "superseded checkpoint".repeat(1024),
                 replacement_history: Some(Vec::new()),
                 retained_context: None,
-                guardian_history: None,
                 mcp_resource_origins: None,
                 window_number: Some(1),
                 first_window_id: None,
@@ -2101,7 +2097,6 @@ async fn migration_compacts_subagent_prefix_and_does_not_project_it() {
                     .into(),
                 ]),
                 retained_context: None,
-                guardian_history: None,
                 mcp_resource_origins: None,
                 window_number: Some(2),
                 first_window_id: None,
@@ -2117,17 +2112,10 @@ async fn migration_compacts_subagent_prefix_and_does_not_project_it() {
                 root_turn_id: None,
                 disabled_plugin_ids: None,
                 cwd: serde_json::from_value(json!(home.path())).expect("absolute cwd"),
-                approval_policy: AskForApproval::Never,
-                approvals_reviewer: None,
-                sandbox_policy: SandboxPolicy::new_read_only_policy(),
-                permission_profile: None,
-                active_permission_profile: None,
-                file_system_sandbox_policy: None,
                 model: "test-model".to_string(),
                 comp_hash: None,
                 collaboration_mode: None,
                 multi_agent_version: None,
-                realtime_active: None,
                 cyber_access_program: None,
                 effort: None,
                 summary: Some(ReasoningSummary::Auto),
@@ -2503,7 +2491,7 @@ async fn migration_preserves_legacy_displayed_thread_names() {
     write_rollout(
         home.path(),
         title_thread_id,
-        SessionSource::SubAgent(SubAgentSource::Other("guardian".to_string())),
+        SessionSource::Cli,
         vec![user_message("title question")],
     );
     let index_thread_id = ThreadId::new();
@@ -2513,16 +2501,6 @@ async fn migration_preserves_legacy_displayed_thread_names() {
         SessionSource::Cli,
         vec![user_message("index question")],
     );
-    let guardian_thread_id = ThreadId::new();
-    let unnamed_guardian_thread_id = ThreadId::new();
-    for thread_id in [guardian_thread_id, unnamed_guardian_thread_id] {
-        write_rollout(
-            home.path(),
-            thread_id,
-            SessionSource::SubAgent(SubAgentSource::Other("guardian".to_string())),
-            vec![user_message("large synthetic Guardian prompt")],
-        );
-    }
     let store = indexed_store(home.path()).await;
     store
         .update_thread_metadata(UpdateThreadMetadataParams {
@@ -2541,22 +2519,6 @@ async fn migration_preserves_legacy_displayed_thread_names() {
     codex_rollout::append_thread_name(home.path(), index_thread_id, "indexed title")
         .await
         .expect("write legacy index name");
-
-    // Older metadata cleanup also seeded the default name on legacy threads.
-    let state_db = store.state_db().await.expect("state runtime");
-    let mut guardian_metadata = state_db
-        .get_thread(guardian_thread_id)
-        .await
-        .expect("read Guardian metadata")
-        .expect("Guardian metadata");
-    guardian_metadata.name = Some(codex_state::GUARDIAN_THREAD_TITLE.to_string());
-    state_db
-        .upsert_thread(&guardian_metadata)
-        .await
-        .expect("seed legacy Guardian name");
-    codex_rollout::append_thread_name(home.path(), guardian_thread_id, "indexed Guardian name")
-        .await
-        .expect("write legacy Guardian name");
 
     for history_mode in [ThreadHistoryMode::Legacy, ThreadHistoryMode::Paginated] {
         if history_mode == ThreadHistoryMode::Paginated {
@@ -2586,8 +2548,6 @@ async fn migration_preserves_legacy_displayed_thread_names() {
         for (thread_id, name) in [
             (title_thread_id, "renamed title"),
             (index_thread_id, "indexed title"),
-            (guardian_thread_id, "indexed Guardian name"),
-            (unnamed_guardian_thread_id, "Guardian review"),
         ] {
             let listed = page
                 .items

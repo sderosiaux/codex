@@ -28,7 +28,6 @@ use codex_exec_server::ExecutorFileSystem;
 use codex_exec_server::GetMetadataOptions;
 use codex_exec_server::ReadFileOptions;
 use codex_extension_api::Instructions;
-use codex_file_system::FileSystemSandboxContext;
 use codex_file_system::FindUpErrorPolicy;
 use codex_file_system::find_nearest_ancestor_with_markers;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -61,9 +60,6 @@ pub(crate) async fn load_project_instructions(
     environments: &TurnEnvironmentSnapshot,
 ) -> io::Result<Option<LoadedAgentsMd>> {
     let mut loaded = LoadedAgentsMd::from_user_instructions(user_instructions);
-    if config.active_project.is_untrusted() {
-        return Ok((!loaded.is_empty()).then_some(loaded));
-    }
 
     let mut remaining = config.project_doc_max_bytes;
     for turn_environment in environments.turn_environments() {
@@ -72,18 +68,12 @@ pub(crate) async fn load_project_instructions(
         }
 
         let filesystem = turn_environment.environment.get_filesystem();
-        let sandbox = (!turn_environment
-            .permission_profile()
-            .file_system_sandbox_policy()
-            .has_full_disk_read_access())
-        .then(|| turn_environment.sandbox_context(/*additional_permissions*/ None));
         match read_agents_md(
             config,
             filesystem.as_ref(),
             &turn_environment.selection.environment_id,
             turn_environment.cwd(),
             remaining,
-            sandbox.as_ref(),
         )
         .await
         {
@@ -94,20 +84,11 @@ pub(crate) async fn load_project_instructions(
                 }
             }
             Ok(None) => {}
-            Err(error) if sandbox.is_none() => {
+            Err(error) => {
                 error!(
                     environment_id = turn_environment.selection.environment_id,
                     "error trying to find AGENTS.md docs: {error:#}"
                 );
-            }
-            Err(error) => {
-                return Err(io::Error::new(
-                    error.kind(),
-                    format!(
-                        "failed to load AGENTS.md instructions for environment `{}`: {error}",
-                        turn_environment.selection.environment_id
-                    ),
-                ));
             }
         }
     }
@@ -128,13 +109,12 @@ async fn read_agents_md(
     environment_id: &str,
     cwd: &PathUri,
     max_total: usize,
-    sandbox: Option<&FileSystemSandboxContext>,
 ) -> io::Result<Option<LoadedAgentsMd>> {
     if max_total == 0 {
         return Ok(None);
     }
 
-    let paths = agents_md_paths(config, cwd, fs, sandbox).await?;
+    let paths = agents_md_paths(config, cwd, fs).await?;
     if paths.is_empty() {
         return Ok(None);
     }
@@ -147,7 +127,7 @@ async fn read_agents_md(
             break;
         }
 
-        let mut data = match fs.read_file(&p, ReadFileOptions::default(), sandbox).await {
+        let mut data = match fs.read_file(&p, ReadFileOptions::default()).await {
             Ok(data) => data,
             Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
             Err(err) => return Err(err),
@@ -193,7 +173,6 @@ async fn agents_md_paths(
     config: &Config,
     cwd: &PathUri,
     fs: &dyn ExecutorFileSystem,
-    sandbox: Option<&FileSystemSandboxContext>,
 ) -> io::Result<Vec<PathUri>> {
     let dir = cwd.clone();
 
@@ -217,7 +196,6 @@ async fn agents_md_paths(
         &dir,
         project_root_markers,
         FindUpErrorPolicy::Ignore,
-        sandbox,
     )
     .await?;
     let search_dirs = if let Some(root) = project_root {
@@ -248,7 +226,7 @@ async fn agents_md_paths(
                     .join(name)
                     .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
                 match fs
-                    .get_metadata(&candidate, GetMetadataOptions::default(), sandbox)
+                    .get_metadata(&candidate, GetMetadataOptions::default())
                     .await
                 {
                     Ok(metadata) if metadata.is_file => return Ok(Some(candidate)),

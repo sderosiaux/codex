@@ -39,7 +39,7 @@ async fn provisioning_failure_reaches_model_and_turn_continues(
     )
     .await;
     let mut builder = test_codex_with_wait_for_environment().with_config(|config| {
-        assert!(config.features.enable(Feature::DeferredExecutor).is_ok());
+        config.features.enable(Feature::DeferredExecutor);
     });
     let test = expect_startup(builder.build(&server)).await;
     let manager = test.thread_manager.environment_manager();

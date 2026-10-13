@@ -35,7 +35,6 @@ pub(super) fn parse_legacy_rollout_value(mut value: Value) -> Result<Option<Roll
         return Ok(None);
     }
     normalize_legacy_turn_context(&mut value);
-    normalize_legacy_sandbox_policy(&mut value);
     normalize_legacy_rate_limit_resets(&mut value);
     normalize_legacy_review_entry(&mut value);
     normalize_legacy_command_cwd(&mut value)?;
@@ -131,24 +130,6 @@ fn normalize_legacy_rate_limit_resets(value: &mut Value) {
             continue;
         };
         window.insert("resets_at".to_string(), Value::from(resets_at.timestamp()));
-    }
-}
-
-fn normalize_legacy_sandbox_policy(value: &mut Value) {
-    if rollout_type(value) != Some("turn_context") {
-        return;
-    }
-    let Some(sandbox_policy) = payload_object_mut(value)
-        .and_then(|payload| payload.get_mut("sandbox_policy"))
-        .and_then(Value::as_object_mut)
-    else {
-        return;
-    };
-    if sandbox_policy.contains_key("type") {
-        return;
-    }
-    if let Some(mode) = sandbox_policy.get("mode").cloned() {
-        sandbox_policy.insert("type".to_string(), mode);
     }
 }
 

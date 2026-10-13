@@ -17,7 +17,6 @@ use codex_login::LoginSuccessPage;
 use codex_login::LoginSuccessPageBrand;
 use codex_login::ServerOptions;
 use codex_login::run_login_server;
-use core_test_support::skip_if_no_network;
 use pretty_assertions::assert_eq;
 use tempfile::tempdir;
 use url::Url;
@@ -95,8 +94,6 @@ fn start_mock_issuer(chatgpt_account_id: &str) -> (SocketAddr, thread::JoinHandl
 
 #[tokio::test]
 async fn end_to_end_login_flow_persists_auth_json() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-
     let chatgpt_account_id = "12345678-0000-0000-0000-000000000000";
     let (issuer_addr, issuer_handle) = start_mock_issuer(chatgpt_account_id);
     let issuer = format!("http://{}:{}", issuer_addr.ip(), issuer_addr.port());
@@ -123,20 +120,11 @@ async fn end_to_end_login_flow_persists_auth_json() -> Result<()> {
 
     // Run server in background
     let server_home = codex_home.clone();
-    let content = codex_http_client::NetworkPolicyController::default();
-    let local = codex_http_client::NetworkPolicyController::default();
-    let local_policy = local.policy();
-    local.publish(
-        local_policy.revision(),
-        codex_http_client::DestinationPolicy::Unrestricted,
-    );
-    let factory = codex_http_client::HttpClientFactory::new(
-        codex_http_client::OutboundProxyPolicy::ReqwestDefault,
-    );
     let routes = codex_login::AuthRouteConfig::from_http_client_factory(
-        factory.clone().with_network_policy(content.policy()),
-    )
-    .with_local_bootstrap_factory(factory.with_network_policy(local_policy));
+        codex_http_client::HttpClientFactory::new(
+            codex_http_client::OutboundProxyPolicy::ReqwestDefault,
+        ),
+    );
 
     let opts = ServerOptions {
         codex_home: server_home,
@@ -238,8 +226,6 @@ async fn end_to_end_login_flow_persists_auth_json() -> Result<()> {
 
 #[tokio::test]
 async fn hosted_login_redirects_to_configured_open_app_url() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-
     let (issuer_addr, _issuer_handle) = start_mock_issuer(WORKSPACE_ID_ALLOWED);
     let issuer = format!("http://{}:{}", issuer_addr.ip(), issuer_addr.port());
     let tmp = tempdir()?;
@@ -284,8 +270,6 @@ async fn hosted_login_redirects_to_configured_open_app_url() -> Result<()> {
 
 #[tokio::test]
 async fn creates_missing_codex_home_dir() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-
     let (issuer_addr, _issuer_handle) = start_mock_issuer(WORKSPACE_ID_ALLOWED);
     let issuer = format!("http://{}:{}", issuer_addr.ip(), issuer_addr.port());
 
@@ -330,8 +314,6 @@ async fn creates_missing_codex_home_dir() -> Result<()> {
 
 #[tokio::test]
 async fn login_server_includes_forced_workspaces_as_one_query_param() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-
     let (issuer_addr, _issuer_handle) = start_mock_issuer(WORKSPACE_ID_ALLOWED);
     let issuer = format!("http://{}:{}", issuer_addr.ip(), issuer_addr.port());
 
@@ -374,8 +356,6 @@ async fn login_server_includes_forced_workspaces_as_one_query_param() -> Result<
 
 #[tokio::test]
 async fn forced_chatgpt_workspace_id_mismatch_blocks_login() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-
     let (issuer_addr, _issuer_handle) = start_mock_issuer(WORKSPACE_ID_DISALLOWED);
     let issuer = format!("http://{}:{}", issuer_addr.ip(), issuer_addr.port());
 
@@ -437,8 +417,6 @@ async fn forced_chatgpt_workspace_id_mismatch_blocks_login() -> Result<()> {
 
 #[tokio::test]
 async fn oauth_access_denied_missing_entitlement_blocks_login_with_clear_error() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-
     let (issuer_addr, _issuer_handle) = start_mock_issuer(WORKSPACE_ID_ALLOWED);
     let issuer = format!("http://{}:{}", issuer_addr.ip(), issuer_addr.port());
 
@@ -508,8 +486,6 @@ async fn oauth_access_denied_missing_entitlement_blocks_login_with_clear_error()
 
 #[tokio::test]
 async fn oauth_access_denied_unknown_reason_uses_generic_error_page() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-
     let (issuer_addr, _issuer_handle) = start_mock_issuer(WORKSPACE_ID_ALLOWED);
     let issuer = format!("http://{}:{}", issuer_addr.ip(), issuer_addr.port());
 
@@ -591,8 +567,6 @@ async fn oauth_access_denied_unknown_reason_uses_generic_error_page() -> Result<
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn falls_back_to_registered_fallback_port_when_default_port_is_in_use() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-
     match TcpListener::bind(("127.0.0.1", FALLBACK_LOGIN_PORT)) {
         Ok(listener) => drop(listener),
         Err(err) if err.kind() == io::ErrorKind::AddrInUse => {
@@ -659,8 +633,6 @@ async fn falls_back_to_registered_fallback_port_when_default_port_is_in_use() ->
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cancels_previous_login_server_when_port_is_in_use() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-
     let (issuer_addr, _issuer_handle) = start_mock_issuer(WORKSPACE_ID_ALLOWED);
     let issuer = format!("http://{}:{}", issuer_addr.ip(), issuer_addr.port());
 

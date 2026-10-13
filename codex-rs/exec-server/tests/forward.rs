@@ -72,10 +72,6 @@ async fn forwarder_runs_commands_and_transfers_files() -> Result<()> {
                 tty: false,
                 pipe_stdin: false,
                 arg0: None,
-                sandbox: None,
-                enforce_managed_network: false,
-                managed_network: None,
-                network_proxy: None,
             }),
         )
         .await??;
@@ -119,7 +115,6 @@ async fn forwarder_runs_commands_and_transfers_files() -> Result<()> {
             path: PathUri::from_host_native_path(&path)?,
             follow_symlinks: None,
             data_base64: STANDARD.encode(&contents),
-            sandbox: None,
         }),
     )
     .await??;
@@ -128,7 +123,6 @@ async fn forwarder_runs_commands_and_transfers_files() -> Result<()> {
         .fs_read_file(FsReadFileParams {
             path: PathUri::from_host_native_path(path)?,
             follow_symlinks: None,
-            sandbox: None,
         })
         .await?;
     assert_eq!(STANDARD.decode(read_response.data_base64)?, contents);

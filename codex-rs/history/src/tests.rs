@@ -11,9 +11,6 @@ fn thread_settings_snapshot(disabled_plugin_ids: Vec<String>) -> Result<ThreadSe
     Ok(serde_json::from_value(json!({
         "model": "gpt-5",
         "model_provider_id": "openai",
-        "approval_policy": "never",
-        "approvals_reviewer": "user",
-        "permission_profile": codex_protocol::models::PermissionProfile::read_only(),
         "cwd": std::env::current_dir()?,
         "collaboration_mode": {
             "mode": "default",
@@ -535,7 +532,6 @@ fn compacted_replacement_history_stores_metadata_in_an_aligned_sidecar() -> Resu
             ResponseItemEnvelope::new(compaction_item.clone()),
         ]),
         retained_context: None,
-        guardian_history: None,
         mcp_resource_origins: None,
         window_number: None,
         first_window_id: None,
@@ -593,7 +589,6 @@ fn compacted_resume_metadata_presence_round_trips_empty_values() -> Result<()> {
         message: "summary".to_string(),
         replacement_history: None,
         retained_context: None,
-        guardian_history: None,
         mcp_resource_origins: None,
         window_number: None,
         first_window_id: None,
@@ -671,22 +666,10 @@ fn compacted_metadata_remains_compatible_with_legacy_response_item_readers() -> 
     };
     assert_eq!(*legacy_response, response_item);
 
-    let checkpoint = crate::GuardianHistoryCheckpoint(vec![envelope.clone()]);
-    assert_eq!(
-        serde_json::from_value::<Vec<ResponseItem>>(serde_json::to_value(&checkpoint)?)?,
-        vec![response_item.clone()],
-    );
-    assert_eq!(
-        serde_json::from_value::<crate::GuardianHistoryCheckpoint>(serde_json::to_value(vec![
-            response_item.clone()
-        ])?)?,
-        crate::GuardianHistoryCheckpoint(vec![response_item.clone().into()]),
-    );
     let compacted_line = serde_json::to_value(RolloutItem::Compacted(CompactedItem {
         message: "summary".to_string(),
         replacement_history: Some(vec![envelope]),
         retained_context: None,
-        guardian_history: Some(checkpoint.clone()),
         mcp_resource_origins: Some(McpResourceOriginCheckpoint::default()),
         window_number: None,
         first_window_id: None,
@@ -706,7 +689,7 @@ fn compacted_metadata_remains_compatible_with_legacy_response_item_readers() -> 
     let RolloutItem::Compacted(restored) = restored else {
         panic!("expected compacted item");
     };
-    assert_eq!(restored.guardian_history, Some(checkpoint));
+    assert_eq!(restored.message, "summary");
     let LegacyRolloutItem::Compacted(legacy) =
         serde_json::from_value::<LegacyRolloutItem>(compacted_line)?
     else {
@@ -758,8 +741,6 @@ fn rollout_item_variants_preserve_existing_payload_shapes() -> Result<()> {
             "type": "turn_context",
             "payload": {
                 "cwd": cwd,
-                "approval_policy": "never",
-                "sandbox_policy": { "type": "danger-full-access" },
                 "model": "gpt-5",
                 "summary": "auto",
             },
@@ -803,15 +784,6 @@ fn rollout_item_variants_preserve_existing_payload_shapes() -> Result<()> {
             "payload": { "full": true, "state": { "cwd": "/tmp" } },
         }),
         json!({
-            "type": "security_risk_score",
-            "payload": {
-                "scores": {
-                    "action_risk": 0.92,
-                    "data_exfiltration": 0.31,
-                },
-            },
-        }),
-        json!({
             "type": "event_msg",
             "payload": { "type": "warning", "message": "heads up" },
         }),
@@ -822,16 +794,6 @@ fn rollout_item_variants_preserve_existing_payload_shapes() -> Result<()> {
                 "turn_id": "turn-1",
                 "call_id": "ask-1",
                 "questions": [{"question": "Publish?", "answer": "Only privately."}],
-            },
-        }),
-        json!({
-            "type": "realtime_item",
-            "payload": {
-                "id": "segment-1",
-                "realtime_session_id": "session-1",
-                "type": "transcript_segment",
-                "role": "assistant",
-                "text": "hello",
             },
         }),
     ];
@@ -848,7 +810,7 @@ fn rollout_item_variants_preserve_existing_payload_shapes() -> Result<()> {
 fn rollout_item_schema_matches_tagged_payload_and_sibling_metadata() -> Result<()> {
     let schema = serde_json::to_value(schemars::schema_for!(RolloutItem))?;
     let variants = schema["oneOf"].as_array().expect("rollout variants");
-    assert_eq!(variants.len(), 12);
+    assert_eq!(variants.len(), 10);
 
     for variant in variants {
         let required = variant["required"].as_array().expect("required fields");
@@ -902,7 +864,6 @@ fn compacted_item_serializes_window_number_and_id() -> Result<()> {
         message: "summary".to_string(),
         replacement_history: None,
         retained_context: None,
-        guardian_history: None,
         mcp_resource_origins: None,
         window_number: Some(3),
         first_window_id: Some("019b3f6e-0000-7000-8000-000000000001".to_string()),
@@ -942,7 +903,6 @@ fn compacted_item_migrates_legacy_numeric_window_id() -> Result<()> {
             message: "summary".to_string(),
             replacement_history: None,
             retained_context: None,
-            guardian_history: None,
             mcp_resource_origins: None,
             window_number: Some(3),
             first_window_id: None,

@@ -1,7 +1,6 @@
 //! Bound resource discovery and its HTTP safety policy before enterprise credential use.
 //! The returned client keeps one deadline across resource and authorization-server discovery.
 
-use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
@@ -10,7 +9,6 @@ use anyhow::Result;
 use anyhow::anyhow;
 use anyhow::bail;
 use codex_exec_server::HttpClient;
-use codex_network_proxy::is_non_public_ip;
 use codex_protocol::mcp::ENTERPRISE_MANAGED_AUTHORIZATION_EXTENSION_ID;
 use futures::StreamExt;
 use http::Method;
@@ -40,7 +38,6 @@ use rmcp::transport::common::http_header::HEADER_MCP_METHOD;
 use rmcp::transport::common::http_header::HEADER_MCP_PROTOCOL_VERSION;
 use serde::Deserialize;
 use sse_stream::SseStream;
-use url::Host;
 use url::Url;
 
 use crate::ema_auth_policy::validate_ema_auth_resource;
@@ -183,38 +180,10 @@ async fn discovery_response_message(
     None
 }
 
-/// Retain rmcp's denial of metadata endpoints on private addresses and cloud-metadata hosts.
-pub(super) fn validate_ema_metadata_issuer(resource: &Url, issuer: &Url) -> Result<()> {
+pub(super) fn validate_ema_metadata_issuer(issuer: &Url) -> Result<()> {
     validate_ema_oauth_endpoint(issuer.as_str(), "enterprise authorization server issuer")?;
     if issuer.query().is_some() {
         bail!("enterprise authorization server issuer must not contain a query");
-    }
-    let loopback = |url: &Url| match url.host() {
-        Some(Host::Domain(host)) => {
-            let host = host.trim_end_matches('.');
-            host == "localhost" || host.ends_with(".localhost")
-        }
-        Some(Host::Ipv4(ip)) => ip.is_loopback(),
-        Some(Host::Ipv6(ip)) => ip.is_loopback(),
-        None => false,
-    };
-    if loopback(resource) && loopback(issuer) {
-        return Ok(());
-    }
-    let disallowed = match issuer.host() {
-        Some(Host::Domain(host)) => {
-            let host = host.trim_end_matches('.').to_ascii_lowercase();
-            matches!(
-                host.as_str(),
-                "localhost" | "metadata" | "metadata.google.internal" | "metadata.azure.internal"
-            ) || host.ends_with(".localhost")
-        }
-        Some(Host::Ipv4(ip)) => is_non_public_ip(IpAddr::V4(ip)),
-        Some(Host::Ipv6(ip)) => is_non_public_ip(IpAddr::V6(ip)),
-        None => true,
-    };
-    if disallowed {
-        bail!("enterprise discovery refused a private authorization-server metadata destination");
     }
     Ok(())
 }
@@ -228,7 +197,6 @@ pub(super) struct EmaDiscoveryRequest<'a> {
 
 /// A validated resource and candidate list, with the discovery deadline still in force.
 pub(super) struct EmaResource {
-    pub(super) server_url: Url,
     pub(super) resource: String,
     pub(super) authorization_servers: Vec<String>,
     pub(super) client: EmaDiscoveryClient,
@@ -403,7 +371,6 @@ pub(super) async fn discover_ema_resource(request: EmaDiscoveryRequest<'_>) -> R
         }
     }
     Ok(EmaResource {
-        server_url: server,
         resource,
         authorization_servers: issuers,
         client,

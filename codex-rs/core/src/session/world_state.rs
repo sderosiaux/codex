@@ -8,19 +8,15 @@ use crate::context::world_state::AgentsMdState;
 use crate::context::world_state::AppsInstructionsState;
 use crate::context::world_state::BaseInstructionsState;
 use crate::context::world_state::CollaborationModeState;
-use crate::context::world_state::CompactPermissionsState;
 use crate::context::world_state::ContextWindowGuidanceState;
 use crate::context::world_state::EnvironmentsInstructionsState;
 use crate::context::world_state::EnvironmentsState;
-use crate::context::world_state::ManagedDeveloperInstructionsState;
 use crate::context::world_state::ModelCatalogState;
 use crate::context::world_state::ModelInstructionsState;
 use crate::context::world_state::MultiAgentModeState;
 use crate::context::world_state::MultiAgentUsageHintState;
-use crate::context::world_state::PermissionsState;
 use crate::context::world_state::PersistentModeState;
 use crate::context::world_state::PluginsInstructionsState;
-use crate::context::world_state::RealtimeState;
 use crate::context::world_state::ToolsState;
 use crate::context::world_state::TopLevelToolsState;
 use crate::context::world_state::WorldState;
@@ -28,8 +24,6 @@ use crate::tools::handlers::multi_agents_spec::MULTI_AGENT_V1_NAMESPACE;
 use codex_connectors::AppToolPolicyEvaluator;
 use codex_extension_api::WorldStateContributionInput;
 use codex_features::Feature;
-use codex_file_system::FileSystemSandboxContext;
-use codex_prompts::ApprovalPromptContext;
 use codex_prompts::ResolvedModelMessages;
 use codex_prompts::render_model_instructions;
 use codex_protocol::error::Result as CodexResult;
@@ -183,62 +177,7 @@ impl Session {
             .and_then(|config| config.guidance_message.as_deref())
             .filter(|_| token_budget_enabled);
         world_state.add_section(ContextWindowGuidanceState::new(guidance));
-        let realtime = &step_context.realtime;
-        world_state.add_section(RealtimeState::new(
-            realtime.active,
-            realtime
-                .mode_instructions
-                .as_ref()
-                .and_then(|instructions| instructions.start.as_deref())
-                .or(turn_context
-                    .config
-                    .experimental_realtime_start_instructions
-                    .as_deref()),
-            realtime
-                .mode_instructions
-                .as_ref()
-                .and_then(|instructions| instructions.end.as_deref()),
-        ));
         world_state.add_section(AgentsMdState::new(step_context.loaded_agents_md.as_deref()));
-        let exec_policy = self
-            .services
-            .exec_policy
-            .current_for_prefix_rules(turn_context.allow_prefix_rules());
-        if turn_context.config.include_permissions_instructions {
-            let environment = step_context.environments.primary();
-            let sandbox = environment
-                .filter(|environment| environment.environment.is_remote())
-                .map(|environment| {
-                    environment.sandbox_context(/*additional_permissions*/ None)
-                });
-            let paths = sandbox
-                .as_ref()
-                .map(FileSystemSandboxContext::policy_context);
-            let permission_profile =
-                turn_context.permission_profile_for_environments(&step_context.environments);
-            #[allow(deprecated)]
-            let cwd = environment
-                .and_then(|environment| environment.cwd().to_abs_path().ok())
-                .unwrap_or_else(|| turn_context.cwd.clone());
-            world_state.add_section(PermissionsState::new(
-                &permission_profile,
-                settings.approval_policy(),
-                ApprovalPromptContext::new(settings.approvals_reviewer(), model_messages),
-                exec_policy.as_ref(),
-                &cwd,
-                paths.as_ref(),
-                turn_context
-                    .config
-                    .features
-                    .enabled(Feature::ExecPermissionApprovals),
-                turn_context
-                    .config
-                    .features
-                    .enabled(Feature::RequestPermissionsTool),
-            ));
-        } else {
-            world_state.add_section(CompactPermissionsState::new(exec_policy.as_ref()));
-        }
         if turn_context.config.include_collaboration_mode_instructions {
             world_state.add_section(CollaborationModeState::from_collaboration_mode(
                 &settings.effective_collaboration_mode(),
@@ -247,23 +186,20 @@ impl Session {
                 turn_context.config.model_catalog.is_some(),
             ));
         }
-        if !crate::guardian::is_basic_session_source(&turn_context.session_source) {
-            let send_user_message_async_available =
-                !turn_context.session_source.is_non_root_agent()
-                    && step_context
-                        .settings
-                        .model_info
-                        .experimental_supported_tools
-                        .iter()
-                        .any(|tool| tool == "send_user_message_async");
-            world_state.add_section(PersistentModeState::new(
-                turn_context.config.features.persistent_execution_enabled(
-                    step_context.settings.effective_reasoning_effort().as_ref(),
-                ),
-                model_messages.persistent_instructions(),
-                send_user_message_async_available,
-            ));
-        }
+        let send_user_message_async_available = !turn_context.session_source.is_non_root_agent()
+            && step_context
+                .settings
+                .model_info
+                .experimental_supported_tools
+                .iter()
+                .any(|tool| tool == "send_user_message_async");
+        world_state.add_section(PersistentModeState::new(
+            turn_context.config.features.persistent_execution_enabled(
+                step_context.settings.effective_reasoning_effort().as_ref(),
+            ),
+            model_messages.persistent_instructions(),
+            send_user_message_async_available,
+        ));
         if turn_context.config.include_environment_context {
             let current_date = if turn_context.config.include_environment_context_time {
                 self.read_clock_for_context(turn_context, "environment_date")
@@ -398,16 +334,6 @@ impl Session {
                 ModelCatalogState::default()
             },
         );
-        if !crate::guardian::is_basic_session_source(&turn_context.session_source) {
-            world_state.add_section(ManagedDeveloperInstructionsState::new(
-                turn_context
-                    .config
-                    .config_layer_stack
-                    .requirements()
-                    .additional_developer_instructions
-                    .as_ref(),
-            ));
-        }
         Ok(world_state)
     }
 }

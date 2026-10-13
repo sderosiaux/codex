@@ -3,7 +3,6 @@ use super::SessionTaskResult;
 use super::TASK_COMPACT_METRIC;
 use super::emit_compact_metric;
 use super::emit_turn_memory_metric;
-use super::emit_turn_network_proxy_metric;
 use crate::session::TurnInput;
 use crate::session::session::Session;
 use crate::session::tests::make_session_and_context_with_rx;
@@ -13,7 +12,6 @@ use codex_otel::MetricsClient;
 use codex_otel::MetricsConfig;
 use codex_otel::SessionTelemetry;
 use codex_otel::TURN_MEMORY_METRIC;
-use codex_otel::TURN_NETWORK_PROXY_METRIC;
 use codex_otel::TURN_TOKEN_USAGE_METRIC;
 use codex_otel::TURN_TOOL_CALL_METRIC;
 use codex_otel::TURN_UNIFIED_EXEC_RUNNING_PROCESSES_METRIC;
@@ -316,7 +314,6 @@ async fn turn_completion_metrics_follow_model_switch(scenario: UsageScenario) {
 
     let counter_models = [
         TURN_MEMORY_METRIC,
-        TURN_NETWORK_PROXY_METRIC,
         TURN_UNIFIED_EXEC_RUNNING_PROCESSES_METRIC,
     ]
     .into_iter()
@@ -335,63 +332,9 @@ async fn turn_completion_metrics_follow_model_switch(scenario: UsageScenario) {
         BTreeMap::from([
             (TURN_MEMORY_METRIC.to_string(), next_model.to_string()),
             (
-                TURN_NETWORK_PROXY_METRIC.to_string(),
-                next_model.to_string(),
-            ),
-            (
                 TURN_UNIFIED_EXEC_RUNNING_PROCESSES_METRIC.to_string(),
                 next_model.to_string(),
             ),
-        ])
-    );
-}
-
-#[test]
-fn emit_turn_network_proxy_metric_records_active_turn() {
-    let session_telemetry = test_session_telemetry();
-
-    emit_turn_network_proxy_metric(
-        &session_telemetry,
-        /*network_proxy_active*/ true,
-        ("tmp_mem_enabled", "true"),
-    );
-
-    let snapshot = session_telemetry
-        .snapshot_metrics()
-        .expect("runtime metrics snapshot");
-    let (attrs, value) = metric_point(&snapshot, TURN_NETWORK_PROXY_METRIC);
-
-    assert_eq!(value, 1);
-    assert_eq!(
-        attrs,
-        BTreeMap::from([
-            ("active".to_string(), "true".to_string()),
-            ("tmp_mem_enabled".to_string(), "true".to_string()),
-        ])
-    );
-}
-
-#[test]
-fn emit_turn_network_proxy_metric_records_inactive_turn() {
-    let session_telemetry = test_session_telemetry();
-
-    emit_turn_network_proxy_metric(
-        &session_telemetry,
-        /*network_proxy_active*/ false,
-        ("tmp_mem_enabled", "false"),
-    );
-
-    let snapshot = session_telemetry
-        .snapshot_metrics()
-        .expect("runtime metrics snapshot");
-    let (attrs, value) = metric_point(&snapshot, TURN_NETWORK_PROXY_METRIC);
-
-    assert_eq!(value, 1);
-    assert_eq!(
-        attrs,
-        BTreeMap::from([
-            ("active".to_string(), "false".to_string()),
-            ("tmp_mem_enabled".to_string(), "false".to_string()),
         ])
     );
 }

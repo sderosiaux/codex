@@ -8,10 +8,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use anyhow::Result;
-use codex_config::AppToolApproval;
 use codex_protocol::mcp::CallToolResult;
-use codex_protocol::models::PermissionProfile;
-use codex_utils_absolute_path::AbsolutePathBuf;
 use rmcp::model::ListResourceTemplatesResult;
 use rmcp::model::ListResourcesResult;
 use rmcp::model::PaginatedRequestParams;
@@ -167,7 +164,7 @@ impl fmt::Debug for McpBinding {
     }
 }
 
-/// A call bound to an exact client, catalog revision, timeout, and permission authority.
+/// A call bound to an exact client, catalog revision, and timeout.
 #[derive(Clone)]
 pub struct PreparedMcpCall {
     connections: Arc<McpConnectionSet>,
@@ -224,11 +221,10 @@ impl PreparedMcpCall {
         server_metadata: McpServerMetadata,
         plugin_id: Option<String>,
         selected_plugin_server: bool,
-    ) -> Option<Self> {
+    ) -> Self {
         let tool_info = tool_info.into();
         let server_name = tool_info.get().server_name.clone();
-        config.permission_profile_for_server(&server_name)?;
-        Some(Self {
+        Self {
             connections,
             client,
             config,
@@ -238,56 +234,16 @@ impl PreparedMcpCall {
             server_metadata,
             plugin_id,
             selected_plugin_server,
-        })
+        }
     }
 
     pub fn tool_info(&self) -> &ToolInfo {
         self.tool_info.get()
     }
 
-    /// Returns the configuration and approval authority captured with this client.
+    /// Returns the configuration captured with this client.
     pub fn config(&self) -> &McpConfig {
         &self.config
-    }
-
-    /// Returns the owner permissions validated when this immutable call was prepared.
-    pub fn permission_profile(&self) -> &PermissionProfile {
-        let Some(permission_profile) = self.config.permission_profile_for_server(&self.server_name)
-        else {
-            unreachable!("prepared MCP calls retain their immutable permission authority");
-        };
-        permission_profile
-    }
-
-    /// Full CLI path usable by a local stdio server. An HTTP endpoint (even on
-    /// loopback) or remote executor does not establish a shared filesystem.
-    /// Capability probes are cached process-wide by absolute executable path.
-    pub async fn sandbox_codex_executable(&self) -> Option<AbsolutePathBuf> {
-        let server = self
-            .config
-            .mcp_server_catalog
-            .server(&self.server_name)?
-            .config();
-        if self.server_environment_id() != codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID
-            || !server.is_local_environment()
-            || !matches!(
-                server.transport,
-                codex_config::McpServerTransportConfig::Stdio { .. }
-            )
-        {
-            return None;
-        }
-
-        // Require a literal absolute path before the constructor can expand `~`.
-        let executable = self
-            .config
-            .codex_self_exe
-            .as_deref()
-            .filter(|path| path.is_absolute() && path.to_str().is_some())?;
-        let executable = AbsolutePathBuf::from_absolute_path_checked(executable).ok()?;
-        crate::sandbox_executable::supports_sandbox_state(&executable)
-            .await
-            .then_some(executable)
     }
 
     pub fn server_name(&self) -> &str {
@@ -321,11 +277,6 @@ impl PreparedMcpCall {
         self.server_metadata.pollutes_memory
     }
 
-    pub fn tool_approval_mode(&self) -> AppToolApproval {
-        self.server_metadata
-            .tool_approval_mode(&self.tool_info().tool.name)
-    }
-
     /// Returns the explicit output budget captured with this call's effective server config.
     pub fn output_token_limit(&self) -> Option<usize> {
         self.config
@@ -344,10 +295,6 @@ impl PreparedMcpCall {
 
     pub fn is_selected_plugin_server(&self) -> bool {
         self.selected_plugin_server
-    }
-
-    pub async fn server_supports_sandbox_state_meta_capability(&self) -> Result<bool> {
-        Ok(self.client.server_supports_sandbox_state_meta_capability)
     }
 
     pub async fn call(

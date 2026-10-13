@@ -110,11 +110,7 @@ impl AmazonBedrockModelProvider {
         };
         let http_client_factory = auth_manager
             .as_ref()
-            .map(|manager| {
-                manager
-                    .http_client_factory()
-                    .with_network_policy(manager.application_network_policy())
-            })
+            .map(|manager| manager.http_client_factory())
             .unwrap_or_else(|| {
                 codex_http_client::HttpClientFactory::new(
                     codex_http_client::OutboundProxyPolicy::ReqwestDefault,
@@ -191,12 +187,7 @@ impl AmazonBedrockModelProvider {
         if let Some(base_url) = self.info.base_url.clone() {
             return Ok(Some(base_url));
         }
-        let http_client_factory = self.http_client_factory.clone().with_network_policy(
-            self.http_client_factory
-                .network_policy()
-                .clone()
-                .for_current_account(),
-        );
+        let http_client_factory = self.http_client_factory.clone();
         let auth_source = self.auth_source();
         let managed_auth = self.managed_auth();
         let base_url = match self.endpoint {
@@ -223,12 +214,7 @@ impl AmazonBedrockModelProvider {
     }
 
     async fn api_auth(&self) -> Result<SharedAuthProvider> {
-        let http_client_factory = self.http_client_factory.clone().with_network_policy(
-            self.http_client_factory
-                .network_policy()
-                .clone()
-                .for_current_account(),
-        );
+        let http_client_factory = self.http_client_factory.clone();
         let source = self.auth_source();
         if source == auth::BedrockAuthSource::CommandBearerToken {
             let auth = self.auth().await;
@@ -354,26 +340,16 @@ impl ModelProvider for AmazonBedrockModelProvider {
             } else {
                 None
             };
-            let network_policy = self
-                .http_client_factory
-                .network_policy()
-                .clone()
-                .for_current_account();
-            let permit = network_policy
-                .acquire_for_unsupported_sdk()
-                .map_err(|error| CodexErr::Fatal(error.to_string()))?;
-            let result: std::io::Result<()> = permit
-                .run(async {
-                    if let Some(recovery) = &self.auth_recovery {
-                        recovery.refresh().await?;
-                    }
-                    if let Some(exporter) = export_refresh {
-                        exporter.refresh().await?;
-                    }
-                    Ok(())
-                })
-                .await
-                .map_err(|error| CodexErr::Fatal(error.to_string()))?;
+            let result: std::io::Result<()> = async {
+                if let Some(recovery) = &self.auth_recovery {
+                    recovery.refresh().await?;
+                }
+                if let Some(exporter) = export_refresh {
+                    exporter.refresh().await?;
+                }
+                Ok(())
+            }
+            .await;
             result.map_err(|error| {
                 if matches!(
                     error.kind(),

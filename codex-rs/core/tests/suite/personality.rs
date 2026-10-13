@@ -2,8 +2,6 @@ use codex_core::TurnInputRequest;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
-use codex_protocol::models::PermissionProfile;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::user_input::UserInput;
@@ -14,30 +12,19 @@ use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::local_requests;
 use core_test_support::test_codex::test_codex;
-use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
 use test_case::test_case;
 
 const CUSTOM_INSTRUCTIONS: &str = "Custom instructions\n# Personality\nThis must remain\n## Writing Style\nThis must also remain\n# General\nGeneral instructions";
 
-fn read_only_text_turn(
-    test: &TestCodex,
-    text: &str,
-    model: String,
-    approval_policy: AskForApproval,
-) -> TurnInputRequest {
-    let (sandbox_policy, permission_profile) =
-        turn_permission_fields(PermissionProfile::read_only(), test.cwd_path());
+fn text_turn(test: &TestCodex, text: &str, model: String) -> TurnInputRequest {
     TurnInputRequest::user_input(vec![UserInput::Text {
         text: text.into(),
         text_elements: Vec::new(),
     }])
     .with_thread_settings(ThreadSettingsOverrides {
         environments: Some(local_requests(test.config.cwd.clone())),
-        approval_policy: Some(approval_policy),
-        sandbox_policy: Some(sandbox_policy),
-        permission_profile,
         collaboration_mode: Some(CollaborationMode {
             mode: ModeKind::Default,
             settings: Settings {
@@ -82,11 +69,10 @@ async fn config_personality_controls_baked_personality_section(
     let test = builder.build_with_auto_env(&server).await?;
 
     test.codex
-        .start_or_steer_turn(read_only_text_turn(
+        .start_or_steer_turn(text_turn(
             &test,
             "hello",
             test.session_configured.model.clone(),
-            test.config.permissions.approval_policy.value(),
         ))
         .await?;
 
@@ -131,11 +117,10 @@ async fn config_personality_none_preserves_explicit_base_instructions(
     let test = builder.build_with_auto_env(&server).await?;
 
     test.codex
-        .start_or_steer_turn(read_only_text_turn(
+        .start_or_steer_turn(text_turn(
             &test,
             "hello",
             test.session_configured.model.clone(),
-            test.config.permissions.approval_policy.value(),
         ))
         .await?;
 

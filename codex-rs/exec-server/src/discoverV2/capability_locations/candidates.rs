@@ -52,10 +52,7 @@ impl CandidateCapabilityLocations {
                 CandidateCapabilityLocation::Cache(root)
                 | CandidateCapabilityLocation::Standalone(root) => root,
             };
-            let exists = match fs
-                .get_metadata(root, Default::default(), /*sandbox*/ None)
-                .await
-            {
+            let exists = match fs.get_metadata(root, Default::default()).await {
                 Ok(metadata) => metadata.is_directory,
                 Err(error) if error.kind() == io::ErrorKind::NotFound => false,
                 Err(error) => return Err(error),

@@ -5,7 +5,6 @@ use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::openai_models::ModelServiceTier;
-use codex_protocol::openai_models::ToolMode;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::user_input::UserInput;
@@ -84,23 +83,16 @@ async fn spawned_agent_prewarm_handshake_inherits_effective_root_service_tier(
         })
         .with_config(move |config| {
             for feature in [Feature::Collab, Feature::MultiAgentV2] {
-                config.features.enable(feature).expect("spawn feature");
+                config.features.enable(feature);
             }
             if fast_mode_enabled {
-                config
-                    .features
-                    .enable(Feature::FastMode)
-                    .expect("fast mode");
+                config.features.enable(Feature::FastMode);
             } else {
-                config
-                    .features
-                    .disable(Feature::FastMode)
-                    .expect("fast mode");
+                config.features.disable(Feature::FastMode);
             }
             config
                 .features
-                .set_enabled(Feature::UltrafastMode, ultrafast_mode_enabled)
-                .expect("configure Ultra Fast mode");
+                .set_enabled(Feature::UltrafastMode, ultrafast_mode_enabled);
             config.service_tier = Some(tier.to_string());
         })
         .build_with_websocket_server(&server)
@@ -173,14 +165,8 @@ async fn websocket_model_switch_to_responses_lite_omits_top_level_tools() -> Res
     .await;
 
     let mut builder = test_codex()
-        .with_model_info_override("gpt-5.2", |model_info| {
-            model_info.tool_mode = Some(ToolMode::CodeMode);
-            model_info.node_repl_auto_review_required = true;
-        })
         .with_model_info_override("gpt-5.4", |model_info| {
             model_info.use_responses_lite = true;
-            model_info.tool_mode = Some(ToolMode::CodeMode);
-            model_info.node_repl_disabled = true;
         })
         .with_model("gpt-5.2");
     let test = builder.build_with_websocket_server(&server).await?;
@@ -217,20 +203,6 @@ async fn websocket_model_switch_to_responses_lite_omits_top_level_tools() -> Res
 
     assert_eq!(non_lite_turn["model"].as_str(), Some("gpt-5.2"));
     assert_eq!(lite_turn["model"].as_str(), Some("gpt-5.4"));
-    for (request, auto_review_required, disabled) in
-        [(&non_lite_turn, true, false), (&lite_turn, false, true)]
-    {
-        let metadata: Value = serde_json::from_str(
-            request["client_metadata"]["x-codex-turn-metadata"]
-                .as_str()
-                .expect("websocket request should include turn metadata"),
-        )?;
-        assert_eq!(
-            metadata["node_repl_auto_review_required"],
-            auto_review_required
-        );
-        assert_eq!(metadata["node_repl_disabled"], disabled);
-    }
     assert!(
         non_lite_turn
             .get("tools")
@@ -276,8 +248,7 @@ async fn websocket_test_codex_shell_chain() -> Result<()> {
     let mut builder = test_codex().with_windows_cmd_shell();
 
     let test = builder.build_with_websocket_server(&server).await?;
-    test.submit_turn_with_policy("run the echo command", test.config.legacy_sandbox_policy())
-        .await?;
+    test.submit_turn("run the echo command").await?;
 
     let connection = server.single_connection();
     assert_eq!(connection.len(), 2);
@@ -328,12 +299,8 @@ async fn websocket_first_turn_uses_startup_prewarm_and_create(
         .with_model("gpt-5.2")
         .with_config(move |config| {
             config.update_plan_enabled = update_plan_enabled;
-            config.analytics_enabled = Some(false);
             if incremental_tools {
-                config
-                    .features
-                    .enable(Feature::IncrementalTools)
-                    .expect("enable incremental tools");
+                config.features.enable(Feature::IncrementalTools);
             }
         });
     if incremental_tools {
@@ -342,8 +309,7 @@ async fn websocket_first_turn_uses_startup_prewarm_and_create(
         });
     }
     let test = builder.build_with_websocket_server(&server).await?;
-    test.submit_turn_with_policy("hello", test.config.legacy_sandbox_policy())
-        .await?;
+    test.submit_turn("hello").await?;
 
     assert_eq!(server.handshakes().len(), 1);
     let connection = server.single_connection();
@@ -437,8 +403,7 @@ async fn websocket_first_turn_handles_handshake_delay_with_startup_prewarm() -> 
 
     let mut builder = test_codex();
     let test = builder.build_with_websocket_server(&server).await?;
-    test.submit_turn_with_policy("hello", test.config.legacy_sandbox_policy())
-        .await?;
+    test.submit_turn("hello").await?;
 
     assert_eq!(server.handshakes().len(), 1);
     let connection = server.single_connection();
@@ -486,16 +451,12 @@ async fn websocket_v2_test_codex_shell_chain() -> Result<()> {
     ]])
     .await;
 
-    let mut builder = test_codex().with_windows_cmd_shell().with_config(|config| {
-        config
-            .features
-            .enable(Feature::ResponsesWebsocketsV2)
-            .expect("test config should allow feature update");
-    });
+    let mut builder = test_codex()
+        .with_windows_cmd_shell()
+        .with_config(|_config| {});
 
     let test = builder.build_with_websocket_server(&server).await?;
-    test.submit_turn_with_policy("run the echo command", test.config.legacy_sandbox_policy())
-        .await?;
+    test.submit_turn("run the echo command").await?;
 
     let connection = server.single_connection();
     assert_eq!(connection.len(), 3);
@@ -594,12 +555,7 @@ async fn websocket_v2_first_turn_sends_full_create_when_tier_changes_after_start
         })
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
         .with_config(move |config| {
-            for feature in [Feature::ResponsesWebsocketsV2, Feature::FastMode] {
-                config
-                    .features
-                    .enable(feature)
-                    .expect("test config should allow feature update");
-            }
+            config.features.enable(Feature::FastMode);
             config.service_tier = startup_tier.map(str::to_string);
         });
     let test = builder.build_with_websocket_server(&server).await?;
@@ -671,12 +627,7 @@ async fn websocket_v2_next_turn_uses_updated_service_tier() -> Result<()> {
     ]])
     .await;
 
-    let mut builder = test_codex().with_config(|config| {
-        config
-            .features
-            .enable(Feature::ResponsesWebsocketsV2)
-            .expect("test config should allow feature update");
-    });
+    let mut builder = test_codex().with_config(|_config| {});
     let test = builder.build_with_websocket_server(&server).await?;
 
     let warmup = server

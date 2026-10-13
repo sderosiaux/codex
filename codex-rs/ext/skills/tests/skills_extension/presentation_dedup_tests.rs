@@ -96,7 +96,7 @@ async fn cloud_preference_preserves_aliases_reads_and_executor_fallback() -> Tes
             .resolve_selected_capability_roots(&roots, &Default::default())
             .await;
         assert_eq!(resolved_roots.len(), 1);
-        let access = FileSystemEnvironmentAccessor::unrestricted(&LOCAL_FS);
+        let access = FileSystemEnvironmentAccessor::new(&LOCAL_FS);
         let mut previous = serde_json::Map::new();
         let mut initial_cloud_body = None;
         let model_info = ModelInfo {
@@ -222,7 +222,6 @@ async fn cloud_preference_preserves_aliases_reads_and_executor_fallback() -> Tes
                         model: "test".to_string(),
                         codex_turn_metadata: None,
                         truncation_policy: TruncationPolicy::Bytes(20_000),
-                        source: ToolCallSource::Direct,
                         conversation_history: ConversationHistory::default(),
                         turn_item_emitter: Arc::new(NoopTurnItemEmitter),
                         environments: vec![ToolEnvironment::new(

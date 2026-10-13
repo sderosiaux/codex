@@ -8,7 +8,6 @@ use crate::ExecServerClient;
 use crate::FILE_READ_CHUNK_SIZE;
 use crate::FileSystemReadStream;
 use crate::FileSystemResult;
-use crate::FileSystemSandboxContext;
 use crate::protocol::FS_READ_BLOCK_METHOD;
 use crate::protocol::FsCloseParams;
 use crate::protocol::FsOpenMode;
@@ -25,7 +24,6 @@ struct FileReadRegistration {
 pub(super) async fn open(
     client: ExecServerClient,
     path: PathUri,
-    sandbox: Option<&FileSystemSandboxContext>,
 ) -> FileSystemResult<FileSystemReadStream> {
     let registration = FileReadRegistration {
         client,
@@ -39,7 +37,6 @@ pub(super) async fn open(
             handle_id: registration.handle_id.clone(),
             path,
             mode: FsOpenMode::Read,
-            sandbox: sandbox.cloned(),
         })
         .await
         .map_err(map_remote_error)?;

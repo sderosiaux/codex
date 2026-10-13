@@ -98,13 +98,9 @@ async fn mailbox_preemption_preserves_response_when_deferred(
             config.update_plan_enabled = true;
             config
                 .features
-                .set_enabled(Feature::DeferMailboxPreemption, defer_mailbox_preemption)
-                .expect("set mailbox policy");
+                .set_enabled(Feature::DeferMailboxPreemption, defer_mailbox_preemption);
             // The gated server captures uncompressed request bodies for assertions.
-            config
-                .features
-                .disable(Feature::EnableRequestCompression)
-                .expect("disable request compression");
+            config.features.disable(Feature::EnableRequestCompression);
         })
         .build_with_auto_env(&config_server)
         .await?;
@@ -134,10 +130,13 @@ async fn mailbox_preemption_preserves_response_when_deferred(
     }
     // The barrier confirms that both messages were queued before finishing the item.
     test.codex
-        .submit(Op::RealtimeConversationListVoices)
+        .submit(Op::ThreadSettings {
+            thread_settings: Default::default(),
+            reply: None,
+        })
         .await?;
     wait_for_event(&test.codex, |event| {
-        matches!(event, EventMsg::RealtimeConversationListVoicesResponse(_))
+        matches!(event, EventMsg::ThreadSettingsApplied(_))
     })
     .await;
     release.send(()).expect("release response");

@@ -158,7 +158,6 @@ mod tests {
     use codex_http_client::ClientRouteClass;
     use codex_http_client::HttpClientFactory;
     use codex_http_client::OutboundProxyPolicy;
-    use core_test_support::skip_if_no_network;
     use wiremock::Mock;
     use wiremock::MockServer;
     use wiremock::ResponseTemplate;
@@ -175,8 +174,6 @@ mod tests {
 
     #[tokio::test]
     async fn revoke_request_times_out() {
-        skip_if_no_network!();
-
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/oauth/revoke"))

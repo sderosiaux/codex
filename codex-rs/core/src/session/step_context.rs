@@ -1,11 +1,10 @@
-//! Request-scoped settings and capabilities, with live grants bound to the originating turn.
+//! Request-scoped settings and capabilities.
 
 use std::sync::Arc;
 
 use crate::agents_md::LoadedAgentsMd;
 use crate::config::TokenBudgetConfig;
 use crate::environment_selection::TurnEnvironmentSnapshot;
-use crate::realtime_conversation::RealtimeConversationSnapshot;
 use crate::session::step_settings::ResolvedStepSettings;
 use crate::session::turn_context::TurnContext;
 use crate::session::turn_context::TurnEnvironment;
@@ -23,10 +22,8 @@ use tokio_util::sync::CancellationToken;
 /// Request-scoped state that may change between model sampling requests.
 pub(crate) struct StepContext {
     pub(crate) turn: Arc<TurnContext>,
-    /// Preempts this request and yields its code-mode observations when user input arrives.
+    /// Preempts this request when user input arrives.
     pub(crate) preempt: Option<CancellationToken>,
-    /// Realtime call activity and instructions captured for this sampling request.
-    pub(crate) realtime: RealtimeConversationSnapshot,
     /// One immutable settings version captured before request preparation.
     pub(crate) settings: Arc<ResolvedStepSettings>,
     /// Frozen turn preferences resolved against this step's captured model.
@@ -59,24 +56,17 @@ impl StepContext {
                 .enabled(codex_features::Feature::IncrementalTools)
     }
 
-    /// Pairs the step's environments with access using current session and originating-turn grants.
+    /// Pairs the step's environments with filesystem access.
     pub(crate) fn environments(&self) -> Vec<(&TurnEnvironment, impl EnvironmentAccess + '_)> {
         self.environments
             .turn_environments()
-            .map(|environment| {
-                let grants = self
-                    .turn
-                    .granted_permissions(&environment.selection.environment_id);
-                (environment, environment.fs_accessor(grants))
-            })
+            .map(|environment| (environment, environment.fs_accessor()))
             .collect()
     }
 
     /// Persist the context captured for this request, even after a live update.
     pub(crate) fn to_turn_context_item(&self) -> TurnContextItem {
-        let mut item = self.turn.to_turn_context_item();
-        item.realtime_active = Some(self.realtime.active);
-        item
+        self.turn.to_turn_context_item()
     }
 
     pub(crate) fn model_context(&self) -> ModelInvocationContext {

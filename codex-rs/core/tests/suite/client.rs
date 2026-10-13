@@ -1,4 +1,3 @@
-use codex_config::test_support::CloudConfigBundleFixture;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_core::ModelClient;
 use codex_core::NewThread;
@@ -131,14 +130,10 @@ async fn responses_request_enforces_independent_speed_requirements(
                     }];
                 })
                 .with_config(move |config| {
+                    config.features.set_enabled(Feature::FastMode, fast_enabled);
                     config
                         .features
-                        .set_enabled(Feature::FastMode, fast_enabled)
-                        .expect("configure Fast mode");
-                    config
-                        .features
-                        .set_enabled(Feature::UltrafastMode, ultrafast_enabled)
-                        .expect("configure Ultra Fast mode");
+                        .set_enabled(Feature::UltrafastMode, ultrafast_enabled);
                     config.service_tier = configure_at_start.then(|| tier.to_string());
                 })
                 .build_with_auto_env(&server)
@@ -175,10 +170,7 @@ async fn responses_request_preserves_flex_without_catalog_support_or_fast_mode()
             .with_model("gpt-5.4")
             .with_model_info_override("gpt-5.4", |model| model.service_tiers.clear())
             .with_config(move |config| {
-                config
-                    .features
-                    .disable(Feature::FastMode)
-                    .expect("disable FastMode");
+                config.features.disable(Feature::FastMode);
                 config.service_tier = configure_at_start.then(|| "flex".to_string());
             })
             .build_with_auto_env(&server)
@@ -1135,10 +1127,6 @@ async fn resume_sends_prior_items() {
             .and_then(|phase| phase.as_str()),
         Some("commentary")
     );
-    let pos_permissions = messages
-        .iter()
-        .position(|(role, text)| role == "developer" && text.contains("<permissions instructions>"))
-        .expect("permissions message");
     let pos_user_instructions = messages
         .iter()
         .position(|(role, text)| {
@@ -1157,8 +1145,7 @@ async fn resume_sends_prior_items() {
         .expect("new user message");
 
     assert!(pos_prior_user < pos_prior_assistant);
-    assert!(pos_prior_assistant < pos_permissions);
-    assert!(pos_permissions < pos_user_instructions);
+    assert!(pos_prior_assistant < pos_user_instructions);
     assert!(pos_user_instructions < pos_environment);
     assert!(pos_environment < pos_new_user);
 }
@@ -1811,7 +1798,6 @@ async fn send_request_with_provider(provider: ModelProviderInfo) {
             summary.unwrap_or(ReasoningSummary::Auto),
             /*service_tier*/ None,
             &responses_metadata,
-            &codex_rollout_trace::InferenceTraceContext::disabled(),
         )
         .await
         .expect("responses stream to start");
@@ -2010,7 +1996,6 @@ async fn prefers_apikey_when_config_prefers_apikey_even_with_chatgpt_tokens() {
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
         empty_extension_registry(),
         Arc::new(codex_core::test_support::EmptyUserInstructionsProvider),
-        /*analytics_events_client*/ None,
         codex_core::passthrough_image_store(),
         thread_store_from_config(&config, /*state_db*/ None),
         /*agent_graph_store*/ None,
@@ -2079,10 +2064,10 @@ async fn includes_user_instructions_message_in_request() {
         .flat_map(message_input_texts)
         .collect::<Vec<_>>();
     assert!(
-        developer_texts
+        !developer_texts
             .iter()
             .any(|text| text.contains("`sandbox_mode`")),
-        "expected permissions message to mention sandbox_mode, got {developer_texts:?}"
+        "permissions instructions should no longer be sent, got {developer_texts:?}"
     );
 
     assert_message_role(&request_body["input"][2], "user");
@@ -2127,10 +2112,7 @@ async fn includes_apps_guidance_as_developer_message_for_chatgpt_auth() {
     let mut builder = test_codex()
         .with_auth(create_dummy_codex_auth())
         .with_config(move |config| {
-            config
-                .features
-                .enable(Feature::Apps)
-                .expect("test config should allow feature update");
+            config.features.enable(Feature::Apps);
             config.chatgpt_base_url = apps_base_url;
         });
     let codex = builder
@@ -2184,10 +2166,7 @@ async fn omits_apps_guidance_for_api_key_auth_even_when_feature_enabled() {
     let mut builder = test_codex()
         .with_auth(CodexAuth::from_api_key("Test API Key"))
         .with_config(move |config| {
-            config
-                .features
-                .enable(Feature::Apps)
-                .expect("test config should allow feature update");
+            config.features.enable(Feature::Apps);
             config.chatgpt_base_url = apps_base_url;
         });
     let codex = builder
@@ -2236,10 +2215,7 @@ async fn omits_apps_guidance_when_configured_off() {
     let mut builder = test_codex()
         .with_auth(create_dummy_codex_auth())
         .with_config(move |config| {
-            config
-                .features
-                .enable(Feature::Apps)
-                .expect("test config should allow feature update");
+            config.features.enable(Feature::Apps);
             config.chatgpt_base_url = apps_base_url;
             config.include_apps_instructions = false;
         });
@@ -2307,10 +2283,7 @@ async fn omits_apps_guidance_when_orchestrator_mcp_is_disabled() {
     let mut builder = test_codex()
         .with_auth(create_dummy_codex_auth())
         .with_config(move |config| {
-            config
-                .features
-                .enable(Feature::Apps)
-                .expect("test config should allow feature update");
+            config.features.enable(Feature::Apps);
             config.chatgpt_base_url = apps_base_url;
             config.orchestrator_mcp_enabled = false;
         });
@@ -2435,8 +2408,7 @@ async fn powershell_shell_version_is_model_visible_only_when_enabled() -> anyhow
             .with_config(move |config| {
                 config
                     .features
-                    .set_enabled(Feature::PowerShellShellVersion, enabled)
-                    .expect("test config should allow PowerShell version feature updates");
+                    .set_enabled(Feature::PowerShellShellVersion, enabled);
             });
         let test = builder.build_with_auto_env(&server).await?;
         test.submit_turn("report the selected shell").await?;
@@ -2568,8 +2540,6 @@ async fn user_turn_collaboration_mode_overrides_model_and_effort() -> anyhow::Re
             }])
             .with_thread_settings(ThreadSettingsOverrides {
                 environments: Some(local_requests(config.cwd.clone())),
-                approval_policy: Some(config.permissions.approval_policy.value()),
-                sandbox_policy: Some(config.legacy_sandbox_policy()),
                 summary: Some(
                     config
                         .model_reasoning_summary
@@ -2679,8 +2649,7 @@ async fn model_without_summary_parameter_support_omits_configured_summary() -> a
             config.model_reasoning_summary = Some(ReasoningSummary::Detailed);
             config
                 .features
-                .enable(Feature::ConcurrentReasoningSummaries)
-                .expect("test config should allow feature update");
+                .enable(Feature::ConcurrentReasoningSummaries);
         })
         .build_with_auto_env(&server)
         .await?;
@@ -2826,8 +2795,6 @@ async fn user_turn_explicit_reasoning_summary_overrides_model_catalog_default() 
             }])
             .with_thread_settings(ThreadSettingsOverrides {
                 environments: Some(local_requests(config.cwd.clone())),
-                approval_policy: Some(config.permissions.approval_policy.value()),
-                sandbox_policy: Some(config.legacy_sandbox_policy()),
                 summary: Some(ReasoningSummary::Concise),
                 collaboration_mode: Some(CollaborationMode {
                     mode: ModeKind::Default,
@@ -3114,10 +3081,10 @@ async fn includes_developer_instructions_message_in_request() {
         .flat_map(message_input_texts)
         .collect::<Vec<_>>();
     assert!(
-        developer_texts
+        !developer_texts
             .iter()
             .any(|text| text.contains("`sandbox_mode`")),
-        "expected permissions message to mention sandbox_mode, got {developer_texts:?}"
+        "permissions instructions should no longer be sent, got {developer_texts:?}"
     );
     assert!(
         developer_texts.contains(&"be useful"),
@@ -3146,48 +3113,6 @@ async fn includes_developer_instructions_message_in_request() {
                 && text.ends_with("</environment_context>")),
         "expected environment context in contextual user message, got {user_context_texts:?}"
     );
-}
-
-#[tokio::test]
-async fn includes_managed_developer_instructions_once_per_request() -> anyhow::Result<()> {
-    const CLIENT_INSTRUCTIONS: &str = "client developer instructions";
-    const MANAGED_INSTRUCTIONS: &str = "managed requirements instructions";
-
-    let server = start_mock_server().await;
-    let mut builder = test_codex()
-        .with_cloud_config_bundle(
-            CloudConfigBundleFixture::loader_with_enterprise_requirement(format!(
-                "additional_developer_instructions = {MANAGED_INSTRUCTIONS:?}"
-            )),
-        )
-        .with_config(|config| {
-            config.developer_instructions = Some(CLIENT_INSTRUCTIONS.to_string());
-        });
-    let test = builder.build_with_auto_env(&server).await?;
-    let managed_message = format!(
-        "<managed_developer_instructions>\n{MANAGED_INSTRUCTIONS}\n</managed_developer_instructions>"
-    );
-
-    for (response_id, prompt) in [("resp-1", "first turn"), ("resp-2", "second turn")] {
-        let response = mount_sse_once(&server, sse(vec![ev_completed(response_id)])).await;
-        test.submit_text_turn(prompt).await?;
-
-        let developer_messages = response.single_request().message_input_texts("developer");
-        assert!(
-            developer_messages
-                .iter()
-                .any(|message| message.contains(CLIENT_INSTRUCTIONS))
-        );
-        assert_eq!(
-            developer_messages
-                .iter()
-                .filter(|message| message.contains("<managed_developer_instructions>"))
-                .collect::<Vec<_>>(),
-            vec![&managed_message]
-        );
-    }
-
-    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3390,7 +3315,6 @@ async fn azure_responses_request_does_not_store_and_preserves_prefixed_item_ids(
             summary.unwrap_or(ReasoningSummary::Auto),
             /*service_tier*/ None,
             &responses_metadata,
-            &codex_rollout_trace::InferenceTraceContext::disabled(),
         )
         .await
         .expect("responses stream to start");

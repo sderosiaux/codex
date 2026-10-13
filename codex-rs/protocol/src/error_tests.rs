@@ -1,5 +1,4 @@
 use super::*;
-use crate::exec_output::StreamOutput;
 use crate::protocol::RateLimitWindow;
 use chrono::DateTime;
 use chrono::Duration as ChronoDuration;
@@ -219,57 +218,6 @@ fn server_overloaded_maps_to_protocol() {
 }
 
 #[test]
-fn sandbox_denied_uses_aggregated_output_when_stderr_empty() {
-    let output = ExecToolCallOutput {
-        exit_code: 77,
-        stdout: StreamOutput::new(String::new()),
-        stderr: StreamOutput::new(String::new()),
-        aggregated_output: StreamOutput::new("aggregate detail".to_string()),
-        duration: Duration::from_millis(10),
-        timed_out: false,
-    };
-    let err = CodexErr::Sandbox(SandboxErr::Denied {
-        output: Box::new(output),
-        network_policy_decision: None,
-    });
-    assert_eq!(get_error_message_ui(&err), "aggregate detail");
-}
-
-#[test]
-fn sandbox_denied_reports_both_streams_when_available() {
-    let output = ExecToolCallOutput {
-        exit_code: 9,
-        stdout: StreamOutput::new("stdout detail".to_string()),
-        stderr: StreamOutput::new("stderr detail".to_string()),
-        aggregated_output: StreamOutput::new(String::new()),
-        duration: Duration::from_millis(10),
-        timed_out: false,
-    };
-    let err = CodexErr::Sandbox(SandboxErr::Denied {
-        output: Box::new(output),
-        network_policy_decision: None,
-    });
-    assert_eq!(get_error_message_ui(&err), "stderr detail\nstdout detail");
-}
-
-#[test]
-fn sandbox_denied_reports_stdout_when_no_stderr() {
-    let output = ExecToolCallOutput {
-        exit_code: 11,
-        stdout: StreamOutput::new("stdout only".to_string()),
-        stderr: StreamOutput::new(String::new()),
-        aggregated_output: StreamOutput::new(String::new()),
-        duration: Duration::from_millis(8),
-        timed_out: false,
-    };
-    let err = CodexErr::Sandbox(SandboxErr::Denied {
-        output: Box::new(output),
-        network_policy_decision: None,
-    });
-    assert_eq!(get_error_message_ui(&err), "stdout only");
-}
-
-#[test]
 fn to_error_event_handles_response_stream_failed() {
     let response = RawHttpResponse::builder()
         .status(StatusCode::TOO_MANY_REQUESTS)
@@ -295,26 +243,6 @@ fn to_error_event_handles_response_stream_failed() {
         Some(CodexErrorInfo::ResponseStreamConnectionFailed {
             http_status_code: Some(429)
         })
-    );
-}
-
-#[test]
-fn sandbox_denied_reports_exit_code_when_no_output_available() {
-    let output = ExecToolCallOutput {
-        exit_code: 13,
-        stdout: StreamOutput::new(String::new()),
-        stderr: StreamOutput::new(String::new()),
-        aggregated_output: StreamOutput::new(String::new()),
-        duration: Duration::from_millis(5),
-        timed_out: false,
-    };
-    let err = CodexErr::Sandbox(SandboxErr::Denied {
-        output: Box::new(output),
-        network_policy_decision: None,
-    });
-    assert_eq!(
-        get_error_message_ui(&err),
-        "command failed inside sandbox with exit code 13"
     );
 }
 

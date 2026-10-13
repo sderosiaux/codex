@@ -123,7 +123,7 @@ pub async fn start_streaming_sse_server(
                             return;
                         }
 
-                        if method == "POST" && (responses_route || path == "/backend-api/codex/guardian") {
+                        if method == "POST" && responses_route {
                             let body = match read_request_body(&mut stream, &request, body_prefix)
                                 .await
                             {

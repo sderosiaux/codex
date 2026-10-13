@@ -3,7 +3,6 @@ use codex_config::CONFIG_TOML_FILE;
 use codex_config::ConfigLayerEntry;
 use codex_config::ConfigLayerSource;
 use codex_config::ConfigLayerStack;
-use codex_config::ConfigRequirementsToml;
 use codex_exec_server::LOCAL_FS;
 use codex_skills::ImplicitSkillLookup;
 use codex_skills::LoadedSkillRoot;
@@ -117,12 +116,8 @@ fn user_config_layer(codex_home: &TempDir, config_toml: &str) -> ConfigLayerEntr
 }
 
 fn config_stack(codex_home: &TempDir, user_config_toml: &str) -> ConfigLayerStack {
-    ConfigLayerStack::new(
-        vec![user_config_layer(codex_home, user_config_toml)],
-        Default::default(),
-        ConfigRequirementsToml::default(),
-    )
-    .expect("valid config layer stack")
+    ConfigLayerStack::new(vec![user_config_layer(codex_home, user_config_toml)])
+        .expect("valid config layer stack")
 }
 
 fn config_stack_with_session_flags(
@@ -130,17 +125,13 @@ fn config_stack_with_session_flags(
     user_config_toml: &str,
     session_flags_toml: &str,
 ) -> ConfigLayerStack {
-    ConfigLayerStack::new(
-        vec![
-            user_config_layer(codex_home, user_config_toml),
-            ConfigLayerEntry::new(
-                ConfigLayerSource::SessionFlags,
-                toml::from_str(session_flags_toml).expect("session layer toml"),
-            ),
-        ],
-        Default::default(),
-        ConfigRequirementsToml::default(),
-    )
+    ConfigLayerStack::new(vec![
+        user_config_layer(codex_home, user_config_toml),
+        ConfigLayerEntry::new(
+            ConfigLayerSource::SessionFlags,
+            toml::from_str(session_flags_toml).expect("session layer toml"),
+        ),
+    ])
     .expect("valid config layer stack")
 }
 
@@ -753,19 +744,15 @@ async fn skills_for_cwd_loads_repo_and_user_roots_with_local_fs() {
     )
     .expect("write repo skill");
 
-    let config_layer_stack = ConfigLayerStack::new(
-        vec![
-            user_config_layer(&codex_home, ""),
-            ConfigLayerEntry::new(
-                ConfigLayerSource::Project {
-                    dot_codex_folder: repo_dot_codex.abs(),
-                },
-                toml::Value::Table(toml::map::Map::new()),
-            ),
-        ],
-        Default::default(),
-        ConfigRequirementsToml::default(),
-    )
+    let config_layer_stack = ConfigLayerStack::new(vec![
+        user_config_layer(&codex_home, ""),
+        ConfigLayerEntry::new(
+            ConfigLayerSource::Project {
+                dot_codex_folder: repo_dot_codex.abs(),
+            },
+            toml::Value::Table(toml::map::Map::new()),
+        ),
+    ])
     .expect("valid config layer stack");
     let skills_input =
         HostSkillsLoadInput::new(cwd.path().abs(), Vec::new(), config_layer_stack.clone());
@@ -797,7 +784,7 @@ async fn skills_for_cwd_loads_repo_and_user_roots_with_local_fs() {
     assert!(loaded_names.contains("user-skill"));
     assert!(loaded_names.contains("repo-skill"));
     let other_file_system: Arc<dyn codex_exec_server::ExecutorFileSystem> =
-        Arc::new(codex_exec_server::LocalFileSystem::unsandboxed());
+        Arc::new(codex_exec_server::LocalFileSystem::new());
     let other_snapshot = skills_service
         .snapshot_for_config(&skills_input, Some(other_file_system))
         .await;
@@ -820,19 +807,15 @@ async fn skills_for_cwd_without_fs_skips_repo_roots() {
     )
     .expect("write repo skill");
 
-    let config_layer_stack = ConfigLayerStack::new(
-        vec![
-            user_config_layer(&codex_home, ""),
-            ConfigLayerEntry::new(
-                ConfigLayerSource::Project {
-                    dot_codex_folder: repo_dot_codex.abs(),
-                },
-                toml::Value::Table(toml::map::Map::new()),
-            ),
-        ],
-        Default::default(),
-        ConfigRequirementsToml::default(),
-    )
+    let config_layer_stack = ConfigLayerStack::new(vec![
+        user_config_layer(&codex_home, ""),
+        ConfigLayerEntry::new(
+            ConfigLayerSource::Project {
+                dot_codex_folder: repo_dot_codex.abs(),
+            },
+            toml::Value::Table(toml::map::Map::new()),
+        ),
+    ])
     .expect("valid config layer stack");
     let skills_input =
         HostSkillsLoadInput::new(cwd.path().abs(), Vec::new(), config_layer_stack.clone());

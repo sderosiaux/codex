@@ -242,11 +242,6 @@ pub struct ModelInvocationContext {
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq)]
 pub struct CommandExecutionItem {
-    /// Observed process backend for live analytics; None means unknown or not launched.
-    #[serde(skip)]
-    #[schemars(skip)]
-    #[ts(skip)]
-    pub sandbox_type: Option<crate::sandbox::SandboxType>,
     #[serde(skip)]
     #[schemars(skip)]
     #[ts(skip)]
@@ -414,9 +409,6 @@ pub struct FileChangeItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub status: Option<PatchApplyStatus>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub auto_approved: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub stdout: Option<String>,

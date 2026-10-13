@@ -8,7 +8,6 @@ mod mcp_attribution;
 mod request_metadata;
 
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
@@ -16,7 +15,6 @@ use std::sync::Weak;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
-use codex_code_mode::CellId;
 use codex_features::Feature;
 use codex_features::Features;
 use codex_history::InitialHistory;
@@ -24,27 +22,15 @@ use codex_protocol::ResponseItemId;
 use codex_protocol::mcp::McpAttribution;
 use codex_protocol::mcp::McpAttributionSource;
 use codex_protocol::models::ExecutedToolCall;
-use codex_protocol::models::ExecutedToolCallArguments;
 use codex_protocol::models::ResponseItem;
-use codex_protocol::models::ToolResultMetadata;
 use codex_protocol::models::executed_tool_call_metadata_bytes;
-use codex_protocol::models::normalize_executed_tool_call_completeness;
-use codex_protocol::openai_models::ToolMode;
-use indexmap::IndexMap;
 use serde_json::Value as JsonValue;
 
 use crate::session::session::Session;
-use crate::session::step_context::StepContext;
-use crate::tools::context::ToolCallSource;
-use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
 use crate::tools::metadata_metrics;
 use crate::tools::router::ToolCall;
-use crate::utils::json::serialized_json_bytes;
-
-mod seen_ids;
-
-use seen_ids::SeenIds;
+use codex_protocol::ToolName;
 
 const MAX_PENDING_EXECUTED_TOOL_CALLS: usize = 256;
 // Limits new Direct metadata retained in history and the append-only rollout
@@ -52,11 +38,8 @@ const MAX_PENDING_EXECUTED_TOOL_CALLS: usize = 256;
 // budget because raw result metadata is intentionally not deserialized.
 const MAX_RETAINED_DIRECT_METADATA_BYTES: usize = 1024 * 1024;
 
-type ExecutedToolCallCache =
-    HashMap<(std::mem::Discriminant<ResponseItem>, String), Vec<ExecutedToolCall>>;
-
-/// Best-effort recording shared by a session and its Code Mode broker. Disabled
-/// sessions allocate no recorder state; missing evidence remains incomplete.
+/// Best-effort recording shared by a session's tool calls. Disabled sessions
+/// allocate no recorder state; missing evidence remains incomplete.
 #[derive(Clone, Default)]
 pub(crate) struct ExecutedToolCalls {
     state: Arc<Mutex<Option<ExecutedToolCallRecorderState>>>,
@@ -98,170 +81,14 @@ struct ExecutedToolCallRecorderState {
     recording: Arc<()>,
     // Full live Direct observations; persisted outputs keep their bounded projection.
     direct_calls: HashMap<ResponseItemId, ExecutedToolCall>,
-    cells: HashMap<CellId, RecordedCell>,
-    output_cells: HashMap<String, CellId>,
-    retained_calls: HashMap<(std::mem::Discriminant<ResponseItem>, String), RetainedToolCalls>,
-    pending_nested_calls: usize,
-    seen_ids: SeenIds,
-    // Keep nested IDs separate so this conservative filter cannot change existing completeness.
-    seen_nested_ids: SeenIds,
-    can_prove_wait_completion: bool,
-    pending_wrapper_origins: HashSet<String>,
-}
-
-/// Keep each output's calls and completion marker together through replay and pruning.
-#[derive(Default)]
-struct RetainedToolCalls {
-    calls: Vec<ExecutedToolCall>,
-    complete: bool,
-    cell_id: Option<String>,
-    runtime_cell_id: Option<CellId>,
-    // Invocation IDs stay local and are retained only with their original output's calls.
-    call_index_by_id: HashMap<String, usize>,
-    // Track newly backfilled metadata separately from pre-existing observations.
-    truncated_call_index_by_id: HashMap<String, usize>,
-    late_truncated_indices: HashSet<usize>,
-    result_metadata_updated: bool,
-}
-
-impl RetainedToolCalls {
-    fn clear_late_truncated_metadata(&mut self) {
-        for index in self.late_truncated_indices.drain() {
-            if let Some(call) = self.calls.get_mut(index) {
-                call.set_tool_result_metadata(ToolResultMetadata::default());
-                self.result_metadata_updated = true;
-            }
-        }
-        self.truncated_call_index_by_id.clear();
-    }
-}
-
-#[derive(Default, PartialEq, Eq)]
-enum CellCompletion {
-    #[default]
-    Unobserved,
-    Recording,
-    Incomplete,
-    Complete,
-}
-
-#[derive(Default)]
-struct RecordedCell {
-    pending_calls: IndexMap<String, ExecutedToolCall>,
-    completion: CellCompletion,
-    originating_call_id: Option<String>,
-    truncated_metadata_binding_valid: bool,
-    observed_truncated_call: bool,
-    dispatch_closed: bool,
-}
-
-impl ExecutedToolCallRecorderState {
-    fn invalidate_origin(&mut self, origin: &str) {
-        self.pending_wrapper_origins.remove(origin);
-        for cell in self.cells.values_mut() {
-            if cell.originating_call_id.as_deref() == Some(origin) {
-                cell.completion = CellCompletion::Incomplete;
-                cell.truncated_metadata_binding_valid = false;
-            }
-        }
-        for ((_, output_id), retained) in &mut self.retained_calls {
-            if output_id == origin || retained.cell_id.as_deref() == Some(origin) {
-                retained.complete = false;
-                retained.clear_late_truncated_metadata();
-            }
-        }
-    }
-
-    // A successful callback consumes the freshness observed at wrapper submission.
-    fn observe_cell_origin(&mut self, origin: &str) -> bool {
-        let fresh =
-            self.pending_wrapper_origins.remove(origin) || self.seen_ids.observe_call_id(origin);
-        if !fresh {
-            self.invalidate_origin(origin);
-        }
-        fresh
-    }
-
-    fn invalidate_cell(&mut self, cell_id: &CellId) {
-        if let Some(cell) = self.cells.get_mut(cell_id) {
-            cell.completion = CellCompletion::Incomplete;
-            cell.truncated_metadata_binding_valid = false;
-        }
-        for retained in self.retained_calls.values_mut() {
-            if retained.runtime_cell_id.as_ref() == Some(cell_id) {
-                retained.complete = false;
-                retained.clear_late_truncated_metadata();
-            }
-        }
-    }
-
-    fn register_cell(&mut self, cell_id: &CellId, output_call_id: &str) {
-        if self.output_cells.len() >= MAX_PENDING_EXECUTED_TOOL_CALLS {
-            // Ended empty cells can leave mappings without any records to attach.
-            // Reclaim those only under pressure, preserving late partial records otherwise.
-            self.output_cells
-                .retain(|_, cell_id| self.cells.contains_key(cell_id));
-        }
-        loop {
-            let needs_cell_slot = self.cells.len() >= MAX_PENDING_EXECUTED_TOOL_CALLS
-                && !self.cells.contains_key(cell_id);
-            if !needs_cell_slot && self.pending_nested_calls < MAX_PENDING_EXECUTED_TOOL_CALLS {
-                break;
-            }
-
-            let output_cells = self.output_cells.values().collect::<HashSet<_>>();
-            let finished_cell = self.cells.iter().find_map(|(id, cell)| {
-                // Preserve late records until pressure, and never discard the cell
-                // whose output is about to make those records attachable again.
-                // Empty cells can free cell slots, but not pending-call slots.
-                (id != cell_id
-                    && (needs_cell_slot || !cell.pending_calls.is_empty())
-                    && matches!(
-                        cell.completion,
-                        CellCompletion::Complete | CellCompletion::Incomplete
-                    )
-                    && !output_cells.contains(id))
-                .then(|| (id.clone(), cell.pending_calls.len()))
-            });
-            let Some((id, pending_calls)) = finished_cell else {
-                break;
-            };
-            self.invalidate_cell(&id);
-            self.cells.remove(&id);
-            self.pending_nested_calls = self.pending_nested_calls.saturating_sub(pending_calls);
-        }
-        if (self.cells.len() >= MAX_PENDING_EXECUTED_TOOL_CALLS
-            && !self.cells.contains_key(cell_id))
-            || (self.output_cells.len() >= MAX_PENDING_EXECUTED_TOOL_CALLS
-                && !self.output_cells.contains_key(output_call_id))
-        {
-            return;
-        }
-        self.cells
-            .entry(cell_id.clone())
-            .or_default()
-            .originating_call_id
-            .get_or_insert_with(|| output_call_id.to_string());
-        self.output_cells
-            .insert(output_call_id.to_string(), cell_id.clone());
-    }
 }
 
 impl ExecutedToolCalls {
     pub(crate) fn new(features: &Features, history: &InitialHistory) -> Self {
         Self {
-            state: Arc::new(Mutex::new(Self::is_enabled(features).then(|| {
-                ExecutedToolCallRecorderState {
-                    seen_ids: SeenIds::from_history(history),
-                    // Runtime cell IDs can restart after resume/fork; inherited wait
-                    // handles cannot be distinguished from newly allocated handles.
-                    can_prove_wait_completion: matches!(
-                        history,
-                        InitialHistory::New | InitialHistory::Cleared
-                    ),
-                    ..Default::default()
-                }
-            }))),
+            state: Arc::new(Mutex::new(
+                Self::is_enabled(features).then(ExecutedToolCallRecorderState::default),
+            )),
             retained_direct_metadata_bytes: Arc::new(AtomicUsize::new(0)),
             pending_direct_calls: Arc::new(AtomicUsize::new(0)),
             mcp_attribution: mcp_attribution::McpAttributionRecorder::new(history),
@@ -290,50 +117,12 @@ impl ExecutedToolCalls {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// A later wait cannot claim a complete inventory if an earlier wire copy
-    /// lost recorded calls or tool names from the same Code Mode cell.
-    pub(crate) fn invalidate_wire_inventory_loss(
-        &self,
-        original: &[ResponseItem],
-        bounded: &[ResponseItem],
-    ) {
-        let mut state = self.lock_state();
-        let Some(state) = state.as_mut() else {
-            return;
-        };
-        // Request bounding clones the same items in the same order; it only edits metadata.
-        for (original, bounded) in original.iter().zip(bounded) {
-            let Some(metadata) = original.executed_tool_call_metadata() else {
-                continue;
-            };
-            let Some(origin) = metadata.cell_id.as_deref() else {
-                continue;
-            };
-            let Some(calls) = metadata
-                .executed_tool_calls
-                .as_deref()
-                .filter(|calls| !calls.is_empty())
-            else {
-                continue;
-            };
-            if bounded
-                .executed_tool_call_metadata()
-                .is_none_or(|bounded| !bounded.has_same_tool_call_inventory(calls))
-            {
-                state.invalidate_origin(origin);
-            }
-        }
-    }
-
     /// Called under the session config lock; this never changes execution features.
     pub(crate) fn refresh(&self, features: &Features) {
         let enabled = Self::is_enabled(features);
         let mut state = self.lock_state();
         if enabled != state.is_some() {
-            *state = enabled.then(|| ExecutedToolCallRecorderState {
-                seen_ids: SeenIds::unobserved_history(),
-                ..Default::default()
-            });
+            *state = enabled.then(ExecutedToolCallRecorderState::default);
         }
     }
 
@@ -342,28 +131,13 @@ impl ExecutedToolCalls {
         features.enabled(Feature::ExecutedToolCallMetadata)
     }
 
-    pub(crate) fn record_tool_call(
-        &self,
-        call: &ToolCall,
-        source: &ToolCallSource,
-        step_context: &StepContext,
-    ) {
-        self.record_call(call, source, step_context.tool_router.tool_mode());
-    }
-
     /// Keep a Direct record with its invocation so it can be attached to that invocation's output.
     pub(crate) fn prepare_direct_call(
         &self,
         call: &ToolCall,
-        source: &ToolCallSource,
-        step_context: &StepContext,
     ) -> Option<(ExecutedToolCall, DirectCallPermit)> {
-        if is_code_mode_wrapper(call, source, step_context.tool_router.tool_mode()) {
-            return None;
-        }
         let permit = self.reserve_direct_call()?;
-        let (recorded, _) = recorded_call(call);
-        Some((recorded, permit))
+        Some((recorded_call(call), permit))
     }
 
     fn reserve_direct_call(&self) -> Option<DirectCallPermit> {
@@ -443,289 +217,10 @@ impl ExecutedToolCalls {
             codex_otel::global().as_ref(),
         );
     }
-
-    /// Remember IDs from response items that bypass local tool dispatch.
-    pub(crate) fn observe_non_dispatched_call(&self, item: &ResponseItem) {
-        let Some(call_id) = input_call_id(item) else {
-            return;
-        };
-        let mut state = self.lock_state();
-        let Some(state) = state.as_mut() else {
-            return;
-        };
-        if !state.seen_ids.observe_call_id(call_id) {
-            state.invalidate_origin(call_id);
-        }
-    }
-
-    pub(crate) fn record_accepted_result(
-        &self,
-        source: &ToolCallSource,
-        call_id: &str,
-        result: &dyn ToolOutput,
-    ) {
-        if !matches!(source, ToolCallSource::CodeMode { .. }) {
-            return;
-        }
-        // Release the lock before calling the output's trait method.
-        let recording = self.lock_state().is_some();
-        if recording && let Some(metadata) = result.tool_result_metadata() {
-            self.record_tool_result_metadata(source, call_id, metadata);
-        }
-    }
-
-    fn record_call(&self, call: &ToolCall, source: &ToolCallSource, tool_mode: ToolMode) {
-        if self.lock_state().is_none() {
-            return;
-        }
-        match source {
-            ToolCallSource::Direct | ToolCallSource::DirectPlaintextMessage => {
-                let mut state = self.lock_state();
-                let Some(state) = state.as_mut() else {
-                    return;
-                };
-                let fresh = state.seen_ids.observe_call_id(&call.call_id);
-                if !fresh {
-                    state.invalidate_origin(&call.call_id);
-                }
-                if fresh
-                    && is_code_mode_wrapper(call, source, tool_mode)
-                    && state.pending_wrapper_origins.len() < MAX_PENDING_EXECUTED_TOOL_CALLS
-                {
-                    state.pending_wrapper_origins.insert(call.call_id.clone());
-                }
-            }
-            ToolCallSource::CodeMode { cell_id, .. } => {
-                let (recorded_call, original_bytes) = recorded_call(call);
-                self.record_nested_tool_call(
-                    CellId::new(cell_id.clone()),
-                    call.call_id.clone(),
-                    recorded_call,
-                    original_bytes,
-                );
-            }
-        }
-    }
-
-    fn record_nested_tool_call(
-        &self,
-        cell_id: CellId,
-        call_id: String,
-        call: ExecutedToolCall,
-        original_bytes: usize,
-    ) {
-        let mut state = self.lock_state();
-        let Some(state) = state.as_mut() else {
-            return;
-        };
-        let unique_nested_id = state.seen_nested_ids.observe_call_id(&call_id);
-        if !unique_nested_id {
-            for retained in state.retained_calls.values_mut() {
-                if retained.truncated_call_index_by_id.contains_key(&call_id) {
-                    retained.clear_late_truncated_metadata();
-                }
-            }
-        }
-        if state
-            .cells
-            .get(&cell_id)
-            .is_none_or(|cell| cell.dispatch_closed)
-        {
-            state.invalidate_cell(&cell_id);
-        }
-        if state.pending_nested_calls > MAX_PENDING_EXECUTED_TOOL_CALLS
-            || (state.cells.len() >= MAX_PENDING_EXECUTED_TOOL_CALLS
-                && !state.cells.contains_key(&cell_id))
-        {
-            if let Some(cell) = state.cells.get_mut(&cell_id) {
-                cell.completion = CellCompletion::Incomplete;
-            }
-            return;
-        }
-        let at_pending_call_limit = state.pending_nested_calls == MAX_PENDING_EXECUTED_TOOL_CALLS;
-        let cell = state.cells.entry(cell_id).or_default();
-        let duplicate_call_id = cell.pending_calls.contains_key(&call_id);
-        if !unique_nested_id || duplicate_call_id {
-            cell.truncated_metadata_binding_valid = false;
-        }
-        let call = if at_pending_call_limit {
-            ExecutedToolCall::truncated(call.name, original_bytes, /*max_bytes*/ 0)
-        } else {
-            call
-        };
-        let truncated = matches!(
-            call.arguments(),
-            ExecutedToolCallArguments::Truncated { .. }
-        );
-        cell.observed_truncated_call |= truncated;
-        cell.completion = if cell.completion == CellCompletion::Recording
-            && !duplicate_call_id
-            && call.has_complete_inventory()
-        {
-            CellCompletion::Recording
-        } else {
-            CellCompletion::Incomplete
-        };
-        cell.pending_calls.insert(call_id, call);
-        if !duplicate_call_id {
-            state.pending_nested_calls += 1;
-        }
-    }
-
-    fn record_tool_result_metadata(
-        &self,
-        source: &ToolCallSource,
-        call_id: &str,
-        metadata: &JsonValue,
-    ) -> bool {
-        let ToolCallSource::CodeMode { cell_id, .. } = source else {
-            return false;
-        };
-        let metadata = ToolResultMetadata::new(metadata);
-        let has_metadata = metadata.is_some();
-        let mut state = self.lock_state();
-        let Some(state) = state.as_mut() else {
-            return false;
-        };
-        let call = state
-            .cells
-            .get_mut(&CellId::new(cell_id.clone()))
-            .and_then(|cell| cell.pending_calls.get_mut(call_id));
-        if let Some(call) = call {
-            call.set_tool_result_metadata(metadata);
-            return has_metadata;
-        }
-        let retained_call = state.retained_calls.values_mut().find_map(|retained| {
-            if retained.runtime_cell_id.as_ref()?.as_str() != cell_id.as_str() {
-                return None;
-            }
-            let index = *retained.call_index_by_id.get(call_id)?;
-            Some((retained, index))
-        });
-        if let Some((retained, index)) = retained_call {
-            // Older retry copies must not overwrite this output's accepted result metadata.
-            retained.result_metadata_updated = true;
-            retained.calls[index].set_tool_result_metadata(metadata);
-            return has_metadata;
-        }
-        let mut candidates = state.retained_calls.values_mut().filter_map(|retained| {
-            if retained.runtime_cell_id.as_ref()?.as_str() != cell_id.as_str() {
-                return None;
-            }
-            let index = *retained.truncated_call_index_by_id.get(call_id)?;
-            Some((retained, index))
-        });
-        let Some((retained, index)) = candidates.next() else {
-            return false;
-        };
-        if candidates.next().is_some() {
-            return false;
-        }
-        retained.late_truncated_indices.insert(index);
-        retained.result_metadata_updated = true;
-        retained.calls[index].set_tool_result_metadata(metadata);
-        has_metadata
-    }
-
-    pub(crate) fn register_cell(&self, cell_id: &CellId, output_call_id: &str) {
-        let mut state = self.lock_state();
-        let Some(state) = state.as_mut() else {
-            return;
-        };
-        if !state.observe_cell_origin(output_call_id) {
-            state.invalidate_cell(cell_id);
-        }
-        state.register_cell(cell_id, output_call_id);
-    }
-
-    pub(crate) fn start_cell(&self, cell_id: &CellId, output_call_id: &str) {
-        let mut state = self.lock_state();
-        let Some(state) = state.as_mut() else {
-            return;
-        };
-        let unique_cell = state.seen_ids.observe_runtime_cell_id(cell_id);
-        let unique_origin = state.observe_cell_origin(output_call_id);
-        if !unique_cell {
-            state.invalidate_cell(cell_id);
-            // A reused runtime ID cannot distinguish the old pending calls or
-            // output mappings from this new execution. Do not attach them to it.
-            if let Some(previous) = state.cells.remove(cell_id) {
-                state.pending_nested_calls = state
-                    .pending_nested_calls
-                    .saturating_sub(previous.pending_calls.len());
-            }
-            state.output_cells.retain(|_, mapped| mapped != cell_id);
-        }
-        let history_ids_indexed = state.seen_ids.history_ids_indexed();
-        state.register_cell(cell_id, output_call_id);
-        if let Some(cell) = state.cells.get_mut(cell_id) {
-            // Failed indexing must not make a known historical ID look fresh.
-            cell.dispatch_closed = false;
-            cell.truncated_metadata_binding_valid =
-                unique_cell && unique_origin && history_ids_indexed;
-            cell.completion = if unique_cell && unique_origin && history_ids_indexed {
-                CellCompletion::Recording
-            } else {
-                CellCompletion::Incomplete
-            };
-        }
-    }
-
-    pub(crate) fn finish_cell_recording(&self, cell_id: &CellId) {
-        let mut state = self.lock_state();
-        let Some(state) = state.as_mut() else {
-            return;
-        };
-        // A closed cell may still be referenced by the final wait output. Keep its
-        // original binding while late truncated results remain eligible for backfill.
-        let has_retained_truncated_calls = state.retained_calls.values().any(|retained| {
-            retained.runtime_cell_id.as_ref() == Some(cell_id)
-                && !retained.truncated_call_index_by_id.is_empty()
-        });
-        if let Some(cell) = state.cells.get_mut(cell_id) {
-            cell.dispatch_closed = true;
-            match cell.completion {
-                CellCompletion::Recording => {
-                    // The closed dispatch gate makes this lossless inventory final, even if empty.
-                    cell.completion = CellCompletion::Complete;
-                }
-                CellCompletion::Unobserved | CellCompletion::Incomplete => {
-                    // Drop unverified cells only after emitting any partial records.
-                    if cell.pending_calls.is_empty() && !has_retained_truncated_calls {
-                        state.cells.remove(cell_id);
-                    }
-                }
-                CellCompletion::Complete => {}
-            }
-        }
-    }
 }
 
-fn is_code_mode_wrapper(call: &ToolCall, source: &ToolCallSource, tool_mode: ToolMode) -> bool {
-    matches!(source, ToolCallSource::Direct)
-        && matches!(tool_mode, ToolMode::CodeMode | ToolMode::CodeModeOnly)
-        && call.tool_name.is_default_namespace()
-        && matches!(
-            (call.tool_name.name.as_str(), &call.payload),
-            (
-                crate::tools::code_mode::PUBLIC_TOOL_NAME,
-                ToolPayload::Custom { .. }
-            ) | (
-                crate::tools::code_mode::WAIT_TOOL_NAME,
-                ToolPayload::Function { .. }
-            )
-        )
-}
-
-fn recorded_call(call: &ToolCall) -> (ExecutedToolCall, usize) {
-    let original_bytes = match &call.payload {
-        ToolPayload::Function { arguments } => arguments.len(),
-        ToolPayload::Custom { input } => serialized_json_bytes(input).unwrap_or(usize::MAX),
-        ToolPayload::ToolSearch { arguments } => {
-            serialized_json_bytes(arguments).unwrap_or(usize::MAX)
-        }
-    };
-    let name = codex_tools::code_mode_name_for_tool_name(&call.tool_name);
+fn recorded_call(call: &ToolCall) -> ExecutedToolCall {
+    let name = flat_tool_name(&call.tool_name);
     let arguments = match &call.payload {
         ToolPayload::Function { arguments } => {
             serde_json::from_str(arguments).unwrap_or_else(|_| JsonValue::String(arguments.clone()))
@@ -735,24 +230,19 @@ fn recorded_call(call: &ToolCall) -> (ExecutedToolCall, usize) {
             serde_json::to_value(arguments).unwrap_or_default()
         }
     };
-    (ExecutedToolCall::new(name, arguments), original_bytes)
+    ExecutedToolCall::new(name, arguments)
 }
 
-fn input_call_id(item: &ResponseItem) -> Option<&str> {
-    match item {
-        ResponseItem::FunctionCall { call_id, .. }
-        | ResponseItem::CustomToolCall { call_id, .. } => Some(call_id),
-        ResponseItem::ToolSearchCall { call_id, .. }
-        | ResponseItem::LocalShellCall { call_id, .. } => call_id.as_deref(),
-        _ => None,
+/// Server-facing flat name: namespaced tools join with `__` unless a separator is already present.
+fn flat_tool_name(tool_name: &ToolName) -> String {
+    if tool_name.is_default_namespace() {
+        return tool_name.name.clone();
     }
-}
-
-fn output_call_id(item: &ResponseItem) -> Option<&str> {
-    match item {
-        ResponseItem::FunctionCallOutput { call_id, .. }
-        | ResponseItem::ToolSearchOutput { call_id, .. } => call_id.as_deref(),
-        ResponseItem::CustomToolCallOutput { call_id, .. } => Some(call_id),
-        _ => None,
+    match tool_name.namespace.as_deref() {
+        Some(namespace) if namespace.ends_with('_') || tool_name.name.starts_with('_') => {
+            format!("{namespace}{}", tool_name.name)
+        }
+        Some(namespace) => format!("{namespace}__{}", tool_name.name),
+        None => tool_name.name.clone(),
     }
 }

@@ -14,7 +14,6 @@ use codex_exec_server::ExecutorFileSystemFuture;
 use codex_exec_server::FileMetadata;
 use codex_exec_server::FileSystemReadStream;
 use codex_exec_server::FileSystemResult;
-use codex_exec_server::FileSystemSandboxContext;
 use codex_exec_server::GetMetadataOptions;
 use codex_exec_server::LOCAL_ENVIRONMENT_ID;
 use codex_exec_server::ReadDirectoryEntry;
@@ -55,10 +54,6 @@ const MANIFEST_CONTENTS: &str = r#"{
 #[derive(Debug, PartialEq, Eq)]
 enum FileSystemCall {
     Metadata(PathUri),
-    SandboxedMetadata {
-        path: PathUri,
-        sandbox: Box<FileSystemSandboxContext>,
-    },
     Read(PathUri),
 }
 
@@ -81,11 +76,7 @@ impl SyntheticPluginFileSystem {
 }
 
 impl ExecutorFileSystem for SyntheticPluginFileSystem {
-    fn canonicalize<'a>(
-        &'a self,
-        _path: &'a PathUri,
-        _sandbox: Option<&'a FileSystemSandboxContext>,
-    ) -> ExecutorFileSystemFuture<'a, PathUri> {
+    fn canonicalize<'a>(&'a self, _path: &'a PathUri) -> ExecutorFileSystemFuture<'a, PathUri> {
         Box::pin(async { Self::unsupported() })
     }
 
@@ -93,7 +84,6 @@ impl ExecutorFileSystem for SyntheticPluginFileSystem {
         &'a self,
         path: &'a PathUri,
         _options: ReadFileOptions,
-        _sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, Vec<u8>> {
         Box::pin(async move {
             self.calls
@@ -111,7 +101,6 @@ impl ExecutorFileSystem for SyntheticPluginFileSystem {
     fn read_file_stream<'a>(
         &'a self,
         _path: &'a PathUri,
-        _sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, FileSystemReadStream> {
         Box::pin(async { Self::unsupported() })
     }
@@ -121,7 +110,6 @@ impl ExecutorFileSystem for SyntheticPluginFileSystem {
         _path: &'a PathUri,
         _contents: Vec<u8>,
         _options: WriteFileOptions,
-        _sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, ()> {
         Box::pin(async { Self::unsupported() })
     }
@@ -130,7 +118,6 @@ impl ExecutorFileSystem for SyntheticPluginFileSystem {
         &'a self,
         _path: &'a PathUri,
         _options: CreateDirectoryOptions,
-        _sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, ()> {
         Box::pin(async { Self::unsupported() })
     }
@@ -139,19 +126,12 @@ impl ExecutorFileSystem for SyntheticPluginFileSystem {
         &'a self,
         path: &'a PathUri,
         _options: GetMetadataOptions,
-        sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, FileMetadata> {
         Box::pin(async move {
             self.calls
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push(match sandbox {
-                    Some(sandbox) => FileSystemCall::SandboxedMetadata {
-                        path: path.clone(),
-                        sandbox: Box::new(sandbox.clone()),
-                    },
-                    None => FileSystemCall::Metadata(path.clone()),
-                });
+                .push(FileSystemCall::Metadata(path.clone()));
             if let Some(gate) = &self.metadata_gate {
                 gate.acquire().await.expect("open metadata gate").forget();
             }
@@ -184,7 +164,6 @@ impl ExecutorFileSystem for SyntheticPluginFileSystem {
     fn read_directory<'a>(
         &'a self,
         _path: &'a PathUri,
-        _sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, Vec<ReadDirectoryEntry>> {
         Box::pin(async { Self::unsupported() })
     }
@@ -193,7 +172,6 @@ impl ExecutorFileSystem for SyntheticPluginFileSystem {
         &'a self,
         _path: &'a PathUri,
         _options: WalkOptions,
-        _sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, WalkOutcome> {
         Box::pin(async { Self::unsupported() })
     }
@@ -202,7 +180,6 @@ impl ExecutorFileSystem for SyntheticPluginFileSystem {
         &'a self,
         _path: &'a PathUri,
         _options: RemoveOptions,
-        _sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, ()> {
         Box::pin(async { Self::unsupported() })
     }
@@ -212,7 +189,6 @@ impl ExecutorFileSystem for SyntheticPluginFileSystem {
         _source_path: &'a PathUri,
         _destination_path: &'a PathUri,
         _options: CopyOptions,
-        _sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, ()> {
         Box::pin(async { Self::unsupported() })
     }
@@ -254,7 +230,7 @@ async fn root_ownership_survives_malformed_ancestor_manifests() {
     let selected = selected_root("example@marketplace", LOCAL_ENVIRONMENT_ID, &root);
     assert_eq!(
         provider
-            .root_ownership(&selected, /*discovery*/ None, /*sandbox*/ None)
+            .root_ownership(&selected, /*discovery*/ None)
             .await
             .unwrap(),
         PluginRootOwnership::Standalone
@@ -266,7 +242,7 @@ async fn root_ownership_survives_malformed_ancestor_manifests() {
     );
     assert_eq!(
         provider
-            .root_ownership(&selected, /*discovery*/ None, /*sandbox*/ None)
+            .root_ownership(&selected, /*discovery*/ None)
             .await
             .unwrap(),
         PluginRootOwnership::Plugin
@@ -282,16 +258,14 @@ async fn root_ownership_survives_malformed_ancestor_manifests() {
     };
     assert_eq!(
         provider
-            .root_ownership(&selected, Some(&discovery), /*sandbox*/ None)
+            .root_ownership(&selected, Some(&discovery))
             .await
             .unwrap(),
         PluginRootOwnership::Plugin
     );
     discovery.error = Some("discovery failed".into());
     assert!(matches!(
-        provider
-            .root_ownership(&selected, Some(&discovery), /*sandbox*/ None)
-            .await,
+        provider.root_ownership(&selected, Some(&discovery)).await,
         Err(ExecutorPluginProviderError::DiscoveryFailed { .. })
     ));
 }
@@ -317,7 +291,7 @@ async fn discovery_ownership_uses_ancestors_not_nested_plugins() {
     };
     assert_eq!(
         provider
-            .root_ownership(&selected, Some(&discovery), /*sandbox*/ None)
+            .root_ownership(&selected, Some(&discovery))
             .await
             .unwrap(),
         PluginRootOwnership::Standalone
@@ -325,15 +299,13 @@ async fn discovery_ownership_uses_ancestors_not_nested_plugins() {
     discovery.namespace_manifests[0].path = path.join(".codex-plugin/plugin.json").unwrap();
     assert_eq!(
         provider
-            .root_ownership(&selected, Some(&discovery), /*sandbox*/ None)
+            .root_ownership(&selected, Some(&discovery))
             .await
             .unwrap(),
         PluginRootOwnership::Plugin
     );
     assert!(matches!(
-        provider
-            .root_ownership(&selected, /*discovery*/ None, /*sandbox*/ None)
-            .await,
+        provider.root_ownership(&selected, /*discovery*/ None).await,
         Err(ExecutorPluginProviderError::UnavailableEnvironment { .. })
     ));
 }
@@ -377,7 +349,6 @@ async fn ancestor_manifest_probes_pipeline_and_preserve_error_order() {
             &selected,
             std::iter::successors(Some(root.clone()), PathUri::parent),
             &file_system,
-            /*sandbox*/ None,
         ));
         assert!(futures::poll!(resolution.as_mut()).is_pending());
         let probes = file_system
@@ -406,7 +377,7 @@ async fn ancestor_manifest_probes_pipeline_and_preserve_error_order() {
 }
 
 #[tokio::test]
-async fn manifest_presence_uses_sandboxed_metadata_without_reading_contents() {
+async fn manifest_presence_uses_metadata_without_reading_contents() {
     let directory = tempdir().expect("tempdir");
     let plugin_root = PathUri::from_host_native_path(directory.path()).expect("root URI");
     let manifest_path = plugin_root
@@ -420,14 +391,11 @@ async fn manifest_presence_uses_sandboxed_metadata_without_reading_contents() {
         metadata_delay: None,
         metadata_error: None,
     };
-    let sandbox =
-        FileSystemSandboxContext::from_permission_profile(Default::default(), plugin_root.clone());
     assert_eq!(
         find_manifest(
             &selected_root_uri("selected-demo", "executor-test", plugin_root.clone()),
             std::iter::once(plugin_root.clone()),
             &file_system,
-            Some(&sandbox),
         )
         .await
         .expect("probe manifest"),
@@ -438,10 +406,7 @@ async fn manifest_presence_uses_sandboxed_metadata_without_reading_contents() {
             .calls
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner),
-        vec![FileSystemCall::SandboxedMetadata {
-            path: manifest_path,
-            sandbox: Box::new(sandbox)
-        }],
+        vec![FileSystemCall::Metadata(manifest_path)],
     );
 }
 

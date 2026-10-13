@@ -18,36 +18,9 @@ use serde::Serialize;
 use serde::de::Error as SerdeError;
 
 use crate::McpEmaRegistration;
-use crate::RequirementSource;
 
 /// Effective MCP environment id when config omits `environment_id`.
 pub const DEFAULT_MCP_SERVER_ENVIRONMENT_ID: &str = "local";
-
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum AppToolApproval {
-    #[default]
-    Auto,
-    Prompt,
-    Writes,
-    Approve,
-}
-
-impl AppToolApproval {
-    /// Requires approval whenever either policy could require it.
-    ///
-    /// `Auto` and `Writes` are incomparable: each can require approval for a
-    /// tool the other would approve. Their conservative intersection is `Prompt`.
-    pub fn restrict_to(self, requested: Self) -> Self {
-        match (self, requested) {
-            (Self::Prompt, _) | (_, Self::Prompt) => Self::Prompt,
-            (Self::Approve, mode) | (mode, Self::Approve) => mode,
-            (Self::Auto, Self::Auto) => Self::Auto,
-            (Self::Writes, Self::Writes) => Self::Writes,
-            (Self::Auto, Self::Writes) | (Self::Writes, Self::Auto) => Self::Prompt,
-        }
-    }
-}
 
 /// Human-readable reason a configured MCP server was disabled after requirements
 /// were applied.
@@ -59,17 +32,12 @@ impl AppToolApproval {
 pub enum McpServerDisabledReason {
     /// The server is disabled, but there is no more specific user-facing reason.
     Unknown,
-    /// The server was disabled by config requirements from the given source.
-    Requirements { source: RequirementSource },
 }
 
 impl fmt::Display for McpServerDisabledReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             McpServerDisabledReason::Unknown => write!(f, "unknown"),
-            McpServerDisabledReason::Requirements { source } => {
-                write!(f, "requirements ({source})")
-            }
         }
     }
 }
@@ -78,17 +46,13 @@ impl fmt::Display for McpServerDisabledReason {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct McpServerToolConfig {
-    /// Approval mode for this tool.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub approval_mode: Option<AppToolApproval>,
-
     /// Token budget for this tool's output, before the standard 20% serialization allowance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_token_limit: Option<NonZeroUsize>,
 }
 
 impl McpServerToolConfig {
-    /// Applies the stricter explicit output budget without changing approval policy.
+    /// Applies the stricter explicit output budget.
     pub fn restrict_output_token_limit(&mut self, limit: Option<NonZeroUsize>) {
         self.output_token_limit = self.output_token_limit.into_iter().chain(limit).min();
     }
@@ -275,10 +239,6 @@ pub struct McpServerConfig {
     #[serde(default, with = "option_duration_secs")]
     pub tool_timeout_sec: Option<Duration>,
 
-    /// Approval mode for tools in this server unless a tool override exists.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default_tools_approval_mode: Option<AppToolApproval>,
-
     /// Explicit allow-list of tools exposed from this server. When set, only these tools will be registered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled_tools: Option<Vec<String>>,
@@ -416,8 +376,6 @@ pub struct RawMcpServerConfig {
     #[serde(default)]
     pub omit_tools_from: Option<Vec<ToolExposureSurface>>,
     #[serde(default)]
-    pub default_tools_approval_mode: Option<AppToolApproval>,
-    #[serde(default)]
     pub enabled_tools: Option<Vec<String>>,
     #[serde(default)]
     pub disabled_tools: Option<Vec<String>>,
@@ -461,7 +419,6 @@ impl TryFrom<RawMcpServerConfig> for McpServerConfig {
             supports_parallel_tool_calls,
             tool_input_schema_max_bytes,
             omit_tools_from,
-            default_tools_approval_mode,
             enabled_tools,
             disabled_tools,
             scopes,
@@ -583,7 +540,6 @@ impl TryFrom<RawMcpServerConfig> for McpServerConfig {
             tool_input_schema_max_bytes,
             omit_tools_from,
             disabled_reason: None,
-            default_tools_approval_mode,
             enabled_tools,
             disabled_tools,
             scopes,

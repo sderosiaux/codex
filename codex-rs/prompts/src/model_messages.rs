@@ -3,24 +3,17 @@
 //! Prompt composition and runtime settings remain with consumers; each accessor
 //! selects and resolves only the requested message family.
 
-use codex_protocol::openai_models::CodeModeToolMessages;
-use codex_protocol::openai_models::ConfirmationPolicies;
 use codex_protocol::openai_models::IndirectDescriptionPrefixes;
 use codex_protocol::openai_models::McpResourceToolMessages;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelMessages;
 use codex_protocol::openai_models::ToolMessage;
-use permissions::ResolvedApprovalMessages;
-use permissions::ResolvedPermissionMessages;
 
 mod collaboration;
-mod guardian;
 mod incremental_tools;
 mod multi_agent;
-pub(crate) mod permissions;
 
 pub use collaboration::ResolvedCollaborationModeMessages;
-pub use guardian::ResolvedAutoReviewMessages;
 pub use incremental_tools::ResolvedIncrementalToolMessages;
 pub use multi_agent::ResolvedMultiAgentMessages;
 
@@ -90,22 +83,6 @@ impl<'a> ResolvedModelMessages<'a> {
             .and_then(|messages| messages.instructions_template.as_deref())
     }
 
-    /// Resolves approval messages and their bundled alternatives.
-    pub(crate) fn approvals(self) -> ResolvedApprovalMessages<'a> {
-        ResolvedApprovalMessages::new(
-            self.catalog_messages
-                .and_then(|messages| messages.approvals.as_ref()),
-        )
-    }
-
-    /// Resolves permission templates without preparing runtime permission facts.
-    pub(crate) fn permissions(self) -> ResolvedPermissionMessages<'a> {
-        ResolvedPermissionMessages::new(
-            self.catalog_messages
-                .and_then(|messages| messages.permissions.as_ref()),
-        )
-    }
-
     /// Resolves mode overrides while retaining bundled alternatives and absent values.
     pub fn collaboration_modes(&self) -> ResolvedCollaborationModeMessages<'a> {
         ResolvedCollaborationModeMessages::new(
@@ -122,19 +99,6 @@ impl<'a> ResolvedModelMessages<'a> {
         )
     }
 
-    /// Resolves auto-review policy messages and rejection/timeout instructions.
-    pub fn auto_review(&self) -> ResolvedAutoReviewMessages<'a> {
-        ResolvedAutoReviewMessages::new(
-            self.catalog_messages
-                .and_then(|messages| messages.auto_review.as_ref()),
-        )
-    }
-
-    /// Resolves classifier instructions from catalog text or the bundled default.
-    pub fn guardian_classifier_instructions(&self) -> &'a str {
-        guardian::classifier_instructions(self.catalog_messages)
-    }
-
     /// Resolves reminder text without selecting or validating runtime budget settings.
     pub fn token_budget_reminder_template(&self) -> &'a str {
         self.catalog_messages
@@ -142,12 +106,6 @@ impl<'a> ResolvedModelMessages<'a> {
             .map_or(REMINDER_MESSAGE_TEMPLATE, |messages| {
                 messages.reminder_message_template.as_str()
             })
-    }
-
-    /// Resolves optional confirmation policies, leaving missing values to actor defaults.
-    pub fn confirmation_policies(&self) -> Option<&'a ConfirmationPolicies> {
-        self.catalog_messages
-            .and_then(|messages| messages.confirmation_policies.as_ref())
     }
 
     /// Resolves the asynchronous user-input tool description.
@@ -224,21 +182,6 @@ impl<'a> ResolvedModelMessages<'a> {
                 .and_then(|messages| messages.tools.as_ref())
                 .and_then(|tools| tools.incremental_tools.as_ref()),
         )
-    }
-
-    /// Selects Code Mode messages; bundled text and runtime composition belong to the tool owner.
-    pub fn code_mode(&self) -> Option<&'a CodeModeToolMessages> {
-        self.catalog_messages?.tools.as_ref()?.code_mode.as_ref()
-    }
-
-    /// Selects wait's complete description.
-    pub fn code_mode_wait_description_override(&self) -> Option<&'a str> {
-        self.code_mode()?.wait.as_ref()?.description.as_deref()
-    }
-
-    /// Selects wait's parameter schema. Exec uses a harness-owned freeform grammar.
-    pub fn code_mode_wait_parameters_override(&self) -> Option<&'a str> {
-        self.code_mode()?.wait.as_ref()?.parameters.as_deref()
     }
 
     /// Resolves persistent-mode instructions without deciding whether the mode is active.

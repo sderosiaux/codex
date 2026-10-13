@@ -154,11 +154,10 @@ impl ViewImageHandler {
             ))
         })?;
         let model_visible_path = path_uri.inferred_native_path_string();
-        let sandbox = turn_environment.sandbox_context(/*additional_permissions*/ None);
         let fs = turn_environment.environment.get_filesystem();
 
         let metadata = fs
-            .get_metadata(&path_uri, GetMetadataOptions::default(), Some(&sandbox))
+            .get_metadata(&path_uri, GetMetadataOptions::default())
             .await
             .map_err(|error| {
                 FunctionCallError::RespondToModel(format!(
@@ -172,14 +171,14 @@ impl ViewImageHandler {
             )));
         }
         let file_bytes = fs
-            .read_file(&path_uri, ReadFileOptions::default(), Some(&sandbox))
+            .read_file(&path_uri, ReadFileOptions::default())
             .await
             .map_err(|error| {
                 FunctionCallError::RespondToModel(format!(
                     "unable to read image at `{model_visible_path}`: {error}"
                 ))
             })?;
-        // Reject non-images before their bytes can reach code mode without changing
+        // Reject non-images before their bytes reach history without changing
         // valid image bytes, metadata, or centralized image preparation.
         image::load_from_memory(&file_bytes).map_err(|_| {
             FunctionCallError::RespondToModel(VIEW_IMAGE_INVALID_MESSAGE.to_string())
@@ -208,21 +207,15 @@ impl ViewImageHandler {
         Ok(boxed_tool_output(ViewImageOutput {
             image_url,
             image_detail,
-            unified_image_budget: self.options.unified_image_budget,
         }))
     }
 }
 
-impl CoreToolRuntime for ViewImageHandler {
-    fn is_builtin_control_tool(&self) -> bool {
-        true
-    }
-}
+impl CoreToolRuntime for ViewImageHandler {}
 
 pub struct ViewImageOutput {
     image_url: String,
     image_detail: ImageDetail,
-    unified_image_budget: bool,
 }
 
 impl ToolOutput for ViewImageOutput {
@@ -252,23 +245,11 @@ impl ToolOutput for ViewImageOutput {
             output,
         }
     }
-
-    fn code_mode_result(&self, _payload: &ToolPayload) -> serde_json::Value {
-        if self.unified_image_budget {
-            serde_json::json!({ "image_url": self.image_url })
-        } else {
-            serde_json::json!({
-                "image_url": self.image_url,
-                "detail": self.image_detail
-            })
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::PermissionProfileSnapshot;
     use crate::environment_selection::TurnEnvironmentState;
     use crate::session::step_context::StepContext;
     use crate::session::tests::make_session_and_context;
@@ -276,11 +257,6 @@ mod tests {
     use crate::tools::context::ToolCallSource;
     use crate::tools::context::ToolInvocation;
     use crate::turn_diff_tracker::TurnDiffTracker;
-    use codex_protocol::models::PermissionProfile;
-    use codex_protocol::permissions::FileSystemAccessMode;
-    use codex_protocol::permissions::FileSystemSandboxEntry;
-    use codex_protocol::permissions::FileSystemSandboxPolicy;
-    use codex_protocol::permissions::NetworkSandboxPolicy;
     use codex_utils_absolute_path::AbsolutePathBuf;
     use codex_utils_path_uri::PathUri;
     use core_test_support::TempDirExt;
@@ -294,14 +270,18 @@ mod tests {
     use tokio::sync::Mutex;
 
     fn replace_primary_environment_cwd(turn: &mut crate::TurnContext, cwd: AbsolutePathBuf) {
-        let mut current = turn
+        let current = turn
             .initial_environments
             .turn_environments()
             .next()
             .cloned()
             .expect("default local turn environment");
-        current.config_mut().workspace_roots.clear();
         let mut selection = current.selection;
+        if let codex_protocol::protocol::EnvironmentConfigState::Ready(config) =
+            &mut selection.config
+        {
+            config.workspace_roots.clear();
+        }
         selection.cwd = PathUri::from_abs_path(&cwd);
         selection.workspace_roots.clear();
         turn.initial_environments.environments[0] =
@@ -331,84 +311,9 @@ mod tests {
         let output = ViewImageOutput {
             image_url: "data:image/png;base64,AAA".to_string(),
             image_detail: DEFAULT_IMAGE_DETAIL,
-            unified_image_budget: false,
         };
 
         assert_eq!(output.log_output(), "<image data URL omitted: 25 bytes>");
-    }
-
-    #[test]
-    fn code_mode_result_returns_image_url_object() {
-        let output = ViewImageOutput {
-            image_url: "data:image/png;base64,AAA".to_string(),
-            image_detail: DEFAULT_IMAGE_DETAIL,
-            unified_image_budget: false,
-        };
-
-        let result = output.code_mode_result(&ToolPayload::Function {
-            arguments: "{}".to_string(),
-        });
-
-        assert_eq!(
-            result,
-            json!({
-                "image_url": "data:image/png;base64,AAA",
-                "detail": "high",
-            })
-        );
-    }
-
-    #[tokio::test]
-    async fn handle_passes_sandbox_context_for_local_filesystem_reads() {
-        let (session, mut turn) = make_session_and_context().await;
-        let image_dir = tempfile::tempdir().expect("create image temp dir");
-        let image_cwd = image_dir.abs();
-
-        replace_primary_environment_cwd(&mut turn, image_cwd.clone());
-        let image_path = image_cwd.join("image.png");
-        std::fs::write(image_path.as_path(), tiny_png()).expect("write test image");
-        Arc::make_mut(&mut turn.config)
-            .permissions
-            .set_permission_profile(PermissionProfile::Disabled)
-            .expect("set thread permission profile");
-        let TurnEnvironmentState::Ready(environment) =
-            &mut turn.initial_environments.environments[0]
-        else {
-            panic!("primary environment should be ready");
-        };
-        environment.config_mut().permission_profile =
-            PermissionProfileSnapshot::legacy(PermissionProfile::from_runtime_permissions(
-                &FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry::new(
-                    image_cwd.into(),
-                    FileSystemAccessMode::Read,
-                )]),
-                NetworkSandboxPolicy::Restricted,
-            ));
-        let turn = Arc::new(turn);
-
-        let result = ViewImageHandler::default()
-            .handle(ToolInvocation {
-                session: Arc::new(session),
-                step_context: StepContext::for_test(Arc::clone(&turn)),
-                turn,
-                cancellation_token: tokio_util::sync::CancellationToken::new(),
-                tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
-                call_id: "call-view-image".to_string(),
-                tool_name: codex_tools::ToolName::plain("view_image"),
-                source: ToolCallSource::Direct,
-                payload: ToolPayload::Function {
-                    arguments: json!({ "path": "image.png" }).to_string(),
-                },
-            })
-            .await;
-
-        let Err(FunctionCallError::RespondToModel(message)) = result else {
-            panic!("expected sandboxed filesystem error");
-        };
-        assert!(
-            message.contains("sandboxed filesystem operations require configured runtime paths"),
-            "{message}"
-        );
     }
 
     #[tokio::test]
@@ -450,13 +355,6 @@ mod tests {
         replace_primary_environment_cwd(&mut turn, image_cwd.clone());
         let image_path = image_cwd.join("image.png");
         std::fs::write(image_path.as_path(), tiny_png()).expect("write test image");
-        let TurnEnvironmentState::Ready(environment) =
-            &mut turn.initial_environments.environments[0]
-        else {
-            panic!("primary environment should be ready");
-        };
-        environment.config_mut().permission_profile =
-            PermissionProfileSnapshot::legacy(PermissionProfile::Disabled);
         let turn = Arc::new(turn);
 
         let result = ViewImageHandler::default()
@@ -479,7 +377,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn handle_rejects_invalid_image_before_returning_output_to_code_mode() {
+    async fn handle_rejects_invalid_image_before_returning_output() {
         let (session, mut turn) = make_session_and_context().await;
         let image_dir = tempfile::tempdir().expect("create image temp dir");
         let image_cwd = image_dir.abs();
@@ -488,13 +386,6 @@ mod tests {
         let image_path = image_cwd.join("not-an-image.txt");
         std::fs::write(image_path.as_path(), b"arbitrary file contents")
             .expect("write invalid image");
-        let TurnEnvironmentState::Ready(environment) =
-            &mut turn.initial_environments.environments[0]
-        else {
-            panic!("primary environment should be ready");
-        };
-        environment.config_mut().permission_profile =
-            PermissionProfileSnapshot::legacy(PermissionProfile::Disabled);
         let turn = Arc::new(turn);
 
         let result = ViewImageHandler::default()
@@ -506,10 +397,7 @@ mod tests {
                 tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
                 call_id: "call-view-image".to_string(),
                 tool_name: codex_tools::ToolName::plain("view_image"),
-                source: ToolCallSource::CodeMode {
-                    cell_id: "cell-1".to_string(),
-                    runtime_tool_call_id: "tool-1".to_string(),
-                },
+                source: ToolCallSource::Direct,
                 payload: ToolPayload::Function {
                     arguments: json!({ "path": "not-an-image.txt" }).to_string(),
                 },

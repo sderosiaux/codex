@@ -52,7 +52,6 @@ runtime_archive(
     srcs = [
         "//codex-rs/app-server:release_files",
         "//codex-rs/cli:release_files",
-        "//codex-rs/code-mode-host:release_files",
     ] + select({
         "@platforms//os:linux": ["//codex-rs/bwrap:release_files"],
         "@platforms//os:windows": [
@@ -69,7 +68,6 @@ runtime_archive(
     name = "runtime_package_primary",
     srcs = [
         "//codex-rs/cli:release_files",
-        "//codex-rs/code-mode-host:release_files",
         "//codex-rs/responses-api-proxy:release_files",
     ] + select({
         "@platforms//os:linux": ["//codex-rs/bwrap:release_files"],
@@ -83,7 +81,6 @@ runtime_archive(
     name = "runtime_package_app-server",
     srcs = [
         "//codex-rs/app-server:release_files",
-        "//codex-rs/code-mode-host:release_files",
     ] + select({
         "@platforms//os:linux": ["//codex-rs/bwrap:release_files"],
         "//conditions:default": [],

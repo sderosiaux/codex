@@ -118,12 +118,8 @@ impl SkillLoadOutcome {
         let fs = self
             .file_system_for_skill(skill)
             .unwrap_or_else(|| Arc::clone(&LOCAL_FS));
-        fs.read_file_text(
-            &skill.path_to_skills_md,
-            ReadFileOptions::default(),
-            /*sandbox*/ None,
-        )
-        .await
+        fs.read_file_text(&skill.path_to_skills_md, ReadFileOptions::default())
+            .await
     }
 }
 

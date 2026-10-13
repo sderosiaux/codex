@@ -127,11 +127,8 @@ async fn direct_and_routed_clients_build_equivalent_requests() {
     let builder = HttpClientBuilder::new().default_headers(defaults.clone());
     let direct = builder.build_direct().unwrap();
     assert!(!format!("{direct:?}").contains("default-one"));
-    let controller = crate::NetworkPolicyController::default();
-    let policy = controller.policy();
-    controller.publish(policy.revision(), crate::DestinationPolicy::Unrestricted);
     let routed = RouteAwareClientPool::with_builder(
-        HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault).with_network_policy(policy),
+        HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
         ClientRouteClass::Api,
         HttpClientBuilder::new().default_headers(defaults),
     )
@@ -712,7 +709,7 @@ async fn request_timeout_covers_route_selection() {
 }
 
 #[test]
-fn managed_request_timeout_covers_queued_transport_construction() {
+fn request_timeout_covers_queued_transport_construction() {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .max_blocking_threads(/*val*/ 1)
@@ -729,11 +726,8 @@ fn managed_request_timeout_covers_queued_transport_construction() {
         });
         started_rx.await.unwrap();
 
-        let controller = crate::NetworkPolicyController::default();
-        let policy = controller.policy();
-        controller.publish(policy.revision(), crate::DestinationPolicy::Unrestricted);
         let pool = RouteAwareClientPool::new(
-            HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault).with_network_policy(policy),
+            HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
             ClientRouteClass::Api,
         );
         let url = format!("http://{}/", listener.local_addr().unwrap());

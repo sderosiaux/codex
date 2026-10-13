@@ -196,7 +196,7 @@ impl Inner {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let current_rpc_client = match &connection.status {
                 ConnectionStatus::Failed(message) => {
-                    return Err(message.clone().into());
+                    return Err(ExecServerError::Disconnected(message.clone()));
                 }
                 ConnectionStatus::Connected(rpc_client) => Some(Arc::clone(rpc_client)),
                 ConnectionStatus::Recovering => None,
@@ -221,7 +221,7 @@ impl Inner {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let ConnectionStatus::Failed(message) = &connection_state.status {
-            return Err(message.clone().into());
+            return Err(ExecServerError::Disconnected(message.clone()));
         }
         replacement_submission.submit(connection)
     }

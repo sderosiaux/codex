@@ -13,7 +13,6 @@ use codex_core::AgentTarget;
 use codex_core::AgentTurnOutcome;
 use codex_core::DeliveryReceipt;
 use codex_core::ForkSnapshot;
-use codex_core::GuardianRootSnapshot;
 use codex_core::LiveAgent;
 use codex_core::RolloutBudgetReminder;
 use codex_core::SendRequest;
@@ -31,12 +30,12 @@ use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::Result as CodexResult;
+use codex_protocol::protocol::InternalSessionSource;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::user_input::UserInput;
-use codex_rollout_trace::ThreadTraceContext;
 use core_test_support::responses;
 use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::TestCodex;
@@ -170,11 +169,7 @@ impl AgentControl for TestAgentControl {
         Box::pin(async { Ok(()) })
     }
 
-    fn turn_finished<'a>(
-        &'a self,
-        _outcome: AgentTurnOutcome,
-        _trace: &'a ThreadTraceContext,
-    ) -> BoxFuture<'a, ()> {
+    fn turn_finished(&self, _outcome: AgentTurnOutcome) -> BoxFuture<'_, ()> {
         Box::pin(async {})
     }
 
@@ -185,13 +180,6 @@ impl AgentControl for TestAgentControl {
     fn propagate_config_update(&self, update: AgentConfigUpdate) {
         let AgentConfigUpdate::ServiceTier(tier) = update;
         *self.service_tier.lock().expect("service tier lock") = tier;
-    }
-
-    fn get_guardian_package(
-        &self,
-        _agent: ThreadId,
-    ) -> BoxFuture<'_, Option<GuardianRootSnapshot>> {
-        Box::pin(async { None })
     }
 
     fn pending_budget_reminder<'a>(
@@ -224,10 +212,7 @@ async fn test_with_host_control(
                 Feature::MultiAgentV2,
                 Feature::AgentMessageBoard,
             ] {
-                config
-                    .features
-                    .enable(feature)
-                    .expect("enable collaboration feature");
+                config.features.enable(feature);
             }
             config.service_tier = Some("priority".to_string());
         })
@@ -404,10 +389,7 @@ async fn host_factory_follows_thread_lifecycle() -> anyhow::Result<()> {
     let calls = Arc::new(Mutex::new(Vec::new()));
     let test = test_codex()
         .with_config(|config| {
-            config
-                .features
-                .enable(Feature::MultiAgentV2)
-                .expect("enable multi-agent v2");
+            config.features.enable(Feature::MultiAgentV2);
         })
         .with_thread_manager({
             let calls = Arc::clone(&calls);
@@ -431,7 +413,9 @@ async fn host_factory_follows_thread_lifecycle() -> anyhow::Result<()> {
         .spawn_internal_session(
             root_id,
             StartThreadOptions {
-                session_source: Some(SessionSource::Internal(InternalSessionSource::Guardian)),
+                session_source: Some(SessionSource::Internal(
+                    InternalSessionSource::MemoryConsolidation,
+                )),
                 ..options()
             },
         )
@@ -536,7 +520,6 @@ async fn collaboration_tools_dispatch_to_the_host_controller() -> anyhow::Result
     Ok(())
 }
 use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::InternalSessionSource;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn host_mailbox_notifies_waiting_agent_and_delivers_once() -> anyhow::Result<()> {

@@ -51,7 +51,7 @@ async fn namespaces_for(
     let root = canonical_uri(root);
     namespace_roots.insert(root.clone());
     let resolver = SkillNamespaceResolver::discover(
-        &FileSystemEnvironmentAccessor::unrestricted(&LOCAL_FS),
+        &FileSystemEnvironmentAccessor::new(&LOCAL_FS),
         &root,
         skill_paths,
         plugin_roots,

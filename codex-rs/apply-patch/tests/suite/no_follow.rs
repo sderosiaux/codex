@@ -43,8 +43,7 @@ async fn no_follow_rejects_leaf_and_ancestor_links_for_every_patch_operation() -
                 &PathUri::from_host_native_path(&work)?,
                 &mut Vec::new(),
                 &mut Vec::new(),
-                LOCAL_FS.as_ref(),
-                /*sandbox*/ None,
+                LOCAL_FS.as_ref()
             )
             .await
             .expect_err(&body);
@@ -70,13 +69,8 @@ async fn no_follow_rechecks_paths_after_verification() -> anyhow::Result<()> {
     fs::write(root.join("outside/file.txt"), "original\n")?;
     let cwd = PathUri::from_host_native_path(&root)?;
     let patch = "*** Begin Patch\n*** Update File: approved/file.txt\n@@\n-original\n+changed\n*** End Patch";
-    let MaybeApplyPatchVerified::Body(action) = verify_apply_patch_args(
-        parse_patch(patch)?,
-        &cwd,
-        LOCAL_FS.as_ref(),
-        /*sandbox*/ None,
-    )
-    .await
+    let MaybeApplyPatchVerified::Body(action) =
+        verify_apply_patch_args(parse_patch(patch)?, &cwd, LOCAL_FS.as_ref()).await
     else {
         panic!("regular-file patch should verify");
     };
@@ -92,7 +86,6 @@ async fn no_follow_rechecks_paths_after_verification() -> anyhow::Result<()> {
         &mut Vec::new(),
         &mut Vec::new(),
         LOCAL_FS.as_ref(),
-        /*sandbox*/ None,
     )
     .await
     .expect_err("swapped ancestor must not be followed");
@@ -122,7 +115,6 @@ async fn no_follow_applies_regular_files_and_default_still_follows_links() -> an
         &mut Vec::new(),
         &mut Vec::new(),
         LOCAL_FS.as_ref(),
-        /*sandbox*/ None,
     )
     .await?;
     assert_eq!(
@@ -139,7 +131,6 @@ async fn no_follow_applies_regular_files_and_default_still_follows_links() -> an
         &mut Vec::new(),
         &mut Vec::new(),
         LOCAL_FS.as_ref(),
-        /*sandbox*/ None,
     )
     .await?;
     assert_eq!(

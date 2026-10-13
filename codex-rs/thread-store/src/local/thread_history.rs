@@ -3,21 +3,18 @@ use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::TurnStatus;
 use codex_protocol::ThreadId;
 use codex_protocol::models::MessagePhase;
-use codex_protocol::realtime::RealtimeItem;
 
 use super::LocalThreadStore;
 use crate::ThreadStoreError;
 use crate::ThreadStoreResult;
 
 mod read;
-mod realtime;
 mod search;
 mod segment_paging;
 mod turn_lookup;
 
 pub(super) use read::list_items;
 pub(super) use read::list_turns;
-pub(super) use realtime::list_timeline;
 pub(super) use search::search_thread_occurrences;
 pub(super) use turn_lookup::find_source_turn;
 pub(super) use turn_lookup::find_visible_turn;
@@ -31,7 +28,6 @@ pub(super) struct ProjectedRolloutLine {
     pub end_byte_offset: u64,
     pub fallback_created_at_ms: Option<i64>,
     pub changes: ThreadHistoryChangeSet,
-    pub realtime_item: Option<RealtimeItem>,
 }
 
 /// One ordered update to apply while advancing a rollout projection checkpoint.
@@ -158,35 +154,6 @@ WHERE thread_id = ?
                     projection.changes,
                 )
                 .await?;
-                if let Some(item) = projection.realtime_item {
-                    let item_json = serde_json::to_string(&item).map_err(thread_history_error)?;
-                    sqlx::query(
-                        r#"
-INSERT INTO thread_realtime_items (
-    thread_id,
-    item_id,
-    rollout_ordinal,
-    created_at_ms,
-    item_type,
-    item_json
-) VALUES (?, ?, ?, ?, json_extract(?, '$.type'), ?)
-ON CONFLICT(thread_id, item_id) DO NOTHING
-                        "#,
-                    )
-                    .bind(thread_id.as_str())
-                    .bind(item.id.as_str())
-                    .bind(ordinal)
-                    .bind(projection.fallback_created_at_ms.ok_or_else(|| {
-                        ThreadStoreError::Internal {
-                            message: "realtime rollout item is missing its timestamp".to_string(),
-                        }
-                    })?)
-                    .bind(item_json.as_str())
-                    .bind(item_json.as_str())
-                    .execute(&mut *transaction)
-                    .await
-                    .map_err(thread_history_error)?;
-                }
                 next_ordinal =
                     next_ordinal
                         .checked_add(1)

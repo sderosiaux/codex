@@ -70,19 +70,17 @@ async fn load_from_file_system(
     let (contents, config_path) = match plugin.manifest().paths.mcp_servers.as_ref() {
         Some(PluginManifestMcpServers::Path(PluginResourceLocator::Environment {
             path, ..
-        })) => {
-            (
-                file_system
-                    .read_file_text(path, ReadFileOptions::default(), /*sandbox*/ None)
-                    .await
-                    .map_err(|source| PluginMcpProviderError::ReadConfig {
-                        plugin_id: plugin_id.to_string(),
-                        path: path.clone(),
-                        source,
-                    })?,
-                path.clone(),
-            )
-        }
+        })) => (
+            file_system
+                .read_file_text(path, ReadFileOptions::default())
+                .await
+                .map_err(|source| PluginMcpProviderError::ReadConfig {
+                    plugin_id: plugin_id.to_string(),
+                    path: path.clone(),
+                    source,
+                })?,
+            path.clone(),
+        ),
         Some(PluginManifestMcpServers::Object(object_config)) => {
             let PluginResourceLocator::Environment { path, .. } = plugin.manifest_path();
             (object_config.clone(), path.clone())
@@ -97,11 +95,7 @@ async fn load_from_file_system(
                     source,
                 })?;
             let contents = match file_system
-                .read_file_text(
-                    &config_path,
-                    ReadFileOptions::default(),
-                    /*sandbox*/ None,
-                )
+                .read_file_text(&config_path, ReadFileOptions::default())
                 .await
             {
                 Ok(contents) => contents,

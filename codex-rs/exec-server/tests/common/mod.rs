@@ -7,13 +7,10 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use codex_exec_server::CODEX_ARG0_EXEC_HELPER_ARG1;
-use codex_exec_server::CODEX_FS_HELPER_ARG1;
-use codex_exec_server::ExecServerRuntimeOptions;
 use codex_exec_server::ExecServerTelemetry;
 use codex_exec_server::RequestDispatchMode;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::OutboundProxyPolicy;
-use codex_sandboxing::landlock::CODEX_LINUX_SANDBOX_ARG0;
 use codex_test_binary_support::TestBinaryDispatchGuard;
 use codex_test_binary_support::TestBinaryDispatchMode;
 use codex_test_binary_support::configure_test_binary_dispatch;
@@ -29,55 +26,23 @@ pub(crate) const SYSTEM_PROXY_REQUEST_URL_ENV: &str =
     "CODEX_EXEC_SERVER_TEST_SYSTEM_PROXY_REQUEST_URL";
 pub(crate) const SYSTEM_PROXY_URL_ENV: &str = "CODEX_EXEC_SERVER_TEST_SYSTEM_PROXY_URL";
 
-const CODEX_WINDOWS_SANDBOX_ARG1: &str = "--run-as-windows-sandbox";
 const DELAYED_OUTPUT_AFTER_EXIT_CHILD_ARG: &str = "--codex-test-delayed-output-after-exit-child";
-
-#[macro_export]
-macro_rules! skip_if_mxc_unavailable {
-    ($return_value:expr $(,)?) => {{
-        if !codex_sandboxing::windows_mxc_available() {
-            eprintln!("skipping test: native MXC is unavailable on this host");
-            return $return_value;
-        }
-    }};
-}
 
 #[ctor]
 pub static TEST_BINARY_DISPATCH_GUARD: Option<TestBinaryDispatchGuard> = {
-    let guard = configure_test_binary_dispatch("codex-exec-server-tests", |exe_name, argv1| {
+    let guard = configure_test_binary_dispatch("codex-exec-server-tests", |_exe_name, argv1| {
         if argv1 == Some(CODEX_ARG0_EXEC_HELPER_ARG1) {
-            return TestBinaryDispatchMode::DispatchArg0Only;
-        }
-        if argv1 == Some(CODEX_FS_HELPER_ARG1) {
-            return TestBinaryDispatchMode::DispatchArg0Only;
-        }
-        if argv1 == Some(CODEX_WINDOWS_SANDBOX_ARG1) {
-            return TestBinaryDispatchMode::DispatchArg0Only;
-        }
-        if argv1 == Some(codex_sandboxing::CODEX_WINDOWS_MXC_ARG1) {
-            return TestBinaryDispatchMode::DispatchArg0Only;
-        }
-        if exe_name == CODEX_LINUX_SANDBOX_ARG0 {
             return TestBinaryDispatchMode::DispatchArg0Only;
         }
         TestBinaryDispatchMode::InstallAliases
     });
     maybe_run_delayed_output_after_exit_from_test_binary();
-    maybe_run_exec_server_from_test_binary(guard.as_ref());
+    maybe_run_exec_server_from_test_binary();
     guard
 };
 
-pub(crate) fn current_test_binary_helper_paths() -> anyhow::Result<(PathBuf, Option<PathBuf>)> {
-    let current_exe = env::current_exe()?;
-    let codex_linux_sandbox_exe = if cfg!(target_os = "linux") {
-        TEST_BINARY_DISPATCH_GUARD
-            .as_ref()
-            .and_then(|guard| guard.paths().codex_linux_sandbox_exe.clone())
-            .or_else(|| Some(current_exe.clone()))
-    } else {
-        None
-    };
-    Ok((current_exe, codex_linux_sandbox_exe))
+pub(crate) fn current_test_binary_path() -> anyhow::Result<PathBuf> {
+    Ok(env::current_exe()?)
 }
 
 fn maybe_run_delayed_output_after_exit_from_test_binary() {
@@ -156,7 +121,7 @@ fn run_delayed_output_after_exit_child(release_path: &Path) {
     std::process::exit(1);
 }
 
-fn maybe_run_exec_server_from_test_binary(guard: Option<&TestBinaryDispatchGuard>) {
+fn maybe_run_exec_server_from_test_binary() {
     let mut args = env::args();
     let _program = args.next();
     let Some(command) = args.next() else {
@@ -207,31 +172,6 @@ fn maybe_run_exec_server_from_test_binary(guard: Option<&TestBinaryDispatchGuard
         }
     };
 
-    let current_exe = match env::current_exe() {
-        Ok(current_exe) => current_exe,
-        Err(error) => {
-            eprintln!("failed to resolve current test binary: {error}");
-            std::process::exit(1);
-        }
-    };
-    let mut runtime_paths = match ExecServerRuntimeOptions::new(
-        current_exe.clone(),
-        linux_sandbox_exe(guard, &current_exe),
-    ) {
-        Ok(runtime_paths) => runtime_paths,
-        Err(error) => {
-            eprintln!("failed to configure exec-server runtime paths: {error}");
-            std::process::exit(1);
-        }
-    };
-    runtime_paths.prefer_mxc = env::var("CODEX_EXEC_SERVER_TEST_PREFER_MXC")
-        .ok()
-        .map(|value| {
-            value.parse().unwrap_or_else(|error| {
-                eprintln!("invalid test MXC preference: {error}");
-                std::process::exit(1);
-            })
-        });
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -258,33 +198,13 @@ fn maybe_run_exec_server_from_test_binary(guard: Option<&TestBinaryDispatchGuard
             std::process::exit(1);
         }
     };
-    let exit_code = match runtime.block_on(async {
-        #[cfg(target_os = "macos")]
-        let runtime_paths = {
-            let home = codex_utils_home_dir::find_codex_home()?;
-            let config = codex_config::loader::load_config_layers_state(
-                &codex_exec_server::LocalFileSystem::unsandboxed(),
-                home.as_path(),
-                /*cwd*/ None,
-                &[],
-                codex_config::LoaderOverrides::default(),
-                &codex_config::NoopThreadConfigLoader,
-            )
-            .await?;
-            runtime_paths.with_allowed_symlinked_codex_home(
-                codex_config::allowed_symlinked_codex_home(&config, &home),
-            )
-        };
-        codex_exec_server::run_main_with_telemetry(
-            &listen_url,
-            runtime_paths,
-            ExecServerTelemetry::default(),
-            http_client_factory,
-            request_dispatch_mode,
-            codex_websocket_auth::WebsocketAuthSettings::default(),
-        )
-        .await
-    }) {
+    let exit_code = match runtime.block_on(codex_exec_server::run_main_with_telemetry(
+        &listen_url,
+        ExecServerTelemetry::default(),
+        http_client_factory,
+        request_dispatch_mode,
+        codex_websocket_auth::WebsocketAuthSettings::default(),
+    )) {
         Ok(()) => 0,
         Err(error) => {
             eprintln!("exec-server failed: {error}");
@@ -292,22 +212,4 @@ fn maybe_run_exec_server_from_test_binary(guard: Option<&TestBinaryDispatchGuard
         }
     };
     std::process::exit(exit_code);
-}
-
-fn linux_sandbox_exe(
-    guard: Option<&TestBinaryDispatchGuard>,
-    current_exe: &std::path::Path,
-) -> Option<PathBuf> {
-    #[cfg(target_os = "linux")]
-    {
-        guard
-            .and_then(|guard| guard.paths().codex_linux_sandbox_exe.clone())
-            .or_else(|| Some(current_exe.to_path_buf()))
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = guard;
-        let _ = current_exe;
-        None
-    }
 }

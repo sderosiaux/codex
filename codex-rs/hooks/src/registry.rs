@@ -8,8 +8,6 @@ use crate::events::compact::PreCompactRequest;
 use crate::events::compact::StatelessHookOutcome;
 use crate::events::interrupt::InterruptOutcome;
 use crate::events::interrupt::InterruptRequest;
-use crate::events::permission_request::PermissionRequestOutcome;
-use crate::events::permission_request::PermissionRequestRequest;
 use crate::events::post_tool_use::PostToolUseOutcome;
 use crate::events::post_tool_use::PostToolUseRequest;
 use crate::events::pre_tool_use::PreToolUseOutcome;
@@ -35,14 +33,12 @@ use codex_protocol::ThreadId;
 use codex_protocol::shell_environment::scrub_non_inheritable_env_vars;
 use std::ffi::OsString;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::process::Command;
 
 #[derive(Default, Clone)]
 pub struct HooksConfig {
     pub legacy_notify_argv: Option<Vec<String>>,
     pub feature_enabled: bool,
-    pub bypass_hook_trust: bool,
     pub config_layer_stack: Option<ConfigLayerStack>,
     pub plugin_hook_sources: Vec<PluginHookSource>,
     pub plugin_hook_load_warnings: Vec<String>,
@@ -68,26 +64,18 @@ pub struct Hooks {
 }
 
 impl Hooks {
-    /// Bind this session's hook runtime and output files to its thread, rejecting unloadable
-    /// required managed hooks.
+    /// Bind this session's hook runtime and output files to its thread.
     pub fn new(
         config: HooksConfig,
         thread_id: ThreadId,
         mcp_executor: Arc<dyn HookMcpExecutor>,
-    ) -> anyhow::Result<(Self, Receiver<codex_protocol::protocol::HookCompletedEvent>)> {
+    ) -> (Self, Receiver<codex_protocol::protocol::HookCompletedEvent>) {
         let (result_sender, result_receiver) = async_channel::unbounded();
         let environment = Arc::new(std::env::vars_os().collect());
         let hooks = Self::from_config(config, mcp_executor, Arc::clone(&environment), |shell| {
             CommandHookRuntime::new(shell, environment, thread_id, result_sender)
         });
-        let required_load_errors = hooks.engine.required_load_errors();
-        if !required_load_errors.is_empty() {
-            anyhow::bail!(
-                "failed to load required managed hooks: {}",
-                required_load_errors.join("; ")
-            );
-        }
-        Ok((hooks, result_receiver))
+        (hooks, result_receiver)
     }
 
     /// Preserve in-flight background hooks while applying a refreshed configuration.
@@ -133,7 +121,6 @@ impl Hooks {
         });
         let engine = ClaudeHooksEngine::new(
             config.feature_enabled,
-            config.bypass_hook_trust,
             config.config_layer_stack.as_ref(),
             config.plugin_hook_sources.clone(),
             config.plugin_hook_load_warnings.clone(),
@@ -193,20 +180,6 @@ impl Hooks {
         self.engine.preview_pre_tool_use(request)
     }
 
-    pub fn preview_permission_request(
-        &self,
-        request: &PermissionRequestRequest,
-    ) -> Vec<codex_protocol::protocol::HookRunSummary> {
-        self.engine.preview_permission_request(request)
-    }
-
-    /// Maximum configured timeout among PermissionRequest hooks.
-    ///
-    /// Matching handlers run concurrently, so their aggregate timeout is bounded by this maximum.
-    pub fn max_permission_request_timeout(&self) -> Duration {
-        self.engine.max_permission_request_timeout()
-    }
-
     pub fn preview_post_tool_use(
         &self,
         request: &PostToolUseRequest,
@@ -224,13 +197,6 @@ impl Hooks {
 
     pub async fn run_pre_tool_use(&self, request: PreToolUseRequest) -> PreToolUseOutcome {
         self.engine.run_pre_tool_use(request).await
-    }
-
-    pub async fn run_permission_request(
-        &self,
-        request: PermissionRequestRequest,
-    ) -> PermissionRequestOutcome {
-        self.engine.run_permission_request(request).await
     }
 
     pub async fn run_post_tool_use(&self, request: PostToolUseRequest) -> PostToolUseOutcome {
@@ -310,7 +276,6 @@ pub fn list_hooks(config: HooksConfig) -> HookListOutcome {
         config.config_layer_stack.as_ref(),
         config.plugin_hook_sources,
         config.plugin_hook_load_warnings,
-        config.bypass_hook_trust,
     );
     HookListOutcome {
         hooks: discovered.hook_entries,

@@ -68,8 +68,6 @@ impl ModelRequestContributor for MetadataContributor {
     fn request(&self, input: ModelRequestInput<'_>) -> Option<Box<dyn ModelResponseInterceptor>> {
         *input.client_metadata = Some(HashMap::from([
             ("thread_id".into(), "replaced".into()),
-            ("guardian_credits_requested".into(), "true".into()),
-            ("parent_response_id".into(), "forged".into()),
             ("existing".into(), "replaced".into()),
             ("x-request-id".into(), "request".into()),
         ]));

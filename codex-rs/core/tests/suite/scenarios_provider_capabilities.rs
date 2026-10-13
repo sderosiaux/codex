@@ -1,7 +1,6 @@
 //! Custom provider overrides constrain web access and enable V2 compaction.
 
 use super::*;
-use codex_protocol::models::PermissionProfile;
 use pretty_assertions::assert_eq;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -40,7 +39,6 @@ remote_compaction = "v2"
         })
         .with_model_info_override("gpt-5.5", |model| {
             model.use_responses_lite = false;
-            model.tool_mode = Some(ToolMode::Direct);
             model.apply_patch_tool_type = None;
         })
         .build_with_auto_env(&server)
@@ -59,11 +57,7 @@ remote_compaction = "v2"
         ],
     )
     .await;
-    test.submit_turn_with_permission_profile(
-        "Check the configuration.",
-        PermissionProfile::Disabled,
-    )
-    .await?;
+    test.submit_turn("Check the configuration.").await?;
     test.codex.submit(Op::Compact).await?;
     wait_for_event(&test.codex, |event| {
         assert!(!matches!(event, EventMsg::Error(_)), "{event:?}");

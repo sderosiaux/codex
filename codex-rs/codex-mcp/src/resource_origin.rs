@@ -283,17 +283,15 @@ impl ResourceOrigin {
         }
 
         let annotations = tool_info.tool.annotations.as_ref();
-        if !AppToolPolicyEvaluator::new(&binding.config().config_layer_stack)
-            .policy(AppToolPolicyInput {
+        if !AppToolPolicyEvaluator::new(&binding.config().config_layer_stack).tool_enabled(
+            AppToolPolicyInput {
                 connector_id: Some(&self.connector_id),
-                link_id: None,
                 tool_name: tool_info.tool.name.as_ref(),
                 tool_title: tool_info.tool.title.as_deref(),
                 destructive_hint: annotations.and_then(|value| value.destructive_hint),
                 open_world_hint: annotations.and_then(|value| value.open_world_hint),
-            })
-            .enabled
-        {
+            },
+        ) {
             anyhow::bail!("originating MCP tool is disabled by app configuration");
         }
 

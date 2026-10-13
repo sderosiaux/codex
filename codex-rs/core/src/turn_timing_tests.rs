@@ -1,17 +1,13 @@
-use codex_analytics::TurnProfile;
 use codex_protocol::items::AgentMessageItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseItem;
 use pretty_assertions::assert_eq;
-use std::time::Duration;
 use std::time::Instant;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
-use super::TurnProfilePhase;
-use super::TurnProfileState;
 use super::TurnTimingState;
 use super::response_item_records_turn_ttft;
 use crate::ResponseEvent;
@@ -141,7 +137,7 @@ async fn turn_timing_state_preserves_in_flight_items_after_turn_completion() {
     state
         .record_item_started("second".to_string(), /*started_at_ms*/ 200)
         .await;
-    let _ = state.complete_profile_and_duration_ms().await;
+    let _ = state.complete_duration_ms().await;
     assert_eq!(state.take_item_started("second").await, Some(200));
 }
 
@@ -212,98 +208,4 @@ fn response_item_records_turn_ttft_ignores_empty_non_output_items() {
             internal_chat_message_metadata_passthrough: None,
         }
     ));
-}
-
-#[test]
-fn turn_profile_breaks_down_sampling_blocking_and_retry_overhead() {
-    let started_at = Instant::now();
-    let mut state = TurnProfileState::default();
-    state.start(started_at);
-
-    let _ = state.begin_sampling(started_at + Duration::from_millis(100));
-    state.end_phase(
-        started_at + Duration::from_millis(600),
-        TurnProfilePhase::Sampling,
-    );
-    let _ = state.begin_tool_blocking(started_at + Duration::from_millis(600));
-    state.end_phase(
-        started_at + Duration::from_millis(900),
-        TurnProfilePhase::ToolBlocking,
-    );
-    state.record_sampling_retry();
-    let _ = state.begin_sampling(started_at + Duration::from_millis(1_000));
-    state.end_phase(
-        started_at + Duration::from_millis(1_200),
-        TurnProfilePhase::Sampling,
-    );
-
-    assert_eq!(
-        state.complete(started_at + Duration::from_millis(1_300)),
-        TurnProfile {
-            before_first_sampling_ms: 100,
-            sampling_ms: 700,
-            compaction_ms: 0,
-            between_sampling_overhead_ms: 100,
-            tool_blocking_ms: 300,
-            after_last_sampling_ms: 100,
-            sampling_request_count: 2,
-            sampling_retry_count: 1,
-            tools_change_count: 0,
-        }
-    );
-}
-
-#[test]
-fn turn_profile_counts_compaction_as_an_exclusive_phase() {
-    let started_at = Instant::now();
-    let mut state = TurnProfileState::default();
-    state.start(started_at);
-
-    let _ = state.begin_compaction(started_at + Duration::from_millis(100));
-    state.end_phase(
-        started_at + Duration::from_millis(300),
-        TurnProfilePhase::Compaction,
-    );
-    let _ = state.begin_sampling(started_at + Duration::from_millis(400));
-    state.end_phase(
-        started_at + Duration::from_millis(700),
-        TurnProfilePhase::Sampling,
-    );
-    let _ = state.begin_compaction(started_at + Duration::from_millis(800));
-
-    assert_eq!(
-        state.complete(started_at + Duration::from_millis(1_100)),
-        TurnProfile {
-            before_first_sampling_ms: 200,
-            sampling_ms: 300,
-            compaction_ms: 500,
-            between_sampling_overhead_ms: 0,
-            tool_blocking_ms: 0,
-            after_last_sampling_ms: 100,
-            sampling_request_count: 1,
-            sampling_retry_count: 0,
-            tools_change_count: 0,
-        }
-    );
-}
-
-#[tokio::test]
-async fn turn_profile_and_duration_share_a_completion_instant() {
-    let state = TurnTimingState::default();
-    state
-        .mark_turn_started(Instant::now() - Duration::from_millis(100))
-        .await;
-
-    let (_, duration_ms, profile) = state.complete_profile_and_duration_ms().await;
-    let classified_ms = profile.before_first_sampling_ms
-        + profile.sampling_ms
-        + profile.compaction_ms
-        + profile.between_sampling_overhead_ms
-        + profile.tool_blocking_ms
-        + profile.after_last_sampling_ms;
-
-    assert_eq!(
-        duration_ms,
-        Some(i64::try_from(classified_ms).expect("profile duration should fit i64"))
-    );
 }

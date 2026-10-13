@@ -2,17 +2,12 @@ use crate::function_tool::FunctionCallError;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::context::SharedTurnDiffTracker;
-use crate::tools::sandboxing::ToolError;
-use codex_analytics::ArtifactOperation;
-use codex_analytics::ArtifactOperationLifecycle;
-use codex_analytics::build_track_events_context;
+use crate::tools::runtime::ToolError;
 use codex_apply_patch::AppliedPatchDelta;
 use codex_core_plugins::PluginCommandAttribution;
 use codex_core_plugins::recognize_artifact_operation;
 use codex_otel::ARTIFACT_OPERATION_EXPECTED_OUTPUT_COUNT_METRIC;
 use codex_otel::ARTIFACT_OPERATION_STARTED_METRIC;
-use codex_protocol::error::CodexErrorDetails;
-use codex_protocol::error::SandboxErr;
 use codex_protocol::exec_output::ExecToolCallOutput;
 use codex_protocol::items::CommandExecutionItem;
 use codex_protocol::items::CommandExecutionStatus;
@@ -42,7 +37,6 @@ pub(super) fn truncate_rejection_message(message: &str) -> String {
 
 #[derive(Clone, Copy)]
 pub(crate) struct ToolEventCtx<'a> {
-    pub sandbox_type: Option<codex_protocol::sandbox::SandboxType>,
     pub model_context: Option<&'a ModelInvocationContext>,
     pub session: &'a Session,
     pub turn: &'a TurnContext,
@@ -62,7 +56,6 @@ impl<'a> ToolEventCtx<'a> {
     ) -> Self {
         Self {
             model_context: None,
-            sandbox_type: None,
             session,
             turn,
             model_info,
@@ -140,31 +133,6 @@ async fn emit_exec_command_begin(ctx: ToolEventCtx<'_>, exec_input: &ExecCommand
             i64::from(operation.expected_output_count),
             &metric_tags,
         );
-        ctx.session
-            .services
-            .analytics_events_client
-            .track_artifact_operation(
-                build_track_events_context(
-                    ctx.model_info.slug.clone(),
-                    ctx.session.thread_id.to_string(),
-                    ctx.turn.sub_id.clone(),
-                    ctx.turn.originator.clone(),
-                    /*turn_metadata*/ None,
-                ),
-                ArtifactOperation {
-                    item_id: ctx.call_id.to_string(),
-                    lifecycle: ArtifactOperationLifecycle::Started,
-                    occurred_at_ms: codex_analytics::now_unix_millis(),
-                    plugin_id: attribution.plugin_id.as_key(),
-                    script_path: operation.script_path.to_string(),
-                    skill: operation.plugin_name.to_string(),
-                    artifact_type: operation.artifact_type.to_string(),
-                    operation_kind: operation.operation_kind.to_string(),
-                    expected_output_count: operation.expected_output_count,
-                    output_format: operation.output_format.to_string(),
-                    execution_backend: "unified_exec".to_string(),
-                },
-            );
     }
     let (plugin_id, script_path) = plugin_attribution_fields(exec_input.plugin_attribution);
     ctx.session
@@ -173,7 +141,6 @@ async fn emit_exec_command_begin(ctx: ToolEventCtx<'_>, exec_input: &ExecCommand
             &TurnItem::CommandExecution(CommandExecutionItem {
                 id: ctx.call_id.to_string(),
                 model_context: ctx.model_context.cloned(),
-                sandbox_type: ctx.sandbox_type,
                 plugin_id,
                 script_path,
                 process_id: exec_input.process_id.map(str::to_owned),
@@ -194,7 +161,6 @@ async fn emit_exec_command_begin(ctx: ToolEventCtx<'_>, exec_input: &ExecCommand
 pub(crate) enum ToolEmitter {
     ApplyPatch {
         changes: HashMap<PathBuf, FileChange>,
-        auto_approved: bool,
         environment_id: Option<String>,
     },
     UnifiedExec {
@@ -210,12 +176,10 @@ pub(crate) enum ToolEmitter {
 impl ToolEmitter {
     pub fn apply_patch_for_environment(
         changes: HashMap<PathBuf, FileChange>,
-        auto_approved: bool,
         environment_id: String,
     ) -> Self {
         Self::ApplyPatch {
             changes,
-            auto_approved,
             environment_id: Some(environment_id),
         }
     }
@@ -240,14 +204,7 @@ impl ToolEmitter {
 
     pub async fn emit(&self, ctx: ToolEventCtx<'_>, stage: ToolEventStage<'_>) {
         match (self, stage) {
-            (
-                Self::ApplyPatch {
-                    changes,
-                    auto_approved,
-                    ..
-                },
-                ToolEventStage::Begin,
-            ) => {
+            (Self::ApplyPatch { changes, .. }, ToolEventStage::Begin) => {
                 ctx.session
                     .emit_turn_item_started(
                         ctx.turn,
@@ -255,7 +212,6 @@ impl ToolEmitter {
                             id: ctx.call_id.to_string(),
                             changes: changes.clone(),
                             status: None,
-                            auto_approved: Some(*auto_approved),
                             stdout: None,
                             stderr: None,
                         }),
@@ -410,56 +366,8 @@ impl ToolEmitter {
                 };
                 (event, result)
             }
-            Err(ToolError::Codex(err)) => match err.details() {
-                CodexErrorDetails::Sandbox(SandboxErr::Timeout { output }) => {
-                    let output = output.as_ref().clone();
-                    let response = self.format_exec_output_for_model(&output, ctx);
-                    let event = ToolEventStage::Failure(ToolEventFailure::Output(output));
-                    let result = Err(FunctionCallError::RespondToModel(response));
-                    (event, result)
-                }
-                CodexErrorDetails::Sandbox(SandboxErr::Denied { output, .. }) => {
-                    let output = output.as_ref().clone();
-                    let response = self.format_exec_output_for_model(&output, ctx);
-                    // apply_patch can be denied after it has already committed a
-                    // known prefix. Reuse the output-bearing path so the visible
-                    // item still fails while the turn diff consumes that prefix.
-                    let event = match (self, applied_patch_delta) {
-                        (Self::ApplyPatch { .. }, Some(delta)) => ToolEventStage::Success {
-                            output,
-                            applied_patch_delta: Some(delta),
-                        },
-                        _ => ToolEventStage::Failure(ToolEventFailure::Output(output)),
-                    };
-                    let result = Err(FunctionCallError::RespondToModel(response));
-                    (event, result)
-                }
-                _ => {
-                    let message = format!("execution error: {err:?}");
-                    let event = ToolEventStage::Failure(ToolEventFailure::Message(message.clone()));
-                    let result = Err(FunctionCallError::RespondToModel(message));
-                    (event, result)
-                }
-            },
             Err(ToolError::Rejected(msg)) => {
-                // Normalize common rejection messages for exec tools so tests and
-                // users see a clear, consistent phrase.
-                //
-                // NOTE: ToolError::Rejected is currently used for both user-declined approvals
-                // and some operational/runtime rejection paths (for example setup failures).
-                // We intentionally map all of them through the "rejected" event path for now,
-                // which means a subset of non-user failures may be reported as Declined.
-                //
-                // TODO: We should add a new ToolError variant for user-declined approvals.
-                let normalized = if msg == "rejected by user" {
-                    match self {
-                        Self::UnifiedExec { .. } => "exec command rejected by user".to_string(),
-                        Self::ApplyPatch { .. } => "patch rejected by user".to_string(),
-                    }
-                } else {
-                    msg
-                };
-                let normalized = truncate_rejection_message(&normalized);
+                let normalized = truncate_rejection_message(&msg);
                 let event = ToolEventStage::Failure(ToolEventFailure::Rejected {
                     message: normalized.clone(),
                     applied_patch_delta,
@@ -570,7 +478,6 @@ async fn emit_exec_end(
             TurnItem::CommandExecution(CommandExecutionItem {
                 id: ctx.call_id.to_string(),
                 model_context: ctx.model_context.cloned(),
-                sandbox_type: ctx.sandbox_type,
                 plugin_id,
                 script_path,
                 process_id: exec_input.process_id.map(str::to_owned),
@@ -611,7 +518,6 @@ async fn emit_patch_end(
                 id: ctx.call_id.to_string(),
                 changes,
                 status: Some(status),
-                auto_approved: None,
                 stdout: Some(stdout),
                 stderr: Some(stderr),
             }),
@@ -656,8 +562,6 @@ mod tests {
     use crate::session::tests::make_session_and_context_with_dynamic_tools_and_rx;
     use crate::turn_diff_tracker::TurnDiffTracker;
     use codex_exec_server::LOCAL_FS;
-    use codex_protocol::error::CodexErr;
-    use codex_protocol::error::SandboxErr;
     use codex_protocol::exec_output::ExecToolCallOutput;
     use codex_protocol::items::TurnItem;
     use codex_protocol::protocol::PatchApplyStatus;
@@ -683,14 +587,12 @@ mod tests {
             &mut stdout,
             &mut stderr,
             LOCAL_FS.as_ref(),
-            /*sandbox*/ None,
         )
         .await
         .expect("apply patch");
 
         ToolEmitter::ApplyPatch {
             changes: HashMap::new(),
-            auto_approved: false,
             environment_id: None,
         }
         .finish(
@@ -734,22 +636,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn denied_apply_patch_tracks_committed_delta() {
-        let output = ExecToolCallOutput {
-            exit_code: 1,
-            ..Default::default()
-        };
-        assert_failed_apply_patch_tracks_committed_delta(
-            Err(ToolError::Codex(CodexErr::Sandbox(SandboxErr::Denied {
-                output: Box::new(output),
-                network_policy_decision: None,
-            }))),
-            PatchApplyStatus::Failed,
-        )
-        .await;
-    }
-
-    #[tokio::test]
     async fn rejected_apply_patch_tracks_committed_delta() {
         assert_failed_apply_patch_tracks_committed_delta(
             Err(ToolError::Rejected("rejected by user".to_string())),
@@ -778,7 +664,6 @@ mod tests {
                 &mut stdout,
                 &mut stderr,
                 LOCAL_FS.as_ref(),
-                /*sandbox*/ None,
             )
             .await
             .expect("apply patch");
@@ -832,7 +717,6 @@ mod tests {
             &mut stdout,
             &mut stderr,
             LOCAL_FS.as_ref(),
-            /*sandbox*/ None,
         )
         .await
         .expect("apply patch");

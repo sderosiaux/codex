@@ -946,7 +946,6 @@ fn board_tool_call(name: &str, args: serde_json::Value) -> codex_tools::ToolCall
         model: "test".into(),
         codex_turn_metadata: None,
         truncation_policy: codex_utils_output_truncation::TruncationPolicy::Bytes(20_000),
-        source: codex_tools::ToolCallSource::Direct,
         conversation_history: codex_tools::ConversationHistory::default(),
         turn_item_emitter: Arc::new(codex_tools::NoopTurnItemEmitter),
         environments: vec![],
@@ -1169,7 +1168,6 @@ async fn tools_validate_arguments_deduplicate_calls_and_bound_unicode_results() 
 async fn check_tools_validate_arguments_deduplicate_calls_and_bound_unicode_results(
     backend: Backend,
 ) {
-    use codex_tools::ToolCallSource;
     use codex_tools::ToolName;
     use codex_utils_output_truncation::TruncationPolicy;
     use serde_json::json;
@@ -1348,19 +1346,13 @@ async fn check_tools_validate_arguments_deduplicate_calls_and_bound_unicode_resu
         "post",
         json!({"text":"reply","thread_id":metadata.thread_id}),
     );
-    nested.source = ToolCallSource::CodeMode {
-        cell_id: "cell-1".into(),
-        runtime_tool_call_id: "nested-1".into(),
-    };
+    nested.call_id = "nested-1".into();
     let first_nested = tool("post")
         .handle(nested.clone())
         .await
         .unwrap()
         .log_output();
-    nested.source = ToolCallSource::CodeMode {
-        cell_id: "cell-1".into(),
-        runtime_tool_call_id: "nested-2".into(),
-    };
+    nested.call_id = "nested-2".into();
     assert_ne!(
         tool("post").handle(nested).await.unwrap().log_output(),
         first_nested
@@ -1376,11 +1368,7 @@ async fn check_tools_validate_arguments_deduplicate_calls_and_bound_unicode_resu
     assert_eq!(page.results.len(), 2);
     assert!(page.results.iter().all(|post| post.text_preview == "reply"));
 
-    let mut nested_read = read_call;
-    nested_read.source = ToolCallSource::CodeMode {
-        cell_id: "cell-1".into(),
-        runtime_tool_call_id: "nested-3".into(),
-    };
+    let nested_read = read_call;
     assert!(
         tool("read_post")
             .handle(nested_read)

@@ -8,12 +8,11 @@ Scenario: Deferred namespaces appear after Apps recovers between sampling reques
 -- request 1 (turn; Apps unavailable) --
 00:message/developer:
     <MODEL_INSTRUCTIONS>
-01:message/developer[2]:
-    [01] <PERMISSIONS_INSTRUCTIONS>
-    [02] <tools>
-        Deferred tool namespaces:
-        - multi_agent_v1: Tools for spawning and managing sub-agents.
-        </tools>
+01:message/developer:
+    <tools>
+    Deferred tool namespaces:
+    - multi_agent_v1: Tools for spawning and managing sub-agents.
+    </tools>
 02:message/user:
     <ENVIRONMENT_CONTEXT>
 03:message/user:

@@ -19,7 +19,6 @@ use crate::test_support::TestCodexResponsesRequestKind;
 use crate::test_support::responses_metadata as test_responses_metadata;
 use base64::Engine;
 use codex_api::AgentIdentityTelemetry;
-use codex_api::ApiError;
 use codex_api::ResponseEvent;
 use codex_api::TransportError;
 use codex_history::HistoryInitialization;
@@ -43,7 +42,6 @@ use codex_model_provider_info::create_oss_provider_with_base_url;
 use codex_models_manager::manager::SharedModelsManager;
 use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
-use codex_protocol::auth::AuthMode;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::mcp::McpAttribution;
@@ -65,40 +63,15 @@ use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::protocol::InternalSessionSource;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
-use codex_rollout_trace::ExecutionStatus;
-use codex_rollout_trace::InferenceTraceAttempt;
-use codex_rollout_trace::InferenceTraceContext;
-use codex_rollout_trace::RawTraceEventPayload;
-use codex_rollout_trace::RolloutTrace;
-use codex_rollout_trace::TraceWriter;
-use codex_rollout_trace::replay_bundle;
-use codex_tools::JsonSchema;
-use codex_tools::ResponsesApiTool;
-use codex_tools::ToolSpec;
 use futures::StreamExt;
 use pretty_assertions::assert_eq;
 use serde_json::json;
-use std::collections::BTreeMap;
-use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
-use std::task::Context;
-use std::task::Poll;
-use std::time::Duration;
 use tempfile::TempDir;
-use tokio::sync::Notify;
-use tracing::Event;
-use tracing::Subscriber;
-use tracing::field::Visit;
-use tracing_subscriber::Layer;
-use tracing_subscriber::layer::Context as LayerContext;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::registry::LookupSpan;
-use tracing_subscriber::util::SubscriberInitExt;
 use wiremock::Mock;
 use wiremock::MockServer;
 use wiremock::ResponseTemplate;
@@ -494,16 +467,12 @@ fn output_with_tool_result_metadata(metadata: ToolResultMetadata) -> ResponseIte
 #[tokio::test]
 async fn responses_request_includes_internal_metadata_for_provider_grant_or_first_party_destination()
 -> anyhow::Result<()> {
-    use crate::session::step_context::StepContext;
     use crate::tools::ExecutedToolCalls;
-    use crate::tools::context::ToolCallSource;
     use crate::tools::context::ToolPayload;
     use crate::tools::router::ToolCall;
     use codex_features::Feature;
     use codex_features::Features;
 
-    let (_, turn) = crate::session::tests::make_session_and_context().await;
-    let step = StepContext::for_test(Arc::new(turn));
     let mut features = Features::default();
     features.enable(Feature::ExecutedToolCallMetadata);
     let recorder = ExecutedToolCalls::new(&features, &codex_history::InitialHistory::New);
@@ -519,7 +488,7 @@ async fn responses_request_includes_internal_metadata_for_provider_grant_or_firs
             encrypted_function_args: None,
         };
         let (mut recorded, permit) = recorder
-            .prepare_direct_call(&call, &ToolCallSource::Direct, &step)
+            .prepare_direct_call(&call)
             .expect("direct observation slot");
         recorded.set_tool_result_metadata(ToolResultMetadata::new(&resource_metadata));
         let mut item = ResponseItem::from(ResponseInputItem::FunctionCallOutput {
@@ -530,7 +499,7 @@ async fn responses_request_includes_internal_metadata_for_provider_grant_or_firs
         outputs.push(item);
     }
     let persisted_outputs = outputs.clone();
-    recorder.attach_to_prompt(&mut outputs, &mut Default::default());
+    recorder.attach_to_prompt(&mut outputs);
     let restored = serde_json::to_value(&outputs)?;
     assert_eq!(
         restored[1]["internal_chat_message_metadata_passthrough"]["executed_tool_calls"][0]["tool_result_metadata"],
@@ -777,7 +746,7 @@ fn responses_request_preserves_result_metadata_above_previous_aggregate_budget()
         ..Default::default()
     };
     // Follow the sampling path: budget the request copy before client serialization.
-    recorder.attach_to_prompt(&mut prompt.input, &mut Default::default());
+    recorder.attach_to_prompt(&mut prompt.input);
     let provider =
         ModelProviderInfo::create_openai_provider(Some("https://api.openai.com/v1".to_string()));
     let api_provider = provider.to_api_provider(/*auth_mode*/ None)?;
@@ -941,13 +910,9 @@ fn websocket_incremental_reuse_tracks_raw_result_metadata() -> anyhow::Result<()
         session.websocket_session.last_response_rx = Some(receiver);
         let continuation = session.prepare_websocket_request(&current);
         assert_eq!(
-            continuation.map(|continuation| (
-                continuation.response_id,
-                continuation.items,
-                continuation.from_untraced_warmup,
-            )),
+            continuation.map(|continuation| (continuation.response_id, continuation.items,)),
             if expect_incremental {
-                Ok(("previous-response".to_string(), vec![follow_up], false))
+                Ok(("previous-response".to_string(), vec![follow_up]))
             } else {
                 Err(NonIncrementalReason::InputMismatch {
                     previous: "custom_tool_call_output",
@@ -1070,7 +1035,6 @@ async fn responses_http_preserves_raw_tool_metadata_for_openai_custom_endpoint()
             codex_protocol::config_types::ReasoningSummary::None,
             /*service_tier*/ None,
             &responses_metadata,
-            &InferenceTraceContext::disabled(),
         )
         .await?;
     let mut completed = false;
@@ -1361,78 +1325,6 @@ fn reasoning_effort_for_requests_preserves_non_ultra_and_persistent_behavior() {
     );
 }
 
-#[derive(Default)]
-struct TagCollectorVisitor {
-    tags: BTreeMap<String, String>,
-}
-
-impl Visit for TagCollectorVisitor {
-    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
-        self.tags
-            .insert(field.name().to_string(), value.to_string());
-    }
-
-    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-        self.tags
-            .insert(field.name().to_string(), format!("{value:?}"));
-    }
-}
-
-#[derive(Clone)]
-struct TagCollectorLayer {
-    tags: Arc<Mutex<BTreeMap<String, String>>>,
-}
-
-impl<S> Layer<S> for TagCollectorLayer
-where
-    S: Subscriber + for<'a> LookupSpan<'a>,
-{
-    fn on_event(&self, event: &Event<'_>, _ctx: LayerContext<'_, S>) {
-        if event.metadata().target() != "feedback_tags" {
-            return;
-        }
-        let mut visitor = TagCollectorVisitor::default();
-        event.record(&mut visitor);
-        self.tags.lock().unwrap().extend(visitor.tags);
-    }
-}
-
-fn started_inference_attempt(temp: &TempDir) -> anyhow::Result<InferenceTraceAttempt> {
-    let writer = Arc::new(TraceWriter::create(
-        temp.path(),
-        "trace-1".to_string(),
-        "rollout-1".to_string(),
-        "thread-root".to_string(),
-    )?);
-    writer.append(RawTraceEventPayload::ThreadStarted {
-        thread_id: "thread-root".to_string(),
-        agent_path: "/root".to_string(),
-        metadata_payload: None,
-    })?;
-    writer.append(RawTraceEventPayload::CodexTurnStarted {
-        codex_turn_id: "turn-1".to_string(),
-        thread_id: "thread-root".to_string(),
-    })?;
-
-    let inference_trace = InferenceTraceContext::enabled(
-        writer,
-        "thread-root".to_string(),
-        "turn-1".to_string(),
-        "gpt-test".to_string(),
-        "test-provider".to_string(),
-    );
-    let attempt = inference_trace.start_attempt();
-    attempt.record_started(&json!({
-        "model": "gpt-test",
-        "input": [{
-            "type": "message",
-            "role": "user",
-            "content": [{"type": "input_text", "text": "hello"}]
-        }],
-    }));
-    Ok(attempt)
-}
-
 fn output_message(id: &str, text: &str) -> ResponseItem {
     ResponseItem::Message {
         status: None,
@@ -1446,45 +1338,6 @@ fn output_message(id: &str, text: &str) -> ResponseItem {
         }],
         phase: None,
         internal_chat_message_metadata_passthrough: None,
-    }
-}
-
-async fn replay_until_cancelled(temp: &TempDir) -> anyhow::Result<RolloutTrace> {
-    let mut rollout = replay_bundle(temp.path())?;
-    for _ in 0..50 {
-        let inference = rollout
-            .inference_calls
-            .values()
-            .next()
-            .expect("inference should be reduced");
-        if inference.execution.status == ExecutionStatus::Cancelled {
-            return Ok(rollout);
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-        rollout = replay_bundle(temp.path())?;
-    }
-    Ok(rollout)
-}
-
-struct NotifyAfterEventStream {
-    events: VecDeque<ResponseEvent>,
-    yielded: usize,
-    notify_after: usize,
-    notify: Arc<Notify>,
-}
-
-impl futures::Stream for NotifyAfterEventStream {
-    type Item = std::result::Result<ResponseEvent, ApiError>;
-
-    fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let Some(event) = self.events.pop_front() else {
-            return Poll::Pending;
-        };
-        self.yielded += 1;
-        if self.yielded == self.notify_after {
-            self.notify.notify_one();
-        }
-        Poll::Ready(Some(Ok(event)))
     }
 }
 
@@ -1503,7 +1356,9 @@ fn build_subagent_headers_sets_other_subagent_label() {
 #[test]
 fn internal_session_prompt_cache_key_is_scoped_to_parent_thread() {
     let parent_thread_id = ThreadId::new();
-    let client = test_model_client(SessionSource::Internal(InternalSessionSource::Guardian));
+    let client = test_model_client(SessionSource::Internal(
+        InternalSessionSource::MemoryConsolidation,
+    ));
     let metadata = test_responses_metadata_for_client(
         &client,
         Some("turn-123"),
@@ -1514,7 +1369,7 @@ fn internal_session_prompt_cache_key_is_scoped_to_parent_thread() {
 
     assert_eq!(
         client.prompt_cache_key(&metadata),
-        format!("guardian:{parent_thread_id}")
+        format!("memory_consolidation:{parent_thread_id}")
     );
 }
 
@@ -1618,90 +1473,6 @@ async fn summarize_memories_returns_empty_for_empty_input() {
         .await
         .expect("empty summarize request should succeed");
     assert_eq!(output.len(), 0);
-}
-
-#[tokio::test]
-async fn dropped_response_stream_traces_cancelled_partial_output() -> anyhow::Result<()> {
-    let temp = TempDir::new()?;
-    let attempt = started_inference_attempt(&temp)?;
-
-    // The provider has produced one complete output item, but no terminal
-    // response.completed event. The harness has enough information to keep this
-    // item in history, so the trace should preserve it when the stream is
-    // abandoned.
-    let item = output_message("1", "partial answer");
-    let api_stream = futures::stream::iter([Ok(ResponseEvent::OutputItemDone(item))])
-        .chain(futures::stream::pending());
-    let (mut stream, _) = super::map_response_events(
-        /*upstream_request_id*/ None,
-        api_stream,
-        test_session_telemetry(),
-        attempt,
-        test_model_provider(),
-    );
-
-    let observed = stream
-        .next()
-        .await
-        .expect("mapped stream should yield output item")?;
-    assert!(matches!(observed, ResponseEvent::OutputItemDone(_)));
-
-    // Dropping the consumer is how turn interruption/preemption stops polling
-    // the provider stream. The mapper task observes that drop asynchronously
-    // and records cancellation using the output items it has already seen.
-    drop(stream);
-
-    // Cancellation is recorded by the mapper task after Drop wakes it, so the
-    // replay may need a short wait before the terminal event appears on disk.
-    let rollout = replay_until_cancelled(&temp).await?;
-    let inference = rollout
-        .inference_calls
-        .values()
-        .next()
-        .expect("inference should be reduced");
-
-    assert_eq!(inference.execution.status, ExecutionStatus::Cancelled);
-    assert_eq!(inference.response_item_ids.len(), 1);
-    assert_eq!(rollout.raw_payloads.len(), 2);
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn response_stream_records_last_model_feedback_ids() {
-    let tags = Arc::new(Mutex::new(BTreeMap::new()));
-    let _guard = tracing_subscriber::registry()
-        .with(TagCollectorLayer { tags: tags.clone() })
-        .set_default();
-
-    let api_stream = futures::stream::iter([
-        Ok(ResponseEvent::Created { response_id: None }),
-        Ok(ResponseEvent::Completed {
-            response_id: "resp-123".to_string(),
-            token_usage: None,
-            usage_metadata: None,
-            end_turn: Some(true),
-        }),
-    ]);
-    let (mut stream, _) = super::map_response_events(
-        Some("req-123".to_string()),
-        api_stream,
-        test_session_telemetry(),
-        InferenceTraceAttempt::disabled(),
-        test_model_provider(),
-    );
-
-    while stream.next().await.is_some() {}
-
-    let tags = tags.lock().unwrap().clone();
-    assert_eq!(
-        tags.get("last_model_request_id").map(String::as_str),
-        Some("\"req-123\"")
-    );
-    assert_eq!(
-        tags.get("last_model_response_id").map(String::as_str),
-        Some("\"resp-123\"")
-    );
 }
 
 #[tokio::test]
@@ -1885,60 +1656,9 @@ async fn provider_owned_auth_recovery_is_bounded_and_preserves_unauthorized_fail
     }
 }
 
-#[tokio::test]
-async fn dropped_backpressured_response_stream_traces_cancelled_partial_output()
--> anyhow::Result<()> {
-    let temp = TempDir::new()?;
-    let attempt = started_inference_attempt(&temp)?;
-    let backpressured_item_yielded = Arc::new(Notify::new());
-    let mut events = VecDeque::new();
-    for _ in 0..super::RESPONSE_STREAM_CHANNEL_CAPACITY {
-        events.push_back(ResponseEvent::Created { response_id: None });
-    }
-    events.push_back(ResponseEvent::OutputItemDone(output_message(
-        "1",
-        "partial answer",
-    )));
-    let api_stream = NotifyAfterEventStream {
-        events,
-        yielded: 0,
-        notify_after: super::RESPONSE_STREAM_CHANNEL_CAPACITY + 1,
-        notify: Arc::clone(&backpressured_item_yielded),
-    };
-
-    let (stream, _) = super::map_response_events(
-        /*upstream_request_id*/ None,
-        api_stream,
-        test_session_telemetry(),
-        attempt,
-        test_model_provider(),
-    );
-
-    // Fill the mapper channel with non-terminal events, then yield one output
-    // item. The mapper has observed that item and is blocked trying to send it
-    // downstream, so dropping the consumer covers the send-failure path rather
-    // than the `consumer_dropped` select branch.
-    backpressured_item_yielded.notified().await;
-    drop(stream);
-
-    let rollout = replay_until_cancelled(&temp).await?;
-    let inference = rollout
-        .inference_calls
-        .values()
-        .next()
-        .expect("inference should be reduced");
-
-    assert_eq!(inference.execution.status, ExecutionStatus::Cancelled);
-    assert_eq!(inference.response_item_ids.len(), 1);
-    assert_eq!(rollout.raw_payloads.len(), 2);
-
-    Ok(())
-}
-
 #[test]
 fn auth_request_telemetry_context_tracks_attached_auth_and_retry_phase() {
     let auth_context = AuthRequestTelemetryContext::new(
-        Some(AuthMode::Chatgpt),
         &BearerAuthProvider::for_test(Some("access-token"), Some("workspace-123")),
         /*agent_identity_telemetry*/ None,
         PendingUnauthorizedRetry::from_recovery(UnauthorizedRecoveryExecution {
@@ -1947,7 +1667,6 @@ fn auth_request_telemetry_context_tracks_attached_auth_and_retry_phase() {
         }),
     );
 
-    assert_eq!(auth_context.auth_mode, Some("Chatgpt"));
     assert!(auth_context.auth_header_attached);
     assert_eq!(auth_context.auth_header_name, Some("authorization"));
     assert!(auth_context.retry_after_unauthorized);
@@ -1958,7 +1677,6 @@ fn auth_request_telemetry_context_tracks_attached_auth_and_retry_phase() {
 #[test]
 fn auth_request_telemetry_context_tracks_agent_identity_ids() {
     let auth_context = AuthRequestTelemetryContext::new(
-        Some(AuthMode::Chatgpt),
         &BearerAuthProvider::for_test(/*token*/ None, /*account_id*/ None),
         Some(AgentIdentityTelemetry {
             agent_id: "agent-runtime-context".to_string(),
@@ -2113,25 +1831,6 @@ async fn websocket_handshake_includes_attestation_for_chatgpt_codex_responses(
 }
 
 #[tokio::test]
-async fn existing_call_sideband_headers_include_attestation() {
-    let (model_client, attestation_calls) =
-        model_client_with_counting_attestation(/*include_attestation*/ true);
-
-    let headers = model_client
-        .realtime_sideband_headers(http::HeaderMap::new())
-        .await
-        .expect("existing call sideband headers should build");
-
-    assert_eq!(
-        headers
-            .get(crate::attestation::X_OAI_ATTESTATION_HEADER)
-            .and_then(|value| value.to_str().ok()),
-        Some("v1.header-1"),
-    );
-    assert_eq!(attestation_calls.load(Ordering::Relaxed), 1);
-}
-
-#[tokio::test]
 async fn non_chatgpt_codex_endpoints_omit_attestation_generation() {
     let (model_client, attestation_calls) =
         model_client_with_counting_attestation(/*include_attestation*/ false);
@@ -2165,7 +1864,7 @@ async fn non_chatgpt_codex_endpoints_omit_attestation_generation() {
 }
 
 #[tokio::test]
-async fn intercepted_output_reaches_trace_and_websocket_bookkeeping() -> anyhow::Result<()> {
+async fn intercepted_output_reaches_websocket_bookkeeping() -> anyhow::Result<()> {
     struct ReplaceOutput;
     impl codex_extension_api::ModelResponseInterceptor for ReplaceOutput {
         fn intercept(
@@ -2183,8 +1882,6 @@ async fn intercepted_output_reaches_trace_and_websocket_bookkeeping() -> anyhow:
         }
     }
 
-    let temp = TempDir::new()?;
-    let attempt = started_inference_attempt(&temp)?;
     let (tx_event, rx_event) = tokio::sync::mpsc::channel(2);
     tx_event
         .send(Ok(ResponseEvent::OutputItemDone(output_message(
@@ -2207,7 +1904,6 @@ async fn intercepted_output_reaches_trace_and_websocket_bookkeeping() -> anyhow:
             interrupt: None,
         },
         test_session_telemetry(),
-        attempt,
         test_model_provider(),
         vec![Box::new(ReplaceOutput)],
     );
@@ -2219,66 +1915,5 @@ async fn intercepted_output_reaches_trace_and_websocket_bookkeeping() -> anyhow:
     }
     assert_eq!(delivered, vec![output_message("1", "transformed")]);
     assert_eq!(last_response.await?.items_added, delivered);
-    let rollout = replay_bundle(temp.path())?;
-    let payload = rollout
-        .raw_payloads
-        .values()
-        .find(|payload| payload.kind == codex_rollout_trace::RawPayloadKind::InferenceResponse)
-        .expect("response trace payload");
-    let recorded: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(temp.path().join(&payload.path))?)?;
-    assert_eq!(recorded["output_items"], serde_json::to_value(&delivered)?);
     Ok(())
-}
-
-#[tokio::test]
-async fn inference_tools_changes_follow_full_specs_across_turns() {
-    let client = test_model_client(SessionSource::Cli);
-    let telemetry = test_session_telemetry();
-    let model_info = test_model_info();
-    let alpha = ResponsesApiTool {
-        name: "alpha".into(),
-        description: "Original".into(),
-        strict: false,
-        defer_loading: None,
-        parameters: JsonSchema::default(),
-        output_schema: None,
-    };
-    let beta = ResponsesApiTool {
-        name: "beta".into(),
-        ..alpha.clone()
-    };
-    let mut output_changed = alpha.clone();
-    output_changed.output_schema = Some(json!({"type": "object"}).into());
-    let mut params_changed = beta.clone();
-    params_changed.parameters = JsonSchema::string(Some("Changed parameters".into()));
-    let mut session = client.new_session();
-    for (index, (tools, expected)) in [
-        (vec![alpha.clone()], false),
-        (vec![output_changed.clone()], true),
-        (vec![output_changed.clone(), beta.clone()], true),
-        (vec![output_changed, beta.clone()], false),
-        (vec![beta, alpha.clone()], true),
-        (vec![params_changed, alpha], true),
-        (vec![], true),
-        (vec![], false),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        if index == 4 {
-            session.try_switch_fallback_transport(&telemetry, &model_info);
-            drop(session);
-            session = client.new_session();
-        }
-        let specs = tools
-            .into_iter()
-            .map(ToolSpec::Function)
-            .collect::<Arc<[_]>>();
-        assert_eq!(
-            session.inference_tools_changed(&specs),
-            expected,
-            "step {index}"
-        );
-    }
 }

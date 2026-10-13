@@ -10,7 +10,6 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use super::ExecServerHandler;
-use crate::ExecServerRuntimeOptions;
 use crate::ProcessId;
 use crate::protocol::ExecParams;
 use crate::protocol::InitializeParams;
@@ -38,10 +37,6 @@ fn exec_params_with_argv(process_id: &str, argv: Vec<String>) -> ExecParams {
         tty: false,
         pipe_stdin: false,
         arg0: None,
-        sandbox: None,
-        enforce_managed_network: false,
-        managed_network: None,
-        network_proxy: None,
     }
 }
 
@@ -77,14 +72,6 @@ fn windows_command_processor() -> String {
     std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string())
 }
 
-fn test_runtime_paths() -> ExecServerRuntimeOptions {
-    ExecServerRuntimeOptions::new(
-        std::env::current_exe().expect("current exe"),
-        /*codex_linux_sandbox_exe*/ None,
-    )
-    .expect("runtime paths")
-}
-
 fn test_http_client_factory() -> HttpClientFactory {
     HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault)
 }
@@ -95,7 +82,6 @@ async fn initialized_handler() -> Arc<ExecServerHandler> {
     let handler = Arc::new(ExecServerHandler::new(
         registry,
         RpcNotificationSender::new(outgoing_tx),
-        test_runtime_paths(),
         test_http_client_factory(),
     ));
     let initialize_response = handler
@@ -174,7 +160,6 @@ async fn long_poll_read_fails_after_session_resume() {
     let first_handler = Arc::new(ExecServerHandler::new(
         Arc::clone(&registry),
         RpcNotificationSender::new(first_tx),
-        test_runtime_paths(),
         test_http_client_factory(),
     ));
     let initialize_response = first_handler
@@ -218,7 +203,6 @@ async fn long_poll_read_fails_after_session_resume() {
     let second_handler = Arc::new(ExecServerHandler::new(
         registry,
         RpcNotificationSender::new(second_tx),
-        test_runtime_paths(),
         test_http_client_factory(),
     ));
     second_handler
@@ -252,7 +236,6 @@ async fn active_session_resume_is_rejected() {
     let first_handler = Arc::new(ExecServerHandler::new(
         Arc::clone(&registry),
         RpcNotificationSender::new(first_tx),
-        test_runtime_paths(),
         test_http_client_factory(),
     ));
     let initialize_response = first_handler
@@ -267,7 +250,6 @@ async fn active_session_resume_is_rejected() {
     let second_handler = Arc::new(ExecServerHandler::new(
         registry,
         RpcNotificationSender::new(second_tx),
-        test_runtime_paths(),
         test_http_client_factory(),
     ));
     let err = second_handler
@@ -296,7 +278,6 @@ async fn output_and_exit_are_retained_after_notification_receiver_closes() {
     let handler = Arc::new(ExecServerHandler::new(
         SessionRegistry::new(crate::ExecServerTelemetry::default()),
         RpcNotificationSender::new(outgoing_tx),
-        test_runtime_paths(),
         test_http_client_factory(),
     ));
     handler

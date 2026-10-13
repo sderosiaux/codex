@@ -20,13 +20,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use codex_config::ConfigLayerStack;
-use codex_config::Constrained;
 use codex_config::McpEnterpriseManagedAuthConfig;
 use codex_config::McpServerAuth;
 use codex_config::McpServerConfig;
 use codex_config::McpServerTransportConfig;
-use codex_config::types::AppToolApproval;
-use codex_config::types::ApprovalsReviewer;
 use codex_config::types::AuthKeyringBackendKind;
 use codex_config::types::OAuthCredentialsStoreMode;
 use codex_connectors::ConnectorRuntimeManager;
@@ -39,8 +36,6 @@ use codex_protocol::mcp::McpServerInfo;
 use codex_protocol::mcp::Resource;
 use codex_protocol::mcp::ResourceTemplate;
 use codex_protocol::mcp::Tool;
-use codex_protocol::models::PermissionProfile;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::McpAuthStatus;
 use codex_rmcp_client::McpOAuthRefreshMode;
 use codex_utils_path_uri::PathUri;
@@ -51,7 +46,6 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 use crate::McpProtocolMode;
-use crate::McpServerSource;
 use crate::ResolvedMcpCatalog;
 use crate::connection_manager::McpConnectionSet;
 use crate::runtime::McpPublicationGate;
@@ -86,39 +80,10 @@ pub fn qualified_mcp_tool_name_prefix(server_name: &str) -> String {
     ))
 }
 
-/// Returns true when MCP permission prompts should resolve as approved instead
-/// of being shown to the user.
-pub fn mcp_permission_prompt_is_auto_approved(
-    approval_policy: AskForApproval,
-    permission_profile: &PermissionProfile,
-    context: McpPermissionPromptAutoApproveContext,
-) -> bool {
-    if context.tool_approval_mode == Some(AppToolApproval::Approve) {
-        return true;
-    }
-
-    if approval_policy != AskForApproval::Never {
-        return false;
-    }
-
-    match permission_profile {
-        PermissionProfile::Disabled | PermissionProfile::External { .. } => true,
-        PermissionProfile::Managed { file_system, .. } => {
-            file_system.to_sandbox_policy().has_full_disk_write_access()
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct McpPermissionPromptAutoApproveContext {
-    pub tool_approval_mode: Option<AppToolApproval>,
-}
-
 /// MCP runtime settings derived from `codex_core::config::Config`.
 ///
 /// Each published runtime and prepared call owns one immutable copy of these
-/// settings, so its connection, approval policy, and sandbox authority cannot
-/// change independently. Auth remains separate and is supplied explicitly to
+/// settings, so its connections and configuration cannot change independently. Auth remains separate and is supplied explicitly to
 /// runtime entry points such as [`effective_mcp_servers`].
 #[derive(Debug, Clone)]
 pub struct McpConfig {
@@ -150,30 +115,11 @@ pub struct McpConfig {
     pub optional_mcp_startup_grace: Duration,
     /// Whether skill MCP dependency installation prompts are enabled.
     pub skill_mcp_dependency_install_enabled: bool,
-    /// Approval policy used for MCP tool calls and MCP elicitation requests.
-    pub approval_policy: Constrained<AskForApproval>,
-    /// Permission profile captured with the connections and approval policy.
-    pub permission_profile: PermissionProfile,
-    /// Configuration layers used to evaluate Apps tool policy and reviewer selection.
+    /// Configuration layers used to evaluate Apps tool policy.
     pub config_layer_stack: ConfigLayerStack,
     pub plugins: codex_config::types::PluginsConfigToml,
-    /// Default reviewer used when an Apps tool has no reviewer override.
-    pub approvals_reviewer: ApprovalsReviewer,
     /// Working directories for the exact environment handles used by this runtime.
     pub environment_cwds: HashMap<String, PathUri>,
-    /// Effective backends captured with the environment handles, including local fallback.
-    pub environment_use_mxc: HashMap<String, bool>,
-    /// Explicit server permissions; unresolved or unavailable servers have no entry.
-    pub server_permission_profiles: HashMap<String, PermissionProfile>,
-    /// Host-supplied re-exec binary. Probe its sandbox capability before advertising it.
-    /// Never infer this from PATH or an MCP server's configuration.
-    pub codex_self_exe: Option<PathBuf>,
-    /// Optional path to `codex-linux-sandbox` for sandboxed MCP tool execution.
-    pub codex_linux_sandbox_exe: Option<PathBuf>,
-    /// Whether to use legacy Landlock behavior in the MCP sandbox state.
-    // TODO(anp): Reconcile this runtime-wide copy with TurnEnvironment::sandbox_context
-    // for the environment that owns each MCP server.
-    pub use_legacy_landlock: bool,
     /// Whether the app MCP integration is enabled by config.
     ///
     /// ChatGPT auth is checked separately before a materialized host-owned Apps
@@ -199,58 +145,6 @@ pub struct McpConfig {
 
 /// Default amount of time a tool catalog capture waits for optional MCP servers.
 pub const DEFAULT_OPTIONAL_MCP_STARTUP_GRACE: Duration = Duration::from_secs(1);
-
-impl McpConfig {
-    /// Resolves enabled runtime servers against the exact attachment permissions being published.
-    pub fn set_server_permission_profiles(
-        &mut self,
-        servers: &HashMap<String, EffectiveMcpServer>,
-        environment_profiles: impl IntoIterator<Item = (String, PermissionProfile)>,
-    ) {
-        let environment_profiles = environment_profiles.into_iter().collect::<HashMap<_, _>>();
-        self.server_permission_profiles = servers
-            .iter()
-            .filter(|(_, server)| server.enabled())
-            .filter_map(|(server_name, _)| {
-                let server = self.mcp_server_catalog.server(server_name)?;
-                let permission_profile = if server
-                    .source()
-                    .is_host_owned_apps(server_name, server.config())
-                {
-                    &self.permission_profile
-                } else if let Some(permission_profile) =
-                    environment_profiles.get(&server.config().environment_id)
-                {
-                    permission_profile
-                } else if server.config().is_local_environment()
-                    || matches!(server.source(), McpServerSource::SelectedPlugin(_))
-                {
-                    &self.permission_profile
-                } else {
-                    return None;
-                };
-                Some((server_name.clone(), permission_profile.clone()))
-            })
-            .collect();
-    }
-
-    /// Returns this server's published permission authority.
-    pub fn permission_profile_for_server(&self, server_name: &str) -> Option<&PermissionProfile> {
-        self.server_permission_profiles.get(server_name)
-    }
-
-    /// Standalone discovery and resource reads must not inherit thread execution authority.
-    pub fn for_threadless_operations(&self, servers: &HashMap<String, EffectiveMcpServer>) -> Self {
-        let mut config = self.clone();
-        config.permission_profile = PermissionProfile::default();
-        config.server_permission_profiles = servers
-            .iter()
-            .filter(|(_, server)| server.enabled())
-            .map(|(name, _)| (name.clone(), PermissionProfile::default()))
-            .collect();
-        config
-    }
-}
 
 /// Plugin attribution and selection data derived from the current MCP configuration.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -456,13 +350,12 @@ pub async fn read_mcp_resource(
     let mut mcp_servers = effective_mcp_servers(config, auth);
     mcp_servers.retain(|name, _| name == server);
     let cancel_token = CancellationToken::new();
-    let runtime_config = config.for_threadless_operations(&mcp_servers);
     let manager = McpConnectionSet::new(
         /*previous*/ None,
         McpPublicationGate::already_published(),
         McpRuntimeInput {
             startup_policy: McpStartupPolicy::Eager,
-            config: Arc::new(runtime_config),
+            config: Arc::new(config.clone()),
             plugins_available: false,
             ready_selected_capability_roots: Vec::new(),
             mcp_servers,
@@ -476,7 +369,6 @@ pub async fn read_mcp_resource(
             client_mcp_extensions: ClientMcpExtensions::default(),
             auth: auth.cloned(),
             auth_manager: None,
-            elicitation_reviewer: None,
             elicitation_lifecycle: None,
         },
         crate::elicitation::ElicitationRequestRouter::default(),
@@ -536,13 +428,12 @@ pub async fn collect_mcp_server_status_snapshot_with_detail(
     let server_names = mcp_servers.keys().cloned().collect();
 
     let cancel_token = CancellationToken::new();
-    let runtime_config = config.for_threadless_operations(&mcp_servers);
     let mcp_connection_manager = McpConnectionSet::new(
         /*previous*/ None,
         McpPublicationGate::already_published(),
         McpRuntimeInput {
             startup_policy: McpStartupPolicy::Eager,
-            config: Arc::new(runtime_config),
+            config: Arc::new(config.clone()),
             plugins_available: false,
             ready_selected_capability_roots: Vec::new(),
             mcp_servers,
@@ -556,7 +447,6 @@ pub async fn collect_mcp_server_status_snapshot_with_detail(
             client_mcp_extensions: ClientMcpExtensions::default(),
             auth: auth.cloned(),
             auth_manager: None,
-            elicitation_reviewer: None,
             elicitation_lifecycle: None,
         },
         crate::elicitation::ElicitationRequestRouter::default(),
@@ -681,7 +571,6 @@ fn mcp_server_config_for_url(
         disabled_reason: None,
         startup_timeout_sec: Some(Duration::from_secs(30)),
         tool_timeout_sec: None,
-        default_tools_approval_mode: None,
         enabled_tools: None,
         disabled_tools: None,
         scopes: None,

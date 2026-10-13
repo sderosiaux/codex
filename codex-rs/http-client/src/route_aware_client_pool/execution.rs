@@ -54,25 +54,7 @@ impl RouteAwareClientPool {
         F: Fn(String) -> Fut,
         Fut: Future<Output = io::Result<OutboundProxyRoute>>,
     {
-        let request = request.into();
-        let permit = self
-            .http_client_factory
-            .network_policy()
-            .acquire(request.request.url())?;
-        permit
-            .run(Box::pin(self.send_authorized(request, resolve_route)))
-            .await?
-    }
-
-    async fn send_authorized<F, Fut>(
-        &self,
-        draft: RequestDraft,
-        resolve_route: F,
-    ) -> Result<HttpResponse, RouteAwareRequestError>
-    where
-        F: Fn(String) -> Fut,
-        Fut: Future<Output = io::Result<OutboundProxyRoute>>,
-    {
+        let draft = request.into();
         let mut request = draft.request;
         let mut draft_headers = Some(draft.headers);
         let request_method = request.method().clone();
@@ -86,10 +68,6 @@ impl RouteAwareClientPool {
         let mut previous_route = None;
         loop {
             let current_url = request.url().clone();
-            let permit = self
-                .http_client_factory
-                .network_policy()
-                .acquire(&current_url)?;
             let hop = async {
                 let (current_route, mut client, selected_tls_backend) = self
                     .client_for_url_with_resolver(current_url.as_str(), &resolve_route)
@@ -168,18 +146,14 @@ impl RouteAwareClientPool {
                 }
                 Ok::<_, RouteAwareRequestError>((response, next_request, current_url))
             };
-            let (response, next_request, current_url) = permit
-                .run(async {
-                    match timeout_deadline {
-                        Some(deadline) => tokio::time::timeout_at(deadline, hop)
-                            .await
-                            .map_err(|_| RouteAwareRequestError::Timeout)?,
-                        None => hop.await,
-                    }
-                })
-                .await??;
+            let (response, next_request, current_url) = match timeout_deadline {
+                Some(deadline) => tokio::time::timeout_at(deadline, hop)
+                    .await
+                    .map_err(|_| RouteAwareRequestError::Timeout)??,
+                None => hop.await?,
+            };
             let Some(mut next_request) = next_request else {
-                return Ok(HttpResponse::new(response, permit));
+                return Ok(HttpResponse::from(response));
             };
             if let Some(redirect_observed) = &self.client_builder.redirect_observed {
                 redirect_observed.store(/*val*/ true, Ordering::Relaxed);

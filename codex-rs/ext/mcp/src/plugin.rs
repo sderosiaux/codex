@@ -5,7 +5,6 @@ use codex_core_plugins::ExecutorPluginProviderError;
 use codex_core_plugins::PluginRootOwnership;
 use codex_core_plugins::loader::apply_configured_plugin_mcp_server_policies;
 use codex_exec_server::CapabilityRootDiscovery;
-use codex_exec_server::FileSystemSandboxContext;
 use codex_extension_api::ExtensionFuture;
 use codex_extension_api::McpServerContribution;
 use codex_extension_api::McpServerContributionContext;
@@ -33,15 +32,12 @@ impl PluginContributor {
         state: &PluginsThreadState,
         selected_root: &SelectedCapabilityRoot,
         discovery: Option<&CapabilityRootDiscovery>,
-        sandbox: Option<&FileSystemSandboxContext>,
     ) -> Result<PluginRootOwnership, ExecutorPluginProviderError> {
         if let Some(ownership) = state
             .contributor_state()
             .executor_cache
             .iter()
-            .find(|cached| {
-                cached.root == *selected_root && cached.ownership_sandbox.as_deref() == sandbox
-            })
+            .find(|cached| cached.root == *selected_root)
             .and_then(|cached| cached.ownership)
         {
             return Ok(ownership);
@@ -49,7 +45,7 @@ impl PluginContributor {
         let ownership = self
             .providers
             .executor
-            .root_ownership(selected_root, discovery, sandbox)
+            .root_ownership(selected_root, discovery)
             .await
             .inspect_err(|error| {
                 let CapabilityRootLocation::Environment { environment_id, .. } =
@@ -67,18 +63,14 @@ impl PluginContributor {
             .iter_mut()
             .find(|cached| cached.root == *selected_root)
         {
-            if cached.ownership_sandbox.as_deref() == sandbox
-                && let Some(ownership) = cached.ownership
-            {
+            if let Some(ownership) = cached.ownership {
                 return Ok(ownership);
             }
             cached.ownership = Some(ownership);
-            cached.ownership_sandbox = sandbox.cloned().map(Box::new);
         } else {
             state.executor_cache.push(CachedSelectedRoot {
                 root: selected_root.clone(),
                 ownership: Some(ownership),
-                ownership_sandbox: sandbox.cloned().map(Box::new),
                 metadata: CachedPluginMetadata::Unloaded,
             });
         }
@@ -173,7 +165,6 @@ impl PluginContributor {
             cache.push(CachedSelectedRoot {
                 root: selected_root.clone(),
                 ownership: None,
-                ownership_sandbox: None,
                 metadata: CachedPluginMetadata::Loaded(metadata.clone()),
             });
         }
@@ -242,20 +233,13 @@ impl McpServerContributor<Config> for PluginContributor {
                             continue;
                         }
                     };
-                    let CapabilityRootLocation::Environment { environment_id, .. } =
-                        &root.selected_root.location;
                     // Ownership survives capability parse failures; an unresolved root cannot
                     // bypass a denying policy.
                     if !plugins_config.allows_plugin(&root.selected_root.id)
                         && discovery.error.is_none()
                         && !matches!(
-                            self.ownership_for_root(
-                                &state,
-                                &root.selected_root,
-                                Some(discovery),
-                                snapshot.sandbox_contexts().get(environment_id),
-                            )
-                            .await,
+                            self.ownership_for_root(&state, &root.selected_root, Some(discovery),)
+                                .await,
                             Ok(PluginRootOwnership::Standalone)
                         )
                     {
@@ -290,13 +274,8 @@ impl McpServerContributor<Config> for PluginContributor {
                 for selected_root in selected_roots {
                     if !plugins_config.allows_plugin(&selected_root.id) {
                         if !matches!(
-                            self.ownership_for_root(
-                                &state,
-                                selected_root,
-                                /*discovery*/ None,
-                                /*sandbox*/ None
-                            )
-                            .await,
+                            self.ownership_for_root(&state, selected_root, /*discovery*/ None)
+                                .await,
                             Ok(PluginRootOwnership::Standalone)
                         ) {
                             plugins.push(denied_plugin(selected_root));
@@ -351,11 +330,10 @@ fn project_metadata(
     } else {
         HashMap::new()
     };
-    if !servers.is_empty() {
-        if let Some(plugin_policy) = plugins_config.plugins.get(plugin_id) {
-            apply_configured_plugin_mcp_server_policies(&plugin_policy.mcp_servers, &mut servers);
-        }
-        config.apply_plugin_mcp_server_requirements(plugin_id, &mut servers);
+    if !servers.is_empty()
+        && let Some(plugin_policy) = plugins_config.plugins.get(plugin_id)
+    {
+        apply_configured_plugin_mcp_server_policies(&plugin_policy.mcp_servers, &mut servers);
     }
     let mut servers = servers.into_iter().collect::<Vec<_>>();
     servers.sort_unstable_by(|left, right| left.0.cmp(&right.0));

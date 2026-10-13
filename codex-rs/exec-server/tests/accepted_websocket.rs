@@ -24,7 +24,6 @@ use codex_exec_server::ExecParams;
 use codex_exec_server::ExecProcessEvent;
 use codex_exec_server::ExecResponse;
 use codex_exec_server::ExecServerClientConnectOptions;
-use codex_exec_server::ExecServerRuntimeOptions;
 use codex_exec_server::InitializeParams;
 use codex_exec_server::InitializeResponse;
 use codex_exec_server::ProcessId;
@@ -40,10 +39,7 @@ use codex_exec_server_protocol::JSONRPCMessage;
 use codex_exec_server_protocol::JSONRPCNotification;
 use codex_exec_server_protocol::JSONRPCRequest;
 use codex_exec_server_protocol::JSONRPCResponse;
-use codex_http_client::DestinationPolicy;
 use codex_http_client::HttpClientFactory;
-use codex_http_client::NetworkPolicy;
-use codex_http_client::NetworkPolicyController;
 use codex_http_client::OutboundProxyPolicy;
 use codex_utils_path_uri::PathUri;
 use common::exec_server::DisconnectableWebSocketProxy;
@@ -135,12 +131,8 @@ async fn accepted_websocket_environment_info_uses_initialization_metadata() -> R
     Ok(())
 }
 
-#[test_case::test_case(false; "transport_disconnect")]
-#[test_case::test_case(true; "policy_unavailable")]
 #[tokio::test]
-async fn accepted_websocket_interoperates_and_recovers_with_real_direct_executor(
-    policy_unavailable: bool,
-) -> Result<()> {
+async fn accepted_websocket_interoperates_and_recovers_with_real_direct_executor() -> Result<()> {
     let (websocket_url, mut accepted_sockets, server_task) = start_acceptor().await?;
     let proxy = DisconnectableWebSocketProxy::new(&websocket_url).await?;
     let registry = MockServer::start().await;
@@ -157,15 +149,7 @@ async fn accepted_websocket_interoperates_and_recovers_with_real_direct_executor
         .mount(&registry)
         .await;
 
-    let controller = NetworkPolicyController::default();
-    let policy = controller.policy();
-    controller.publish(policy.revision(), DestinationPolicy::Unrestricted);
-    let http_client_factory = HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault)
-        .with_network_policy(if policy_unavailable {
-            policy.clone().for_current_account()
-        } else {
-            NetworkPolicy::unmanaged()
-        });
+    let http_client_factory = HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault);
     let config = RemoteEnvironmentConfig::new_with_transport(
         registry.uri(),
         "environment-1".to_string(),
@@ -173,17 +157,11 @@ async fn accepted_websocket_interoperates_and_recovers_with_real_direct_executor
         Arc::new(DirectExecutorAuth),
         http_client_factory.clone(),
     )?;
-    let (codex_exe, codex_linux_sandbox_exe) = common::current_test_binary_helper_paths()?;
-    let runtime_paths = ExecServerRuntimeOptions::new(codex_exe, codex_linux_sandbox_exe)?;
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let executor_task = AbortOnDropHandle::new(tokio::spawn(
-        codex_exec_server::run_remote_environment_until_shutdown(
-            config,
-            runtime_paths,
-            async move {
-                let _ = shutdown_rx.await;
-            },
-        ),
+        codex_exec_server::run_remote_environment_until_shutdown(config, async move {
+            let _ = shutdown_rx.await;
+        }),
     ));
     let accepted_websocket = timeout(TEST_TIMEOUT, accepted_sockets.recv())
         .await?
@@ -216,8 +194,7 @@ async fn accepted_websocket_interoperates_and_recovers_with_real_direct_executor
             TEST_TIMEOUT,
             environment.get_filesystem().read_file(
                 &PathUri::from_host_native_path(&large_file_path)?,
-                Default::default(),
-                /*sandbox*/ None,
+                Default::default()
             )
         )
         .await??,
@@ -267,10 +244,6 @@ async fn accepted_websocket_interoperates_and_recovers_with_real_direct_executor
                 tty: false,
                 pipe_stdin: true,
                 arg0: None,
-                sandbox: None,
-                enforce_managed_network: false,
-                managed_network: None,
-                network_proxy: None,
             }),
         )
         .await??;
@@ -304,19 +277,6 @@ async fn accepted_websocket_interoperates_and_recovers_with_real_direct_executor
             EnvironmentConnectionState::Connected
         );
         proxy.pause_and_disconnect().await?;
-        if policy_unavailable {
-            controller.unavailable(policy.revision());
-            assert!(
-                timeout(Duration::from_secs(/*secs*/ 1), accepted_sockets.recv())
-                    .await
-                    .is_err(),
-                "unavailable policy reconnected"
-            );
-            assert!(
-                !executor_task.is_finished(),
-                "policy outage stopped the runner"
-            );
-        }
         timeout(
             TEST_TIMEOUT,
             connection_state.wait_for(|state| *state == EnvironmentConnectionState::Disconnected),
@@ -347,7 +307,6 @@ async fn accepted_websocket_interoperates_and_recovers_with_real_direct_executor
                 .is_err(),
             "process reads should wait while recovery is in progress"
         );
-        controller.publish(policy.revision(), DestinationPolicy::Unrestricted);
         proxy.resume()?;
         let replacement = timeout(TEST_TIMEOUT, accepted_sockets.recv())
             .await?
@@ -566,10 +525,6 @@ async fn accepted_websocket_reconnect_recovers_running_process_and_output() -> R
                     tty: false,
                     pipe_stdin: false,
                     arg0: None,
-                    sandbox: None,
-                    enforce_managed_network: false,
-                    managed_network: None,
-                    network_proxy: None,
                     shell_snapshot: None,
                 })
                 .await
@@ -595,7 +550,6 @@ async fn accepted_websocket_reconnect_recovers_running_process_and_output() -> R
             id,
             result: serde_json::to_value(ExecResponse {
                 process_id: process_id.clone(),
-                sandbox_type: None,
             })?,
         }),
     )
@@ -638,7 +592,6 @@ async fn accepted_websocket_reconnect_recovers_running_process_and_output() -> R
                 exit_code: None,
                 closed: false,
                 failure: None,
-                sandbox_denied: false,
             })?,
         }),
     )
@@ -671,7 +624,6 @@ async fn accepted_websocket_reconnect_recovers_running_process_and_output() -> R
         exit_code: None,
         closed: false,
         failure: None,
-        sandbox_denied: false,
     };
     send_jsonrpc(
         &mut replacement_socket,

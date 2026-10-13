@@ -176,7 +176,6 @@ impl Fixture {
             client_mcp_extensions: Default::default(),
             auth: Some(auth_value.clone()),
             auth_manager: Some(Arc::clone(&auth)),
-            elicitation_reviewer: None,
             elicitation_lifecycle: None,
         };
         let runtime = Arc::new(McpRuntime::new(runtime_input()).await);

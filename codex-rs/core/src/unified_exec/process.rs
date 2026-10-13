@@ -18,19 +18,11 @@ use codex_exec_server::ProcessSignal as ExecServerProcessSignal;
 use codex_exec_server::ReadResponse as ExecReadResponse;
 use codex_exec_server::StartedExecProcess;
 use codex_exec_server::WriteStatus;
-use codex_protocol::exec_output::ExecToolCallOutput;
-use codex_protocol::exec_output::StreamOutput;
-use codex_protocol::protocol::TruncationPolicy;
-use codex_sandboxing::SandboxType;
-use codex_sandboxing::is_likely_sandbox_denied;
-use codex_sandboxing::record_filesystem_sandbox_violation;
-use codex_utils_output_truncation::formatted_truncate_text;
 use codex_utils_pty::ExecCommandSession;
 use codex_utils_pty::ProcessSignal as PtyProcessSignal;
 use codex_utils_pty::SpawnedPty;
 
 use super::UNIFIED_EXEC_OUTPUT_MAX_BYTES;
-use super::UNIFIED_EXEC_OUTPUT_MAX_TOKENS;
 use super::UnifiedExecError;
 use super::head_tail_buffer::HeadTailBuffer;
 use super::process_state::ProcessState;
@@ -100,8 +92,6 @@ pub(crate) struct UnifiedExecProcess {
     state_tx: watch::Sender<ProcessState>,
     state_rx: watch::Receiver<ProcessState>,
     output_task: Option<JoinHandle<()>>,
-    sandbox_type: Option<SandboxType>,
-    timed_out: AtomicBool,
     // The shell may still need to replay this file after process startup returns.
     pub(crate) _shell_snapshot: Option<Arc<ShellSnapshotFile>>,
 }
@@ -111,13 +101,12 @@ impl std::fmt::Debug for UnifiedExecProcess {
         f.debug_struct("UnifiedExecProcess")
             .field("has_exited", &self.has_exited())
             .field("exit_code", &self.exit_code())
-            .field("sandbox_type", &self.sandbox_type)
             .finish_non_exhaustive()
     }
 }
 
 impl UnifiedExecProcess {
-    fn new(process_handle: ProcessHandle, sandbox_type: Option<SandboxType>) -> Self {
+    fn new(process_handle: ProcessHandle) -> Self {
         let output = OutputHandles {
             output_buffer: Arc::new(Mutex::new(OutputBuffers::default())),
             output_notify: Arc::new(Notify::new()),
@@ -138,8 +127,6 @@ impl UnifiedExecProcess {
             state_tx,
             state_rx,
             output_task: None,
-            sandbox_type,
-            timed_out: AtomicBool::new(false),
             _shell_snapshot: None,
         }
     }
@@ -198,9 +185,6 @@ impl UnifiedExecProcess {
     }
 
     pub(super) fn exit_code(&self) -> Option<i32> {
-        if self.timed_out() {
-            return Some(124);
-        }
         let state = self.state_rx.borrow().clone();
         match &self.process_handle {
             ProcessHandle::Local(process_handle) => {
@@ -208,14 +192,6 @@ impl UnifiedExecProcess {
             }
             ProcessHandle::ExecServer(_) => state.exit_code,
         }
-    }
-
-    pub(super) fn mark_timed_out(&self) {
-        self.timed_out.store(true, Ordering::Release);
-    }
-
-    pub(super) fn timed_out(&self) -> bool {
-        self.timed_out.load(Ordering::Acquire)
     }
 
     fn finish_termination(&self) {
@@ -265,82 +241,11 @@ impl UnifiedExecProcess {
         }
     }
 
-    pub(super) fn fail_and_terminate(&self, message: String) {
-        let state = self.state_rx.borrow().clone();
-        if state.failure_message.is_none() {
-            let _ = self.state_tx.send_replace(state.failed(message));
-        }
-        self.terminate();
-    }
-
-    async fn snapshot_output(&self) -> Vec<u8> {
-        let guard = self.output.output_buffer.lock().await;
-        guard.pending.to_bytes()
-    }
-
-    pub(crate) fn sandbox_type(&self) -> Option<SandboxType> {
-        self.sandbox_type
-    }
-
     pub(super) fn failure_message(&self) -> Option<String> {
         self.state_rx.borrow().failure_message.clone()
     }
 
-    pub(super) async fn check_for_sandbox_denial(&self) -> Result<(), UnifiedExecError> {
-        let _ = tokio::time::timeout(
-            Duration::from_millis(20),
-            self.output.output_notify.notified(),
-        )
-        .await;
-
-        let aggregated = self.snapshot_output().await;
-        let aggregated_text = String::from_utf8_lossy(&aggregated);
-        self.check_for_sandbox_denial_with_text(aggregated_text.as_ref())
-            .await?;
-
-        Ok(())
-    }
-
-    pub(super) async fn check_for_sandbox_denial_with_text(
-        &self,
-        text: &str,
-    ) -> Result<(), UnifiedExecError> {
-        let executor_reported_denial = self.state_rx.borrow().sandbox_denied;
-        let sandbox_type = self.sandbox_type().unwrap_or(SandboxType::None);
-        if !self.has_exited() || (!executor_reported_denial && sandbox_type == SandboxType::None) {
-            return Ok(());
-        }
-
-        let exit_code = self.exit_code().unwrap_or(-1);
-        let exec_output = ExecToolCallOutput {
-            exit_code,
-            stderr: StreamOutput::new(text.to_string()),
-            aggregated_output: StreamOutput::new(text.to_string()),
-            ..Default::default()
-        };
-        let likely_sandbox_denial = is_likely_sandbox_denied(sandbox_type, &exec_output);
-        if likely_sandbox_denial {
-            record_filesystem_sandbox_violation(sandbox_type, &exec_output);
-        }
-        if executor_reported_denial || likely_sandbox_denial {
-            let snippet = formatted_truncate_text(
-                text,
-                TruncationPolicy::Tokens(UNIFIED_EXEC_OUTPUT_MAX_TOKENS),
-            );
-            let message = if snippet.is_empty() {
-                format!("Process exited with code {exit_code}")
-            } else {
-                snippet
-            };
-            return Err(UnifiedExecError::sandbox_denied(message, exec_output));
-        }
-        Ok(())
-    }
-
-    pub(super) async fn from_spawned(
-        spawned: SpawnedPty,
-        sandbox_type: SandboxType,
-    ) -> Result<Self, UnifiedExecError> {
+    pub(super) async fn from_spawned(spawned: SpawnedPty) -> Result<Self, UnifiedExecError> {
         let SpawnedPty {
             session: process_handle,
             stdout_rx,
@@ -348,10 +253,7 @@ impl UnifiedExecProcess {
             mut exit_rx,
         } = spawned;
         let output_rx = codex_utils_pty::combine_output_receivers(stdout_rx, stderr_rx);
-        let mut managed = Self::new(
-            ProcessHandle::Local(Box::new(process_handle)),
-            Some(sandbox_type),
-        );
+        let mut managed = Self::new(ProcessHandle::Local(Box::new(process_handle)));
         managed.output_task = Some(Self::spawn_local_output_task(
             output_rx,
             managed.output_handles().clone(),
@@ -361,12 +263,10 @@ impl UnifiedExecProcess {
         match exit_rx.try_recv() {
             Ok(exit_code) => {
                 managed.signal_exit(Some(exit_code));
-                managed.check_for_sandbox_denial().await?;
                 return Ok(managed);
             }
             Err(TryRecvError::Closed) => {
                 managed.signal_exit(/*exit_code*/ None);
-                managed.check_for_sandbox_denial().await?;
                 return Ok(managed);
             }
             Err(TryRecvError::Empty) => {}
@@ -374,7 +274,6 @@ impl UnifiedExecProcess {
 
         if let Ok(exit_result) = tokio::time::timeout(EARLY_EXIT_GRACE_PERIOD, &mut exit_rx).await {
             managed.signal_exit(exit_result.ok());
-            managed.check_for_sandbox_denial().await?;
             return Ok(managed);
         }
 
@@ -392,15 +291,12 @@ impl UnifiedExecProcess {
         Ok(managed)
     }
 
-    pub(super) async fn from_exec_server_started(
+    pub(super) fn from_exec_server_started(
         started: StartedExecProcess,
         output_drain_policy: OutputDrainPolicy,
-    ) -> Result<Self, UnifiedExecError> {
+    ) -> Self {
         let process_handle = ProcessHandle::ExecServer(Arc::clone(&started.process));
-        // Older peers do not report this field. In that case, skip local
-        // classification rather than attributing a violation to a guessed backend.
-        let sandbox_type = started.sandbox_type;
-        let mut managed = Self::new(process_handle, sandbox_type);
+        let mut managed = Self::new(process_handle);
         let output_handles = managed.output_handles().clone();
         managed.output_task = Some(Self::spawn_exec_server_output_task(
             started,
@@ -409,26 +305,7 @@ impl UnifiedExecProcess {
             managed.output_tx.clone(),
             managed.state_tx.clone(),
         ));
-
-        let mut state_rx = managed.state_rx.clone();
-        if tokio::time::timeout(EARLY_EXIT_GRACE_PERIOD, async {
-            loop {
-                let state = state_rx.borrow().clone();
-                if state.has_exited || state.failure_message.is_some() {
-                    break;
-                }
-                if state_rx.changed().await.is_err() {
-                    break;
-                }
-            }
-        })
-        .await
-        .is_ok()
-        {
-            managed.check_for_sandbox_denial().await?;
-        }
-
-        Ok(managed)
+        managed
     }
 
     fn spawn_exec_server_output_task(
@@ -475,16 +352,7 @@ impl UnifiedExecProcess {
                     }
                     ExecProcessEvent::Failed(_) => None,
                 });
-                let missing_sandbox_denial = matches!(
-                    event.as_ref(),
-                    Some(ExecProcessEvent::Exited {
-                        sandbox_denied: None,
-                        ..
-                    })
-                );
-                if event.is_none()
-                    || event_seq.is_some_and(|seq| seq > last_seq.saturating_add(1))
-                    || missing_sandbox_denial
+                if event.is_none() || event_seq.is_some_and(|seq| seq > last_seq.saturating_add(1))
                 {
                     let response = match process
                         .read(
@@ -511,7 +379,6 @@ impl UnifiedExecProcess {
                         exit_code,
                         closed,
                         failure,
-                        sandbox_denied,
                     } = response;
                     for chunk in chunks.into_iter().filter(|chunk| chunk.seq > last_seq) {
                         let bytes = chunk.chunk.into_inner();
@@ -530,14 +397,9 @@ impl UnifiedExecProcess {
                         cancellation_token.cancel();
                         break;
                     }
-                    if sandbox_denied || exited {
-                        let mut state = state_tx.borrow().clone();
-                        state.sandbox_denied |= sandbox_denied;
-                        let _ = state_tx.send_replace(if exited {
-                            state.exited(exit_code)
-                        } else {
-                            state
-                        });
+                    if exited {
+                        let state = state_tx.borrow().clone();
+                        let _ = state_tx.send_replace(state.exited(exit_code));
                     }
                     if exited && output_drain_policy == OutputDrainPolicy::BoundedAfterExit {
                         cancellation_token.cancel();
@@ -567,17 +429,12 @@ impl UnifiedExecProcess {
                         let _ = output_tx.send(bytes);
                         output_notify.notify_waiters();
                     }
-                    ExecProcessEvent::Exited {
-                        seq,
-                        exit_code,
-                        sandbox_denied,
-                    } => {
+                    ExecProcessEvent::Exited { seq, exit_code } => {
                         if seq <= last_seq {
                             continue;
                         }
                         last_seq = seq;
-                        let mut state = state_tx.borrow().clone();
-                        state.sandbox_denied |= sandbox_denied.unwrap_or(false);
+                        let state = state_tx.borrow().clone();
                         let _ = state_tx.send_replace(state.exited(Some(exit_code)));
                         if output_drain_policy == OutputDrainPolicy::BoundedAfterExit {
                             cancellation_token.cancel();

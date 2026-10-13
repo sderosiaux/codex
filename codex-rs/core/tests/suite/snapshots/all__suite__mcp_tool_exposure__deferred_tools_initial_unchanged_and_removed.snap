@@ -8,10 +8,9 @@ Scenario: Initially available deferred tools remain unchanged until disabling Ca
 -- request 1 (turn; Initially available) --
 00:message/developer:
     <MODEL_INSTRUCTIONS>
-01:message/developer[3]:
-    [01] <PERMISSIONS_INSTRUCTIONS>
-    [02] <APPS_INSTRUCTIONS>
-    [03] <tools>
+01:message/developer[2]:
+    [01] <APPS_INSTRUCTIONS>
+    [02] <tools>
         Deferred tool namespaces:
         - mcp__codex_apps__calendar: Plan events and manage your calendar.
         </tools>
@@ -29,10 +28,9 @@ Scenario: Initially available deferred tools remain unchanged until disabling Ca
 -- request 3 (turn; Removed and empty) --
 00:message/developer:
     <MODEL_INSTRUCTIONS>
-01:message/developer[3]:
-    [01] <PERMISSIONS_INSTRUCTIONS>
-    [02] <APPS_INSTRUCTIONS>
-    [03] <tools>
+01:message/developer[2]:
+    [01] <APPS_INSTRUCTIONS>
+    [02] <tools>
         Deferred tool namespaces:
         - mcp__codex_apps__calendar: Plan events and manage your calendar.
         </tools>

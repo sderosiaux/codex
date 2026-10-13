@@ -7,14 +7,11 @@ use tokio::time::Duration;
 use tokio::time::Instant;
 use tokio::time::Sleep;
 
-use super::SharedPluginMetricsSidecar;
 use super::UnifiedExecContext;
 use super::process::OutputBuffers;
 use super::process::OutputHandles;
 use super::process::UnifiedExecProcess;
-use super::take_plugin_metrics_sidecar;
 use crate::exec::MAX_EXEC_OUTPUT_DELTAS_PER_CALL;
-use crate::plugins::metrics::finish_and_track_measurements;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::events::ToolEmitter;
@@ -164,13 +161,10 @@ pub(crate) fn spawn_exit_watcher(
     plugin_attribution: Option<PluginCommandAttribution>,
     output_buffer: Arc<Mutex<OutputBuffers>>,
     started_at: Instant,
-    network_denial_monitor: Option<tokio::task::JoinHandle<()>>,
-    plugin_metrics_sidecar: Option<SharedPluginMetricsSidecar>,
 ) {
     let session_ref = Arc::clone(&context.session);
     let turn_ref = Arc::clone(&context.step_context.turn);
     let model_info = Arc::clone(&context.step_context.settings.model_info);
-    let model_context = context.step_context.model_context();
     let call_id = context.call_id.clone();
     let exit_token = process.cancellation_token();
     let output_drained = process.output_drained_notify();
@@ -179,22 +173,11 @@ pub(crate) fn spawn_exit_watcher(
     tokio::spawn(async move {
         exit_token.cancelled().await;
         output_drained.notified().await;
-        // Deferred network denial deliberately remains observable for a short
-        // window after process exit. Do not classify the terminal event until
-        // that monitor has settled, even when output closes immediately.
-        if let Some(network_denial_monitor) = network_denial_monitor {
-            let _ = network_denial_monitor.await;
-        }
         let _interaction_guard = interaction_lock.lock_owned().await;
 
         let duration = Instant::now().saturating_duration_since(started_at);
-        let plugin_metrics_sidecar = plugin_metrics_sidecar
-            .as_ref()
-            .and_then(take_plugin_metrics_sidecar);
         if let Some(message) = process.failure_message() {
-            drop(plugin_metrics_sidecar);
             emit_failed_exec_end_for_unified_exec(
-                process.sandbox_type(),
                 session_ref,
                 turn_ref,
                 model_info,
@@ -211,18 +194,7 @@ pub(crate) fn spawn_exit_watcher(
             .await;
         } else {
             let exit_code = process.exit_code().unwrap_or(-1);
-            let timed_out = process.timed_out();
-            finish_and_track_measurements(
-                plugin_metrics_sidecar,
-                exit_code,
-                &session_ref,
-                &turn_ref,
-                &model_context,
-                &call_id,
-            )
-            .await;
             emit_exec_end_for_unified_exec(
-                process.sandbox_type(),
                 session_ref,
                 turn_ref,
                 model_info,
@@ -235,7 +207,6 @@ pub(crate) fn spawn_exit_watcher(
                 String::new(),
                 exit_code,
                 duration,
-                timed_out,
             )
             .await;
         }
@@ -329,7 +300,6 @@ impl Emitter {
 /// text when the transcript is empty.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn emit_exec_end_for_unified_exec(
-    sandbox_type: Option<codex_protocol::sandbox::SandboxType>,
     session_ref: Arc<Session>,
     turn_ref: Arc<TurnContext>,
     model_info: Arc<ModelInfo>,
@@ -342,7 +312,6 @@ pub(crate) async fn emit_exec_end_for_unified_exec(
     fallback_output: String,
     exit_code: i32,
     duration: Duration,
-    timed_out: bool,
 ) {
     let aggregated_output = resolve_aggregated_output(&output_buffer, fallback_output).await;
     let output = ExecToolCallOutput {
@@ -351,16 +320,15 @@ pub(crate) async fn emit_exec_end_for_unified_exec(
         stderr: StreamOutput::new(String::new()),
         aggregated_output: StreamOutput::new(aggregated_output),
         duration,
-        timed_out,
+        timed_out: false,
     };
-    let mut event_ctx = ToolEventCtx::new(
+    let event_ctx = ToolEventCtx::new(
         session_ref.as_ref(),
         turn_ref.as_ref(),
         &model_info,
         &call_id,
         /*turn_diff_tracker*/ None,
     );
-    event_ctx.sandbox_type = sandbox_type;
     let emitter = ToolEmitter::unified_exec(
         &command,
         cwd,
@@ -381,7 +349,6 @@ pub(crate) async fn emit_exec_end_for_unified_exec(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn emit_failed_exec_end_for_unified_exec(
-    sandbox_type: Option<codex_protocol::sandbox::SandboxType>,
     session_ref: Arc<Session>,
     turn_ref: Arc<TurnContext>,
     model_info: Arc<ModelInfo>,
@@ -413,14 +380,13 @@ pub(crate) async fn emit_failed_exec_end_for_unified_exec(
         duration,
         timed_out: false,
     };
-    let mut event_ctx = ToolEventCtx::new(
+    let event_ctx = ToolEventCtx::new(
         session_ref.as_ref(),
         turn_ref.as_ref(),
         &model_info,
         &call_id,
         /*turn_diff_tracker*/ None,
     );
-    event_ctx.sandbox_type = sandbox_type;
     let emitter = ToolEmitter::unified_exec(
         &command,
         cwd,

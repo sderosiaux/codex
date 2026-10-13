@@ -1,9 +1,7 @@
 use crate::WithTurnExtensionData;
 use crate::agent::AgentStatus;
 use crate::agent::api::AgentControl;
-use crate::config::ConstraintResult;
 use crate::context::ContextualUserFragment;
-use crate::context::GuardianReviewEvidence;
 use crate::elicitation::ElicitationRegistration;
 use crate::session::SessionIo;
 use crate::session::SessionSettingsUpdate;
@@ -23,27 +21,20 @@ use codex_history::RolloutItem;
 use codex_otel::SessionTelemetry;
 use codex_otel::current_span_w3c_trace_context;
 use codex_protocol::ThreadId;
-use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary;
-use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::mcp::CallToolResult;
 use codex_protocol::mcp::ClientMcpExtensions;
-use codex_protocol::models::ActivePermissionProfile;
-use codex_protocol::models::PermissionProfile;
-use codex_protocol::models::ProfileWorkspaceRoot;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EnvironmentConfig;
 use codex_protocol::protocol::EnvironmentConfigState;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::Op;
-use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadMemoryMode;
@@ -93,15 +84,8 @@ pub struct ThreadConfigSnapshot {
     pub model: String,
     pub model_provider_id: String,
     pub service_tier: Option<String>,
-    pub approval_policy: AskForApproval,
-    pub approvals_reviewer: ApprovalsReviewer,
-    pub permission_profile: PermissionProfile,
-    /// Resolved Full Access across the thread and every selected environment.
-    pub full_access: bool,
-    pub active_permission_profile: Option<ActivePermissionProfile>,
     pub environments: TurnEnvironmentSelections,
     pub workspace_roots: Vec<AbsolutePathBuf>,
-    pub profile_workspace_roots: Vec<ProfileWorkspaceRoot>,
     pub ephemeral: bool,
     pub reasoning_effort: Option<ReasoningEffort>,
     pub reasoning_summary: Option<ReasoningSummary>,
@@ -136,13 +120,6 @@ impl ThreadConfigSnapshot {
                 )
             })
     }
-
-    pub fn sandbox_policy(&self) -> SandboxPolicy {
-        codex_sandboxing::compatibility_sandbox_policy_for_permission_profile(
-            &self.permission_profile,
-            self.cwd().as_path(),
-        )
-    }
 }
 
 /// Thread settings overrides that app-server validates before starting a turn.
@@ -152,13 +129,6 @@ pub struct CodexThreadSettingsOverrides {
     pub turn_extension_init: Option<codex_extension_api::ExtensionDataInit>,
     pub environments: Option<TurnEnvironmentRequests>,
     pub runtime_workspace_roots: Option<Vec<AbsolutePathBuf>>,
-    pub profile_workspace_roots: Option<Vec<ProfileWorkspaceRoot>>,
-    pub approval_policy: Option<AskForApproval>,
-    pub approvals_reviewer: Option<ApprovalsReviewer>,
-    pub sandbox_policy: Option<SandboxPolicy>,
-    pub permission_profile: Option<PermissionProfile>,
-    pub active_permission_profile: Option<ActivePermissionProfile>,
-    pub windows_sandbox_level: Option<WindowsSandboxLevel>,
     pub model: Option<String>,
     pub effort: Option<Option<ReasoningEffort>>,
     pub summary: Option<ReasoningSummary>,
@@ -180,38 +150,12 @@ pub enum ConfigRefreshOutcome {
     Rejected,
 }
 
-pub use codex_guardian_context::GuardianRootMessage;
-
-/// Authorization state that changes on genuine user input or history resets.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct GuardianAuthorizationVersion {
-    /// User-message/reset revision, preserved across compaction and internal context.
-    pub user_message_revision: u64,
-    /// False when required retained answers or root instructions are unavailable.
-    pub retained_context_complete: bool,
-}
-
-/// Bounded root conversation and authorization state from one history snapshot.
-#[derive(Debug, Eq, PartialEq)]
-pub struct GuardianRootSnapshot {
-    /// Authoritative root from which this evidence was captured.
-    pub root_thread_id: ThreadId,
-    /// Distinguishes a history reset from additional authorization in the same history.
-    pub(crate) history_reset_version: u64,
-    pub authorization_version: GuardianAuthorizationVersion,
-    /// Confirmed assistant context is relevant to review but cannot authorize an action.
-    pub review_context_revision: u64,
-    pub messages: Vec<GuardianRootMessage>,
-    pub trusted_skill_paths: Vec<String>,
-}
-
 pub struct CodexThread {
     pub(crate) session: Arc<Session>,
     pub(crate) io: SessionIo,
     // Queued agent mail owns a read guard until handled or dropped; eviction needs a write guard.
     pub(crate) residency_gate: Arc<RwLock<()>>,
-    // Registration source controls live access and lifecycle hooks. Managed Guardian
-    // reviewers keep their existing subagent identity inside the session.
+    // Registration source controls live access and lifecycle hooks.
     pub(crate) session_source: SessionSource,
     startup_metadata: ThreadStartupMetadata,
     rollout_path: Option<PathBuf>,
@@ -280,11 +224,6 @@ impl CodexThread {
         self.session
             .schedule_startup_prewarm(PrewarmInput::History)
             .await;
-    }
-
-    /// Whether analytics is enabled for this thread after configuration and host overrides.
-    pub fn analytics_enabled(&self) -> bool {
-        self.session.services.analytics_events_client.is_enabled()
     }
 
     /// Returns extension-owned data attached to this thread runtime.
@@ -515,8 +454,8 @@ impl CodexThread {
     ///
     /// Suspension is refused while a currently loaded descendant exists. Past
     /// descendants do not prevent recovery, and concurrent descendant admission
-    /// is not sealed. Queued user input and outstanding approval, elicitation,
-    /// or server-request waiters remain best effort and may be discarded.
+    /// is not sealed. Queued user input and outstanding elicitation or
+    /// server-request waiters remain best effort and may be discarded.
     ///
     /// The session processes an accepted request even if its caller disconnects.
     /// Callers must not transfer ownership until suspension succeeds, which
@@ -653,7 +592,7 @@ impl CodexThread {
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
         mcp_elicitations_auto_deny: bool,
-    ) -> ConstraintResult<()> {
+    ) -> CodexResult<()> {
         self.session
             .set_app_server_client_info(
                 app_server_client_name,
@@ -667,7 +606,7 @@ impl CodexThread {
     pub async fn preview_thread_settings_overrides(
         &self,
         overrides: CodexThreadSettingsOverrides,
-    ) -> ConstraintResult<ThreadConfigSnapshot> {
+    ) -> CodexResult<ThreadConfigSnapshot> {
         let updates = self.thread_settings_update(overrides);
         self.session.preview_settings(&updates).await
     }
@@ -702,7 +641,7 @@ impl CodexThread {
     pub async fn restore_thread_settings(
         &self,
         settings: CodexThreadSettingsOverrides,
-    ) -> ConstraintResult<()> {
+    ) -> CodexResult<()> {
         let updates = self.thread_settings_update(settings);
         self.session.update_settings(updates).await.map(|_| ())
     }
@@ -722,13 +661,6 @@ impl CodexThread {
             turn_extension_init,
             environments: environment_requests,
             runtime_workspace_roots,
-            profile_workspace_roots,
-            approval_policy,
-            approvals_reviewer,
-            sandbox_policy,
-            permission_profile,
-            active_permission_profile,
-            windows_sandbox_level,
             model,
             effort,
             summary,
@@ -746,17 +678,10 @@ impl CodexThread {
                 reasoning_summary: summary,
                 service_tier,
                 personality,
-                approval_policy,
-                approvals_reviewer,
             },
             environments: environment_requests
                 .map(|requests| requests.select(&self.session.services.selected_capability_roots)),
             runtime_workspace_roots,
-            profile_workspace_roots,
-            sandbox_policy,
-            permission_profile,
-            active_permission_profile,
-            windows_sandbox_level,
             disabled_plugin_ids,
             ..Default::default()
         }
@@ -880,15 +805,6 @@ impl CodexThread {
         !self.io.tx_sub.is_closed()
     }
 
-    pub async fn guardian_trunk_rollout_path(&self) -> Option<PathBuf> {
-        self.session
-            .guardian_review_session()?
-            .trunk()
-            .await?
-            .rollout_path()
-            .await
-    }
-
     pub async fn load_history(
         &self,
         include_archived: bool,
@@ -949,20 +865,6 @@ impl CodexThread {
 
     pub async fn config_snapshot(&self) -> ThreadConfigSnapshot {
         self.session.thread_config_snapshot().await
-    }
-
-    /// Returns the active turn's reviewer, including live updates, or the thread default.
-    pub async fn approvals_reviewer_for_turn(&self, turn_id: &str) -> ApprovalsReviewer {
-        if let Some((turn, settings, _, _)) = self
-            .session
-            .active_turn_context_and_strict_auto_review()
-            .await
-            && turn.sub_id == turn_id
-        {
-            settings.approvals_reviewer()
-        } else {
-            self.config_snapshot().await.approvals_reviewer
-        }
     }
 
     /// Returns thread-owned settings suitable for rollout persistence and resume.
@@ -1034,23 +936,6 @@ impl CodexThread {
     /// Shares an immutable view of the live parent model context and retained host facts.
     pub async fn conversation_history_snapshot(&self) -> Arc<dyn ConversationHistorySnapshot> {
         self.session.conversation_history_snapshot().await
-    }
-
-    /// Returns the current user-authorization revision for Guardian.
-    pub async fn guardian_authorization_version(&self) -> GuardianAuthorizationVersion {
-        let history = self.conversation_history_snapshot().await;
-        self.thread_extension_data()
-            .get_or_init(GuardianReviewEvidence::default)
-            .authorization_version(history.as_ref())
-    }
-
-    /// Returns bounded root conversation evidence and its authorization version atomically.
-    pub async fn guardian_root_snapshot(&self) -> Option<GuardianRootSnapshot> {
-        self.session
-            .services
-            .agent_control
-            .get_guardian_package(self.session.thread_id)
-            .await
     }
 
     /// Refresh the thread's layer-backed user config state from a caller-supplied

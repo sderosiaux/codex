@@ -3,7 +3,6 @@
 use anyhow::Result;
 use codex_config::McpServerTransportConfig;
 use codex_core::config::ConfigBuilder;
-use codex_core::config::Constrained;
 use codex_core::plugins_manager_for_config;
 use codex_exec_server_test_support::environment_manager_without_environments;
 use codex_login::AuthManager;
@@ -20,7 +19,6 @@ use codex_mcp::McpRuntimeInput;
 use codex_mcp::McpStartupPolicy;
 use codex_mcp::McpToolCatalogCache;
 use codex_protocol::mcp::ClientMcpExtensions;
-use codex_protocol::protocol::AskForApproval;
 use core_test_support::apps_test_server::AppsTestServer;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
@@ -83,11 +81,10 @@ async fn hosted_plugin_runtime_ps_mcp_tool_calls_use_current_auth_manager_token(
         CODEX_APPS_MCP_SERVER_NAME.to_string(),
         EffectiveMcpServer::from_host_config(hosted_plugin_runtime_config),
     )]);
-    let mut config = ConfigBuilder::default()
+    let config = ConfigBuilder::default()
         .codex_home(home.path().to_path_buf())
         .build()
         .await?;
-    config.permissions.approval_policy = Constrained::allow_any(AskForApproval::Never);
     let plugins_manager = plugins_manager_for_config(&config, Arc::clone(&auth_manager));
     let mcp_config = Arc::new(config.to_mcp_config(&plugins_manager).await);
     let runtime = McpRuntime::new(McpRuntimeInput {
@@ -109,7 +106,6 @@ async fn hosted_plugin_runtime_ps_mcp_tool_calls_use_current_auth_manager_token(
         client_mcp_extensions: ClientMcpExtensions::default(),
         auth: Some(expected_auth.clone()),
         auth_manager: Some(Arc::clone(&auth_manager)),
-        elicitation_reviewer: None,
         elicitation_lifecycle: None,
     })
     .await;

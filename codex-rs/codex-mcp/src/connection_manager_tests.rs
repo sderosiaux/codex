@@ -4,10 +4,6 @@ use crate::client_tool_catalog::ClientToolCatalog;
 use crate::elicitation::ElicitationLifecycle;
 use crate::elicitation::ElicitationRequestManager;
 use crate::elicitation::ElicitationRequestRouter;
-use crate::elicitation::ElicitationReviewRequest;
-use crate::elicitation::ElicitationReviewer;
-use crate::elicitation::elicitation_is_rejected_by_policy;
-use crate::mcp::tests::test_elicitation_config;
 use crate::rmcp_client::AsyncManagedClient;
 use crate::rmcp_client::CODEX_APPS_RECONNECT_INITIAL_BACKOFF;
 use crate::rmcp_client::CodexAppsStartupReconnect;
@@ -25,12 +21,9 @@ use crate::tools::ToolInfo;
 use crate::tools::filter_tools;
 use crate::tools::normalize_tools_for_model_with_prefix;
 use assert_matches::assert_matches;
-use codex_config::AppToolApproval;
-use codex_config::Constrained;
 use codex_config::McpServerAuth;
 use codex_config::McpServerConfig;
 use codex_config::McpServerEnvVar;
-use codex_config::McpServerToolConfig;
 use codex_config::types::AuthKeyringBackendKind;
 use codex_config::types::OAuthCredentialsStoreMode;
 use codex_connectors::ConnectorRuntimeContext;
@@ -47,12 +40,9 @@ use codex_login::AuthHeaders;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_protocol::ToolName;
-use codex_protocol::approvals::ElicitationRequest;
+use codex_protocol::elicitation::ElicitationRequest;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::mcp::McpServerInfo;
-use codex_protocol::models::PermissionProfile;
-use codex_protocol::protocol::AskForApproval;
-use codex_protocol::protocol::GranularApprovalConfig;
 use codex_protocol::protocol::McpStartupFailureReason;
 use codex_rmcp_client::ElicitationResponse;
 use codex_rmcp_client::InProcessTransportFactory;
@@ -97,11 +87,7 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 impl McpConnectionSet {
-    fn new_uninitialized(
-        approval_policy: &Constrained<AskForApproval>,
-        permission_profile: &Constrained<PermissionProfile>,
-        prefix_mcp_tool_names: bool,
-    ) -> Self {
+    fn new_uninitialized(prefix_mcp_tool_names: bool) -> Self {
         Self {
             servers: HashMap::new(),
             event_stream_connection: None,
@@ -112,12 +98,6 @@ impl McpConnectionSet {
             prefix_mcp_tool_names,
             non_prefixed_mcp_tool_servers: Vec::new(),
             elicitation_requests: ElicitationRequestManager::new(
-                test_elicitation_config(
-                    "server",
-                    approval_policy.value(),
-                    permission_profile.get().clone(),
-                ),
-                /*reviewer*/ None,
                 /*lifecycle*/ None,
                 ElicitationRequestRouter::default(),
             ),
@@ -149,8 +129,6 @@ impl McpConnectionSet {
                     pollutes_memory: true,
                     origin: None,
                     supports_parallel_tool_calls: false,
-                    default_tools_approval_mode: None,
-                    tool_approval_modes: HashMap::new(),
                 },
                 tool_timeout: None,
                 catalog_item_limit: crate::pagination::MAX_MCP_CATALOG_ITEMS,
@@ -223,12 +201,7 @@ fn store_current_tools(cache_context: &ConnectorRuntimeContext<ToolInfo>, tools:
 }
 
 async fn capture_binding(manager: &Arc<McpConnectionSet>) -> McpBinding {
-    let mut config = crate::mcp::tests::test_mcp_config(std::env::temp_dir());
-    config.server_permission_profiles = manager
-        .servers
-        .keys()
-        .map(|name| (name.clone(), PermissionProfile::default()))
-        .collect();
+    let config = crate::mcp::tests::test_mcp_config(std::env::temp_dir());
     manager
         .capture_binding_with_metadata(
             Arc::new(config),
@@ -469,7 +442,6 @@ async fn create_test_managed_client(tools: Vec<ToolInfo>) -> ManagedClient {
         tool_catalog: Arc::new(ClientToolCatalog::new(tools, /*updates*/ None)),
         tool_timeout: None,
         server_instructions: None,
-        server_supports_sandbox_state_meta_capability: false,
         codex_apps_tools_cache_context: None,
     }
 }
@@ -485,13 +457,7 @@ async fn prepared_call_timeout_includes_trusted_access_lookup() {
     );
     tool.tool.meta = Some(tool_meta);
 
-    let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
-    let permission_profile = Constrained::allow_any(PermissionProfile::default());
-    let mut manager = McpConnectionSet::new_uninitialized(
-        &approval_policy,
-        &permission_profile,
-        /*prefix_mcp_tool_names*/ true,
-    );
+    let mut manager = McpConnectionSet::new_uninitialized(/*prefix_mcp_tool_names*/ true);
     let mut config = crate::mcp::tests::test_mcp_config(std::env::temp_dir());
     let mut catalog = crate::ResolvedMcpCatalog::builder();
     catalog.register(crate::McpServerRegistration::from_plugin(
@@ -502,9 +468,6 @@ async fn prepared_call_timeout_includes_trusted_access_lookup() {
             .expect("plugin MCP config"),
     ));
     config.mcp_server_catalog = catalog.build();
-    config
-        .server_permission_profiles
-        .insert("docs".to_string(), PermissionProfile::default());
     manager.tool_plugin_context = Arc::new(crate::tool_plugin_context(&config));
     let auth = CodexAuth::create_dummy_chatgpt_auth_for_testing();
     manager.trusted_access = Some(TrustedAccessContext::new(
@@ -519,8 +482,6 @@ async fn prepared_call_timeout_includes_trusted_access_lookup() {
         pollutes_memory: true,
         origin: Some(McpServerOrigin::Stdio),
         supports_parallel_tool_calls: false,
-        default_tools_approval_mode: None,
-        tool_approval_modes: HashMap::new(),
     };
     let client = Arc::new(create_test_managed_client(vec![tool.clone()]).await);
     let catalog_snapshot = client.tool_catalog.read(Arc::new).await;
@@ -533,8 +494,7 @@ async fn prepared_call_timeout_includes_trusted_access_lookup() {
         server_metadata,
         Some("docs@test".to_string()),
         /*selected_plugin_server*/ false,
-    )
-    .expect("docs should retain its permission profile");
+    );
 
     let started = tokio::time::Instant::now();
     let error = prepared
@@ -773,16 +733,9 @@ pub(crate) async fn create_test_manager_with_ready_apps_client(
         tool_catalog: Arc::new(ClientToolCatalog::new(vec![tool], /*updates*/ None)),
         tool_timeout: Some(Duration::from_secs(5)),
         server_instructions: None,
-        server_supports_sandbox_state_meta_capability: false,
         codex_apps_tools_cache_context: Some(cache_context.clone()),
     };
-    let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
-    let permission_profile = Constrained::allow_any(PermissionProfile::default());
-    let mut manager = McpConnectionSet::new_uninitialized(
-        &approval_policy,
-        &permission_profile,
-        /*prefix_mcp_tool_names*/ true,
-    );
+    let mut manager = McpConnectionSet::new_uninitialized(/*prefix_mcp_tool_names*/ true);
     manager.insert_test_client(
         CODEX_APPS_MCP_SERVER_NAME.to_string(),
         AsyncManagedClient {
@@ -808,8 +761,6 @@ pub(crate) async fn create_test_manager_with_ready_apps_client(
             pollutes_memory: false,
             origin: None,
             supports_parallel_tool_calls: false,
-            default_tools_approval_mode: None,
-            tool_approval_modes: HashMap::new(),
         },
     );
     Ok(Arc::new(manager))
@@ -832,13 +783,7 @@ fn create_test_manager_with_failed_apps_startup(
         Some("reconnect-test-user"),
     );
     store_current_tools(&cache_context, cached_tools);
-    let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
-    let permission_profile = Constrained::allow_any(PermissionProfile::default());
-    let mut manager = McpConnectionSet::new_uninitialized(
-        &approval_policy,
-        &permission_profile,
-        /*prefix_mcp_tool_names*/ true,
-    );
+    let mut manager = McpConnectionSet::new_uninitialized(/*prefix_mcp_tool_names*/ true);
     manager.insert_test_client(
         CODEX_APPS_MCP_SERVER_NAME.to_string(),
         AsyncManagedClient {
@@ -879,53 +824,14 @@ fn is_code_mode_compatible_tool_name(name: &ToolName) -> bool {
         .all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-#[test]
-fn elicitation_granular_policy_defaults_to_prompting() {
-    assert!(!elicitation_is_rejected_by_policy(
-        AskForApproval::OnRequest
-    ));
-    assert!(!elicitation_is_rejected_by_policy(
-        AskForApproval::UnlessTrusted
-    ));
-    assert!(elicitation_is_rejected_by_policy(AskForApproval::Granular(
-        GranularApprovalConfig {
-            sandbox_approval: true,
-            rules: true,
-            skill_approval: true,
-            request_permissions: true,
-            mcp_elicitations: false,
-        }
-    )));
-}
-
-#[test]
-fn elicitation_granular_policy_respects_never_and_config() {
-    assert!(elicitation_is_rejected_by_policy(AskForApproval::Never));
-    assert!(elicitation_is_rejected_by_policy(AskForApproval::Granular(
-        GranularApprovalConfig {
-            sandbox_approval: true,
-            rules: true,
-            skill_approval: true,
-            request_permissions: true,
-            mcp_elicitations: false,
-        }
-    )));
-}
-
 #[tokio::test]
-async fn disabled_permissions_auto_accept_elicitation_with_empty_form_schema() {
+async fn confirmation_only_elicitation_is_auto_accepted() {
     let manager = ElicitationRequestManager::new(
-        test_elicitation_config("server", AskForApproval::Never, PermissionProfile::Disabled),
-        /*reviewer*/ None,
         /*lifecycle*/ None,
         ElicitationRequestRouter::default(),
     );
     let (tx_event, _rx_event) = async_channel::bounded(1);
-    let sender = manager.make_sender(
-        "server".to_string(),
-        Some(tx_event),
-        &ClientMcpExtensions::default(),
-    );
+    let sender = manager.make_sender("server".to_string(), Some(tx_event));
 
     let response = sender(
         NumberOrString::Number(1),
@@ -950,57 +856,6 @@ async fn disabled_permissions_auto_accept_elicitation_with_empty_form_schema() {
     );
 }
 
-#[tokio::test]
-async fn disabled_permissions_do_not_auto_accept_elicitation_with_requested_fields() {
-    let manager = ElicitationRequestManager::new(
-        test_elicitation_config("server", AskForApproval::Never, PermissionProfile::Disabled),
-        /*reviewer*/ None,
-        /*lifecycle*/ None,
-        ElicitationRequestRouter::default(),
-    );
-    let (tx_event, _rx_event) = async_channel::bounded(1);
-    let sender = manager.make_sender(
-        "server".to_string(),
-        Some(tx_event),
-        &ClientMcpExtensions::default(),
-    );
-
-    let response = sender(
-        NumberOrString::Number(1),
-        codex_rmcp_client::Elicitation::Mcp(ElicitRequestParams::FormElicitationParams {
-            meta: None,
-            message: "What should I say?".to_string(),
-            requested_schema:
-                rmcp::model::ElicitationSchema::builder()
-                    .required_property(
-                        "message",
-                        rmcp::model::PrimitiveSchemaDefinition::String(
-                            rmcp::model::StringSchema::new(),
-                        ),
-                    )
-                    .build()
-                    .expect("schema should build"),
-        }),
-    )
-    .await
-    .expect("elicitation should auto decline");
-
-    assert_eq!(
-        response,
-        ElicitationResponse {
-            action: ElicitationAction::Decline,
-            content: None,
-            meta: None,
-        }
-    );
-}
-
-fn full_access_form_input_enabled_router() -> ElicitationRequestRouter {
-    let router = ElicitationRequestRouter::default();
-    router.enable_full_access_form_input();
-    router
-}
-
 fn elicitation_meta(value: serde_json::Value) -> Option<rmcp::model::RequestMetaObject> {
     let serde_json::Value::Object(map) = value else {
         panic!("elicitation metadata must be an object");
@@ -1018,91 +873,10 @@ fn requested_user_input_schema() -> rmcp::model::ElicitationSchema {
         .expect("schema should build")
 }
 
-#[derive(Default)]
-struct DecliningElicitationReviewer {
-    review_count: AtomicUsize,
-}
-
-impl ElicitationReviewer for DecliningElicitationReviewer {
-    fn review(
-        &self,
-        _request: ElicitationReviewRequest,
-    ) -> BoxFuture<'static, anyhow::Result<Option<ElicitationResponse>>> {
-        self.review_count.fetch_add(1, Ordering::SeqCst);
-        async {
-            Ok(Some(ElicitationResponse {
-                action: ElicitationAction::Decline,
-                content: None,
-                meta: None,
-            }))
-        }
-        .boxed()
-    }
-}
-
-async fn assert_elicitation_declined_with_reviewer_calls(
-    approval_policy: AskForApproval,
-    server_name: &str,
-    elicitation: ElicitRequestParams,
-    expected_reviewer_calls: usize,
-) {
-    let reviewer = Arc::new(DecliningElicitationReviewer::default());
-    let manager = ElicitationRequestManager::new(
-        test_elicitation_config(server_name, approval_policy, PermissionProfile::Disabled),
-        Some(reviewer.clone()),
-        /*lifecycle*/ None,
-        full_access_form_input_enabled_router(),
-    );
+async fn assert_requested_user_input_is_declined(router: ElicitationRequestRouter) {
+    let manager = ElicitationRequestManager::new(/*lifecycle*/ None, router);
     let (tx_event, rx_event) = async_channel::bounded(1);
-    let sender = manager.make_sender(
-        server_name.to_string(),
-        Some(tx_event),
-        &ClientMcpExtensions::default(),
-    );
-
-    let response = tokio::select! {
-        biased;
-        event = rx_event.recv() => {
-            panic!("elicitation unexpectedly reached the user: {event:?}");
-        }
-        response = sender(
-            NumberOrString::Number(1),
-            codex_rmcp_client::Elicitation::Mcp(elicitation),
-        ) => response.expect("elicitation should be declined"),
-    };
-
-    assert_eq!(
-        response,
-        ElicitationResponse {
-            action: ElicitationAction::Decline,
-            content: None,
-            meta: None,
-        },
-    );
-    assert_eq!(
-        reviewer.review_count.load(Ordering::SeqCst),
-        expected_reviewer_calls
-    );
-    assert!(rx_event.try_recv().is_err());
-}
-
-async fn assert_requested_user_input_is_declined(
-    approval_policy: AskForApproval,
-    permission_profile: PermissionProfile,
-    router: ElicitationRequestRouter,
-) {
-    let manager = ElicitationRequestManager::new(
-        test_elicitation_config("server", approval_policy, permission_profile),
-        /*reviewer*/ None,
-        /*lifecycle*/ None,
-        router,
-    );
-    let (tx_event, rx_event) = async_channel::bounded(1);
-    let sender = manager.make_sender(
-        "server".to_string(),
-        Some(tx_event),
-        &ClientMcpExtensions::default(),
-    );
+    let sender = manager.make_sender("server".to_string(), Some(tx_event));
 
     let response = tokio::select! {
         biased;
@@ -1133,67 +907,33 @@ async fn assert_requested_user_input_is_declined(
 }
 
 #[tokio::test]
-async fn disabled_permissions_do_not_surface_user_input_when_auto_denied() {
-    let router = full_access_form_input_enabled_router();
+async fn requested_user_input_is_declined_when_auto_denied() {
+    let router = ElicitationRequestRouter::default();
     router.set_auto_deny(/*auto_deny*/ true);
-    assert_requested_user_input_is_declined(
-        AskForApproval::Never,
-        PermissionProfile::Disabled,
-        router,
-    )
-    .await;
+    assert_requested_user_input_is_declined(router).await;
 }
 
 #[tokio::test]
-async fn plugin_tool_suggestion_elicitations_are_declined_before_review() {
-    assert_elicitation_declined_with_reviewer_calls(
-        AskForApproval::OnRequest,
-        "server",
-        ElicitRequestParams::FormElicitationParams {
-            meta: elicitation_meta(serde_json::json!({
-                "codex_approval_kind": "tool_suggestion",
-            })),
-            message: "Install this app?".to_string(),
-            requested_schema: rmcp::model::ElicitationSchema::builder()
-                .build()
-                .expect("schema should build"),
-        },
-        /*expected_reviewer_calls*/ 0,
-    )
-    .await;
+async fn requested_user_input_reaches_the_client_without_metadata() {
+    assert_requested_user_input_reaches_the_client(/*meta*/ None).await;
 }
 
 #[tokio::test]
-async fn disabled_permissions_surface_requested_user_input_without_metadata() {
-    assert_disabled_permissions_surface_requested_user_input(/*meta*/ None).await;
-}
-
-#[tokio::test]
-async fn disabled_permissions_surface_requested_user_input_with_non_codex_approval_metadata() {
-    assert_disabled_permissions_surface_requested_user_input(elicitation_meta(serde_json::json!({
+async fn requested_user_input_reaches_the_client_with_metadata() {
+    assert_requested_user_input_reaches_the_client(elicitation_meta(serde_json::json!({
         "origin": "https://example.com",
         "persist": "always",
     })))
     .await;
 }
 
-async fn assert_disabled_permissions_surface_requested_user_input(
+async fn assert_requested_user_input_reaches_the_client(
     meta: Option<rmcp::model::RequestMetaObject>,
 ) {
-    let router = full_access_form_input_enabled_router();
-    let reviewer = Arc::new(DecliningElicitationReviewer::default());
-    let manager = ElicitationRequestManager::new(
-        test_elicitation_config("server", AskForApproval::Never, PermissionProfile::Disabled),
-        Some(reviewer.clone()),
-        /*lifecycle*/ None,
-        router.clone(),
-    );
+    let router = ElicitationRequestRouter::default();
+    let manager = ElicitationRequestManager::new(/*lifecycle*/ None, router.clone());
     let (tx_event, rx_event) = async_channel::bounded(1);
-    let sender = manager.make_sender(
-        "server".to_string(),
-        Some(tx_event),
-        &ClientMcpExtensions::default(),
-    );
+    let sender = manager.make_sender("server".to_string(), Some(tx_event));
     let requested_schema = requested_user_input_schema();
     let mut pending = tokio::spawn(sender(
         NumberOrString::Number(1),
@@ -1228,7 +968,6 @@ async fn assert_disabled_permissions_surface_requested_user_input(
         },
     );
     assert_eq!(request.server_name, "server");
-    assert_eq!(reviewer.review_count.load(Ordering::SeqCst), 0);
 
     let codex_protocol::mcp::RequestId::String(request_id) = request.id else {
         panic!("expected Codex-owned string request ID");
@@ -1256,93 +995,12 @@ async fn assert_disabled_permissions_surface_requested_user_input(
 }
 
 #[tokio::test]
-async fn disabled_permissions_decline_requested_user_input_with_approval_metadata() {
-    assert_elicitation_declined_with_reviewer_calls(
-        AskForApproval::Never,
-        "node_repl",
-        ElicitRequestParams::FormElicitationParams {
-            meta: elicitation_meta(serde_json::json!({
-                "codex_approval_kind": "mcp_tool_call",
-                "connector_id": "browser-use",
-                "tool_name": "access_browser_origin",
-            })),
-            message: "Allow Browser Use to access this website?".to_string(),
-            requested_schema:
-                rmcp::model::ElicitationSchema::builder()
-                    .required_property(
-                        "confirmation",
-                        rmcp::model::PrimitiveSchemaDefinition::String(
-                            rmcp::model::StringSchema::new(),
-                        ),
-                    )
-                    .build()
-                    .expect("schema should build"),
-        },
-        /*expected_reviewer_calls*/ 0,
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn restricted_never_policy_does_not_surface_requested_user_input() {
-    assert_requested_user_input_is_declined(
-        AskForApproval::Never,
-        PermissionProfile::default(),
-        full_access_form_input_enabled_router(),
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn granular_policy_does_not_surface_requested_user_input() {
-    assert_requested_user_input_is_declined(
-        AskForApproval::Granular(GranularApprovalConfig {
-            sandbox_approval: true,
-            rules: true,
-            skill_approval: true,
-            request_permissions: true,
-            mcp_elicitations: false,
-        }),
-        PermissionProfile::Disabled,
-        full_access_form_input_enabled_router(),
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn on_request_approval_forms_remain_with_the_reviewer() {
-    assert_elicitation_declined_with_reviewer_calls(
-        AskForApproval::OnRequest,
-        "server",
-        ElicitRequestParams::FormElicitationParams {
-            meta: elicitation_meta(serde_json::json!({
-                "codex_request_type": "approval_request",
-                "codex_approval_kind": "mcp_tool_call",
-                "tool_name": "test_tool",
-            })),
-            message: "Approve this action?".to_string(),
-            requested_schema: rmcp::model::ElicitationSchema::builder()
-                .build()
-                .expect("schema should build"),
-        },
-        /*expected_reviewer_calls*/ 1,
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn disabled_permissions_decline_user_input_without_an_event_channel() {
+async fn user_input_without_an_event_channel_is_declined() {
     let manager = ElicitationRequestManager::new(
-        test_elicitation_config("server", AskForApproval::Never, PermissionProfile::Disabled),
-        /*reviewer*/ None,
         /*lifecycle*/ None,
-        full_access_form_input_enabled_router(),
+        ElicitationRequestRouter::default(),
     );
-    let sender = manager.make_sender(
-        "server".to_string(),
-        /*tx_event*/ None,
-        &ClientMcpExtensions::default(),
-    );
+    let sender = manager.make_sender("server".to_string(), /*tx_event*/ None);
 
     let response = sender(
         NumberOrString::Number(1),
@@ -1365,72 +1023,6 @@ async fn disabled_permissions_decline_user_input_without_an_event_channel() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn concurrent_authority_updates_never_auto_approve_mixed_policy() {
-    let manager = ElicitationRequestManager::new(
-        test_elicitation_config(
-            "server",
-            AskForApproval::Never,
-            PermissionProfile::default(),
-        ),
-        /*reviewer*/ None,
-        /*lifecycle*/ None,
-        ElicitationRequestRouter::default(),
-    );
-    let updating_manager = manager.clone();
-    let updater = tokio::spawn(async move {
-        for _ in 0..1_000 {
-            assert!(updating_manager.update(
-                test_elicitation_config(
-                    "server",
-                    AskForApproval::OnRequest,
-                    PermissionProfile::Disabled
-                ),
-                /*reviewer*/ None,
-                /*lifecycle*/ None,
-            ));
-            assert!(updating_manager.update(
-                test_elicitation_config(
-                    "server",
-                    AskForApproval::Never,
-                    PermissionProfile::default()
-                ),
-                /*reviewer*/ None,
-                /*lifecycle*/ None,
-            ));
-        }
-    });
-    let sender = manager.make_sender(
-        "server".to_string(),
-        /*tx_event*/ None,
-        &ClientMcpExtensions::default(),
-    );
-    let elicitation =
-        codex_rmcp_client::Elicitation::Mcp(ElicitRequestParams::FormElicitationParams {
-            meta: None,
-            message: "Confirm?".to_string(),
-            requested_schema: rmcp::model::ElicitationSchema::builder()
-                .build()
-                .expect("schema should build"),
-        });
-
-    for _ in 0..1_000 {
-        let response = sender(NumberOrString::Number(1), elicitation.clone())
-            .await
-            .expect("elicitation should resolve");
-        assert_eq!(
-            response,
-            ElicitationResponse {
-                action: ElicitationAction::Decline,
-                content: None,
-                meta: None,
-            }
-        );
-    }
-
-    updater.await.expect("authority updates should finish");
-}
-
 #[tokio::test]
 async fn shared_elicitation_router_targets_the_exact_pending_request() {
     struct Registration(Arc<AtomicUsize>);
@@ -1450,37 +1042,11 @@ async fn shared_elicitation_router_targets_the_exact_pending_request() {
             Registration(outstanding.clone())
         }
     });
-    let manager_a = ElicitationRequestManager::new(
-        test_elicitation_config(
-            "server",
-            AskForApproval::OnRequest,
-            PermissionProfile::default(),
-        ),
-        /*reviewer*/ None,
-        Some(lifecycle.clone()),
-        router.clone(),
-    );
-    let manager_b = ElicitationRequestManager::new(
-        test_elicitation_config(
-            "server",
-            AskForApproval::OnRequest,
-            PermissionProfile::default(),
-        ),
-        /*reviewer*/ None,
-        Some(lifecycle),
-        router.clone(),
-    );
+    let manager_a = ElicitationRequestManager::new(Some(lifecycle.clone()), router.clone());
+    let manager_b = ElicitationRequestManager::new(Some(lifecycle), router.clone());
     let (tx_event, rx_event) = async_channel::bounded(2);
-    let sender_a = manager_a.make_sender(
-        "server".to_string(),
-        Some(tx_event.clone()),
-        &ClientMcpExtensions::default(),
-    );
-    let sender_b = manager_b.make_sender(
-        "server".to_string(),
-        Some(tx_event),
-        &ClientMcpExtensions::default(),
-    );
+    let sender_a = manager_a.make_sender("server".to_string(), Some(tx_event.clone()));
+    let sender_b = manager_b.make_sender("server".to_string(), Some(tx_event));
     let elicitation =
         codex_rmcp_client::Elicitation::Mcp(ElicitRequestParams::FormElicitationParams {
             meta: None,
@@ -1564,22 +1130,9 @@ async fn shared_elicitation_router_targets_the_exact_pending_request() {
 #[tokio::test]
 async fn cancelled_elicitation_is_removed_without_affecting_other_pending_requests() {
     let router = ElicitationRequestRouter::default();
-    let manager = ElicitationRequestManager::new(
-        test_elicitation_config(
-            "server",
-            AskForApproval::OnRequest,
-            PermissionProfile::default(),
-        ),
-        /*reviewer*/ None,
-        /*lifecycle*/ None,
-        router.clone(),
-    );
+    let manager = ElicitationRequestManager::new(/*lifecycle*/ None, router.clone());
     let (tx_event, rx_event) = async_channel::bounded(2);
-    let sender = manager.make_sender(
-        "server".to_string(),
-        Some(tx_event),
-        &ClientMcpExtensions::default(),
-    );
+    let sender = manager.make_sender("server".to_string(), Some(tx_event));
     let elicitation =
         codex_rmcp_client::Elicitation::Mcp(ElicitRequestParams::FormElicitationParams {
             meta: None,
@@ -2049,7 +1602,6 @@ async fn read_only_apps_discovery_never_uses_a_shared_writable_catalog() -> anyh
                 client_mcp_extensions: ClientMcpExtensions::default(),
                 auth: None,
                 auth_manager: None,
-                elicitation_reviewer: None,
                 elicitation_lifecycle: None,
             },
             ElicitationRequestRouter::default(),
@@ -2133,7 +1685,6 @@ async fn hosted_apps_protocol_mode_is_independent_of_generic_mode() -> anyhow::R
                 client_mcp_extensions: ClientMcpExtensions::default(),
                 auth: None,
                 auth_manager: None,
-                elicitation_reviewer: None,
                 elicitation_lifecycle: None,
             },
             ElicitationRequestRouter::default(),
@@ -2231,7 +1782,6 @@ async fn codex_apps_extension_does_not_share_host_owned_tools_cache() -> anyhow:
                 client_mcp_extensions: ClientMcpExtensions::default(),
                 auth: None,
                 auth_manager: None,
-                elicitation_reviewer: None,
                 elicitation_lifecycle: None,
             },
             ElicitationRequestRouter::default(),
@@ -2274,13 +1824,7 @@ async fn list_all_tools_uses_shared_codex_apps_cache_while_client_is_pending() {
     let pending_client = futures::future::pending::<Result<ManagedClient, StartupOutcomeError>>()
         .boxed()
         .shared();
-    let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
-    let permission_profile = Constrained::allow_any(PermissionProfile::default());
-    let mut manager = McpConnectionSet::new_uninitialized(
-        &approval_policy,
-        &permission_profile,
-        /*prefix_mcp_tool_names*/ true,
-    );
+    let mut manager = McpConnectionSet::new_uninitialized(/*prefix_mcp_tool_names*/ true);
     manager.insert_test_client(
         CODEX_APPS_MCP_SERVER_NAME.to_string(),
         AsyncManagedClient {
@@ -2345,13 +1889,7 @@ async fn capture_binding_preserves_ready_client_catalog_and_shares_prepared_meta
         disabled: HashSet::from(["client_local_blocked".to_string()]),
     };
     ready_client.codex_apps_tools_cache_context = Some(cache_context.clone());
-    let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
-    let permission_profile = Constrained::allow_any(PermissionProfile::default());
-    let mut manager = McpConnectionSet::new_uninitialized(
-        &approval_policy,
-        &permission_profile,
-        /*prefix_mcp_tool_names*/ true,
-    );
+    let mut manager = McpConnectionSet::new_uninitialized(/*prefix_mcp_tool_names*/ true);
     manager.insert_test_client(
         CODEX_APPS_MCP_SERVER_NAME.to_string(),
         AsyncManagedClient {
@@ -2378,8 +1916,6 @@ async fn capture_binding_preserves_ready_client_catalog_and_shares_prepared_meta
             pollutes_memory: false,
             origin: None,
             supports_parallel_tool_calls: false,
-            default_tools_approval_mode: None,
-            tool_approval_modes: HashMap::new(),
         },
     );
     let manager = Arc::new(manager);
@@ -2510,16 +2046,10 @@ async fn hard_refresh_keeps_client_catalog_local_when_shared_cache_loses_race() 
         vec!["b_only"]
     );
 
-    let mut config = crate::mcp::tests::test_mcp_config(codex_home.path().to_path_buf());
-    config.server_permission_profiles.insert(
-        CODEX_APPS_MCP_SERVER_NAME.to_string(),
-        PermissionProfile::default(),
-    );
     let manager_a_for_refresh = Arc::clone(&manager_a);
-    let config_for_refresh = config.clone();
     let refresh_a = tokio::spawn(async move {
         manager_a_for_refresh
-            .refresh_codex_apps_client_catalog(&config_for_refresh)
+            .refresh_codex_apps_client_catalog()
             .await
     });
     list_started.notified().await;
@@ -2555,7 +2085,7 @@ async fn hard_refresh_keeps_client_catalog_local_when_shared_cache_loses_race() 
         .tool_filter
         .disabled
         .insert("b_only".to_string());
-    let snapshot_b = manager_b.refresh_codex_apps_client_catalog(&config).await?;
+    let snapshot_b = manager_b.refresh_codex_apps_client_catalog().await?;
     assert_eq!(
         (
             snapshot_b
@@ -2722,13 +2252,7 @@ async fn list_available_server_infos_uses_cache_while_client_is_pending() {
     let pending_client = futures::future::pending::<Result<ManagedClient, StartupOutcomeError>>()
         .boxed()
         .shared();
-    let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
-    let permission_profile = Constrained::allow_any(PermissionProfile::default());
-    let mut manager = McpConnectionSet::new_uninitialized(
-        &approval_policy,
-        &permission_profile,
-        /*prefix_mcp_tool_names*/ true,
-    );
+    let mut manager = McpConnectionSet::new_uninitialized(/*prefix_mcp_tool_names*/ true);
     let server_info = create_test_server_info("Codex Apps");
     manager.insert_test_client(
         CODEX_APPS_MCP_SERVER_NAME.to_string(),
@@ -2761,13 +2285,7 @@ async fn list_available_server_infos_uses_cache_while_client_is_pending() {
 async fn list_all_tools_accepts_canonical_namespaced_tool_names() {
     let managed_client =
         create_ready_async_managed_client(vec![create_test_tool("rmcp", "echo")]).await;
-    let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
-    let permission_profile = Constrained::allow_any(PermissionProfile::default());
-    let mut manager = McpConnectionSet::new_uninitialized(
-        &approval_policy,
-        &permission_profile,
-        /*prefix_mcp_tool_names*/ false,
-    );
+    let mut manager = McpConnectionSet::new_uninitialized(/*prefix_mcp_tool_names*/ false);
     manager.insert_test_client("rmcp", managed_client);
 
     let tools = manager.list_all_tools().await;
@@ -2820,13 +2338,7 @@ async fn capture_binding_exposes_cached_tools_before_startup() {
     }
     .boxed()
     .shared();
-    let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
-    let permission_profile = Constrained::allow_any(PermissionProfile::default());
-    let mut manager = McpConnectionSet::new_uninitialized(
-        &approval_policy,
-        &permission_profile,
-        /*prefix_mcp_tool_names*/ true,
-    );
+    let mut manager = McpConnectionSet::new_uninitialized(/*prefix_mcp_tool_names*/ true);
     manager.insert_test_client(
         CODEX_APPS_MCP_SERVER_NAME.to_string(),
         AsyncManagedClient {
@@ -2848,8 +2360,6 @@ async fn capture_binding_exposes_cached_tools_before_startup() {
             pollutes_memory: false,
             origin: None,
             supports_parallel_tool_calls: false,
-            default_tools_approval_mode: None,
-            tool_approval_modes: HashMap::new(),
         },
     );
     let manager = Arc::new(manager);
@@ -2899,13 +2409,7 @@ async fn capture_binding_exposes_cached_tools_before_startup() {
 
 #[tokio::test(start_paused = true)]
 async fn capture_binding_skips_pending_optional_servers_after_configured_shared_startup_grace() {
-    let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
-    let permission_profile = Constrained::allow_any(PermissionProfile::default());
-    let mut manager = McpConnectionSet::new_uninitialized(
-        &approval_policy,
-        &permission_profile,
-        /*prefix_mcp_tool_names*/ true,
-    );
+    let mut manager = McpConnectionSet::new_uninitialized(/*prefix_mcp_tool_names*/ true);
     let mut plugin_config = crate::mcp::tests::test_mcp_config(std::env::temp_dir());
     let mut catalog = crate::ResolvedMcpCatalog::builder();
     catalog.register(crate::McpServerRegistration::from_plugin(
@@ -2945,11 +2449,8 @@ async fn capture_binding_skips_pending_optional_servers_after_configured_shared_
         );
     }
 
-    let mut required_manager = McpConnectionSet::new_uninitialized(
-        &approval_policy,
-        &permission_profile,
-        /*prefix_mcp_tool_names*/ true,
-    );
+    let mut required_manager =
+        McpConnectionSet::new_uninitialized(/*prefix_mcp_tool_names*/ true);
     required_manager.tool_plugin_context = Arc::clone(&manager.tool_plugin_context);
     required_manager.insert_test_client(
         "pending-selected",
@@ -3056,13 +2557,7 @@ async fn capture_binding_skips_pending_optional_servers_after_configured_shared_
 
 #[tokio::test(start_paused = true)]
 async fn capture_binding_waits_for_optional_startup_when_shared_grace_is_disabled() {
-    let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
-    let permission_profile = Constrained::allow_any(PermissionProfile::default());
-    let mut manager = McpConnectionSet::new_uninitialized(
-        &approval_policy,
-        &permission_profile,
-        /*prefix_mcp_tool_names*/ true,
-    );
+    let mut manager = McpConnectionSet::new_uninitialized(/*prefix_mcp_tool_names*/ true);
     let (client, startup_started, release_startup) = create_gated_async_managed_client(
         create_test_managed_client(vec![create_test_tool("optional", "echo")]).await,
     );
@@ -3070,9 +2565,6 @@ async fn capture_binding_waits_for_optional_startup_when_shared_grace_is_disable
 
     let mut config = crate::mcp::tests::test_mcp_config(std::env::temp_dir());
     config.optional_mcp_startup_grace = Duration::ZERO;
-    config
-        .server_permission_profiles
-        .insert("optional".to_string(), PermissionProfile::default());
     let manager = Arc::new(manager);
     let mut capture = tokio::spawn(async move {
         manager
@@ -3100,13 +2592,7 @@ async fn capture_binding_waits_for_optional_startup_when_shared_grace_is_disable
 
 #[tokio::test]
 async fn stable_catalog_revisions_ignore_terminal_optional_server_failures() {
-    let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
-    let permission_profile = Constrained::allow_any(PermissionProfile::default());
-    let mut manager = McpConnectionSet::new_uninitialized(
-        &approval_policy,
-        &permission_profile,
-        /*prefix_mcp_tool_names*/ true,
-    );
+    let mut manager = McpConnectionSet::new_uninitialized(/*prefix_mcp_tool_names*/ true);
     let ready = create_ready_async_managed_client(vec![create_test_tool("ready", "echo")]).await;
     assert!(ready.client().await.is_ok());
     let mut failed = ready.clone();
@@ -3149,8 +2635,6 @@ async fn stable_catalog_revisions_ignore_terminal_optional_server_failures() {
 
 #[tokio::test(start_paused = true)]
 async fn capture_binding_shares_optional_startup_grace_across_connection_sets() {
-    let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
-    let permission_profile = Constrained::allow_any(PermissionProfile::default());
     let cache = McpToolCatalogCache::default();
     let runtime_context = McpRuntimeContext::new(
         Arc::new(environment_manager_without_environments()),
@@ -3174,11 +2658,7 @@ async fn capture_binding_shares_optional_startup_grace_across_connection_sets() 
         .expect("shared pending MCP catalog");
 
     let create_connection_set = || {
-        let mut manager = McpConnectionSet::new_uninitialized(
-            &approval_policy,
-            &permission_profile,
-            /*prefix_mcp_tool_names*/ true,
-        );
+        let mut manager = McpConnectionSet::new_uninitialized(/*prefix_mcp_tool_names*/ true);
         manager.insert_test_client(
             "pending",
             AsyncManagedClient {
@@ -3333,11 +2813,7 @@ async fn capture_binding_uses_cache_published_during_optional_startup() {
         create_test_managed_client(vec![create_test_tool("pending", "live_tool")]).await,
     );
     client.tool_catalog_cache_context = Some(cache_context.clone());
-    let mut manager = McpConnectionSet::new_uninitialized(
-        &Constrained::allow_any(AskForApproval::OnRequest),
-        &Constrained::allow_any(PermissionProfile::default()),
-        /*prefix_mcp_tool_names*/ true,
-    );
+    let mut manager = McpConnectionSet::new_uninitialized(/*prefix_mcp_tool_names*/ true);
     manager.insert_test_client("pending", client);
     let manager = Arc::new(manager);
 
@@ -3402,11 +2878,7 @@ async fn capture_binding_retains_cached_tools_that_expire_while_waiting_for_anot
     );
     tokio::time::advance(Duration::from_secs(30 * 60 - 1)).await;
 
-    let mut manager = McpConnectionSet::new_uninitialized(
-        &Constrained::allow_any(AskForApproval::OnRequest),
-        &Constrained::allow_any(PermissionProfile::default()),
-        /*prefix_mcp_tool_names*/ true,
-    );
+    let mut manager = McpConnectionSet::new_uninitialized(/*prefix_mcp_tool_names*/ true);
     manager.insert_test_client("server_a", client_a);
     manager.insert_test_client("server_b", client_b);
     Arc::get_mut(&mut manager.servers.get_mut("server_a").unwrap().connection)
@@ -3472,11 +2944,7 @@ async fn capture_binding_omits_cache_disabled_while_waiting_for_another_server()
     let (waiting, started, release) = create_gated_async_managed_client(
         create_test_managed_client(vec![create_test_tool("waiting", "ready_tool")]).await,
     );
-    let mut manager = McpConnectionSet::new_uninitialized(
-        &Constrained::allow_any(AskForApproval::OnRequest),
-        &Constrained::allow_any(PermissionProfile::default()),
-        /*prefix_mcp_tool_names*/ true,
-    );
+    let mut manager = McpConnectionSet::new_uninitialized(/*prefix_mcp_tool_names*/ true);
     manager.insert_test_client("cached", cached);
     manager.insert_test_client("waiting", waiting);
     manager.required_servers = vec!["waiting".to_string()];
@@ -3528,13 +2996,7 @@ async fn capture_binding_resolves_concurrently_and_rechecks_cached_clients() {
     let (second_client, second_started, release_second) =
         create_gated_async_managed_client(second_client);
 
-    let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
-    let permission_profile = Constrained::allow_any(PermissionProfile::default());
-    let mut manager = McpConnectionSet::new_uninitialized(
-        &approval_policy,
-        &permission_profile,
-        /*prefix_mcp_tool_names*/ true,
-    );
+    let mut manager = McpConnectionSet::new_uninitialized(/*prefix_mcp_tool_names*/ true);
     manager.insert_test_client(CODEX_APPS_MCP_SERVER_NAME, apps_client);
     manager.insert_test_client("first", first_client);
     manager.insert_test_client("second", second_client);
@@ -3592,13 +3054,7 @@ async fn capture_binding_resolves_concurrently_and_rechecks_cached_clients() {
 async fn list_all_tools_applies_legacy_mcp_prefix_by_default() {
     let managed_client =
         create_ready_async_managed_client(vec![create_test_tool("rmcp", "echo")]).await;
-    let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
-    let permission_profile = Constrained::allow_any(PermissionProfile::default());
-    let mut manager = McpConnectionSet::new_uninitialized(
-        &approval_policy,
-        &permission_profile,
-        /*prefix_mcp_tool_names*/ true,
-    );
+    let mut manager = McpConnectionSet::new_uninitialized(/*prefix_mcp_tool_names*/ true);
     manager.insert_test_client("rmcp", managed_client);
 
     let tools = manager.list_all_tools().await;
@@ -3624,13 +3080,7 @@ async fn call_tool_requires_connection_without_waiting_for_startup() {
     let client = create_test_managed_client(vec![create_test_tool("docs", "search")]).await;
     let (client, startup_started, release_startup) = create_gated_async_managed_client(client);
     let startup_client = client.clone();
-    let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
-    let permission_profile = Constrained::allow_any(PermissionProfile::default());
-    let mut manager = McpConnectionSet::new_uninitialized(
-        &approval_policy,
-        &permission_profile,
-        /*prefix_mcp_tool_names*/ true,
-    );
+    let mut manager = McpConnectionSet::new_uninitialized(/*prefix_mcp_tool_names*/ true);
     manager.insert_test_client("docs", client);
 
     let pending_call = tokio::time::timeout(
@@ -3677,13 +3127,7 @@ async fn call_tool_requires_connection_without_waiting_for_startup() {
 async fn connected_call_respects_server_tool_filters() {
     let client = create_ready_async_managed_client(vec![create_test_tool("docs", "search")]).await;
     client.client().await.expect("server should be ready");
-    let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
-    let permission_profile = Constrained::allow_any(PermissionProfile::default());
-    let mut manager = McpConnectionSet::new_uninitialized(
-        &approval_policy,
-        &permission_profile,
-        /*prefix_mcp_tool_names*/ true,
-    );
+    let mut manager = McpConnectionSet::new_uninitialized(/*prefix_mcp_tool_names*/ true);
     manager.insert_test_client("docs", client);
     manager
         .servers
@@ -3712,13 +3156,7 @@ async fn connected_call_respects_server_tool_filters() {
 async fn call_tool_validates_environment_without_waiting_for_ready_connections() {
     let client = create_test_managed_client(vec![create_test_tool("docs", "search")]).await;
     let (client, _, _) = create_gated_async_managed_client(client);
-    let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
-    let permission_profile = Constrained::allow_any(PermissionProfile::default());
-    let mut manager = McpConnectionSet::new_uninitialized(
-        &approval_policy,
-        &permission_profile,
-        /*prefix_mcp_tool_names*/ true,
-    );
+    let mut manager = McpConnectionSet::new_uninitialized(/*prefix_mcp_tool_names*/ true);
     manager.insert_test_client("docs", client);
     manager
         .servers
@@ -3771,13 +3209,7 @@ async fn list_all_tools_resolves_server_catalogs_concurrently() {
         create_gated_async_managed_client(first_client);
     let (second_client, second_started, release_second) =
         create_gated_async_managed_client(second_client);
-    let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
-    let permission_profile = Constrained::allow_any(PermissionProfile::default());
-    let mut manager = McpConnectionSet::new_uninitialized(
-        &approval_policy,
-        &permission_profile,
-        /*prefix_mcp_tool_names*/ true,
-    );
+    let mut manager = McpConnectionSet::new_uninitialized(/*prefix_mcp_tool_names*/ true);
     manager.insert_test_client("first", first_client);
     manager.insert_test_client("second", second_client);
     let manager = Arc::new(manager);
@@ -3808,13 +3240,7 @@ async fn list_all_tools_blocks_while_client_is_pending_without_cached_tools() {
     let pending_client = futures::future::pending::<Result<ManagedClient, StartupOutcomeError>>()
         .boxed()
         .shared();
-    let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
-    let permission_profile = Constrained::allow_any(PermissionProfile::default());
-    let mut manager = McpConnectionSet::new_uninitialized(
-        &approval_policy,
-        &permission_profile,
-        /*prefix_mcp_tool_names*/ true,
-    );
+    let mut manager = McpConnectionSet::new_uninitialized(/*prefix_mcp_tool_names*/ true);
     manager.insert_test_client(
         CODEX_APPS_MCP_SERVER_NAME.to_string(),
         AsyncManagedClient {
@@ -3866,13 +3292,7 @@ async fn shutdown_cancels_pending_tool_listing() {
     }
     .boxed()
     .shared();
-    let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
-    let permission_profile = Constrained::allow_any(PermissionProfile::default());
-    let mut manager = McpConnectionSet::new_uninitialized(
-        &approval_policy,
-        &permission_profile,
-        /*prefix_mcp_tool_names*/ true,
-    );
+    let mut manager = McpConnectionSet::new_uninitialized(/*prefix_mcp_tool_names*/ true);
     manager.insert_test_client(
         CODEX_APPS_MCP_SERVER_NAME.to_string(),
         AsyncManagedClient {
@@ -3913,13 +3333,7 @@ async fn shutdown_continues_after_caller_is_aborted() {
     }
     .boxed()
     .shared();
-    let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
-    let permission_profile = Constrained::allow_any(PermissionProfile::default());
-    let mut manager = McpConnectionSet::new_uninitialized(
-        &approval_policy,
-        &permission_profile,
-        /*prefix_mcp_tool_names*/ true,
-    );
+    let mut manager = McpConnectionSet::new_uninitialized(/*prefix_mcp_tool_names*/ true);
     manager.insert_test_client(
         CODEX_APPS_MCP_SERVER_NAME.to_string(),
         AsyncManagedClient {
@@ -3966,13 +3380,7 @@ async fn list_all_tools_does_not_block_when_shared_codex_apps_cache_is_empty() {
     let pending_client = futures::future::pending::<Result<ManagedClient, StartupOutcomeError>>()
         .boxed()
         .shared();
-    let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
-    let permission_profile = Constrained::allow_any(PermissionProfile::default());
-    let mut manager = McpConnectionSet::new_uninitialized(
-        &approval_policy,
-        &permission_profile,
-        /*prefix_mcp_tool_names*/ true,
-    );
+    let mut manager = McpConnectionSet::new_uninitialized(/*prefix_mcp_tool_names*/ true);
     manager.insert_test_client(
         CODEX_APPS_MCP_SERVER_NAME.to_string(),
         AsyncManagedClient {
@@ -4018,13 +3426,7 @@ async fn list_all_tools_uses_shared_codex_apps_cache_when_client_startup_fails()
     ))
     .boxed()
     .shared();
-    let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
-    let permission_profile = Constrained::allow_any(PermissionProfile::default());
-    let mut manager = McpConnectionSet::new_uninitialized(
-        &approval_policy,
-        &permission_profile,
-        /*prefix_mcp_tool_names*/ true,
-    );
+    let mut manager = McpConnectionSet::new_uninitialized(/*prefix_mcp_tool_names*/ true);
     let startup_complete = Arc::new(std::sync::atomic::AtomicBool::new(true));
     manager.insert_test_client(
         CODEX_APPS_MCP_SERVER_NAME.to_string(),
@@ -4092,8 +3494,6 @@ async fn list_all_tools_reconnects_failed_codex_apps_startup_and_reuses_client()
         pollutes_memory: false,
         origin: None,
         supports_parallel_tool_calls: false,
-        default_tools_approval_mode: None,
-        tool_approval_modes: HashMap::new(),
     };
     let manager = Arc::new(manager);
 
@@ -4131,15 +3531,8 @@ async fn list_all_tools_reconnects_failed_codex_apps_startup_and_reuses_client()
     );
 
     let step = capture_binding(&manager).await;
-    let prepared = step
-        .prepare_call(CODEX_APPS_MCP_SERVER_NAME, "drive_search")
+    step.prepare_call(CODEX_APPS_MCP_SERVER_NAME, "drive_search")
         .expect("recovered tool should have a prepared call");
-    assert!(
-        !prepared
-            .server_supports_sandbox_state_meta_capability()
-            .await
-            .expect("prepared call should use the recovered client")
-    );
 
     let tools = manager.list_all_tools().await;
     assert_eq!(
@@ -4300,8 +3693,6 @@ async fn tool_lists_do_not_block_and_share_codex_apps_startup_reconnect() {
             pollutes_memory: false,
             origin: None,
             supports_parallel_tool_calls: false,
-            default_tools_approval_mode: None,
-            tool_approval_modes: HashMap::new(),
         },
     );
     let manager = Arc::new(manager);
@@ -4369,13 +3760,7 @@ async fn list_all_tools_adds_server_metadata_to_tools() {
     let server_name = "docs";
     let managed_client =
         create_ready_async_managed_client(vec![create_test_tool(server_name, "search")]).await;
-    let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
-    let permission_profile = Constrained::allow_any(PermissionProfile::default());
-    let mut manager = McpConnectionSet::new_uninitialized(
-        &approval_policy,
-        &permission_profile,
-        /*prefix_mcp_tool_names*/ true,
-    );
+    let mut manager = McpConnectionSet::new_uninitialized(/*prefix_mcp_tool_names*/ true);
     manager.insert_test_client(server_name, managed_client);
     manager.set_test_server_metadata(
         server_name,
@@ -4386,8 +3771,6 @@ async fn list_all_tools_adds_server_metadata_to_tools() {
                 "https://docs.example".to_string(),
             )),
             supports_parallel_tool_calls: true,
-            default_tools_approval_mode: None,
-            tool_approval_modes: HashMap::new(),
         },
     );
 
@@ -4397,32 +3780,6 @@ async fn list_all_tools_adds_server_metadata_to_tools() {
     assert_eq!(tool.server_name, server_name);
     assert!(tool.supports_parallel_tool_calls);
     assert_eq!(tool.server_origin.as_deref(), Some("https://docs.example"));
-}
-
-#[test]
-fn server_metadata_preserves_tool_approval_policy() {
-    let mut config = crate::codex_apps_mcp_server_config(
-        "https://docs.example",
-        /*apps_mcp_product_sku*/ None,
-        /*originator*/ None,
-    );
-    config.environment_id = "remote".to_string();
-    config.default_tools_approval_mode = Some(AppToolApproval::Prompt);
-    config.tools.insert(
-        "search".to_string(),
-        McpServerToolConfig {
-            approval_mode: Some(AppToolApproval::Approve),
-            ..Default::default()
-        },
-    );
-    let metadata = McpServerMetadata::from(&EffectiveMcpServer::from_host_config(config));
-
-    assert_eq!(metadata.environment_id, "remote");
-    assert_eq!(metadata.tool_approval_mode("read"), AppToolApproval::Prompt);
-    assert_eq!(
-        metadata.tool_approval_mode("search"),
-        AppToolApproval::Approve
-    );
 }
 
 #[test]
@@ -4658,7 +4015,6 @@ async fn executor_owned_chatgpt_mcp_accepts_only_safe_explicit_authorization() -
                 client_mcp_extensions: ClientMcpExtensions::default(),
                 auth: Some(hosted_auth.clone()),
                 auth_manager: None,
-                elicitation_reviewer: None,
                 elicitation_lifecycle: None,
             },
             ElicitationRequestRouter::default(),
@@ -4713,7 +4069,6 @@ async fn no_local_runtime_fails_local_stdio_but_keeps_local_http_server() {
                 disabled_reason: None,
                 startup_timeout_sec: None,
                 tool_timeout_sec: None,
-                default_tools_approval_mode: None,
                 enabled_tools: None,
                 disabled_tools: None,
                 scopes: None,
@@ -4743,7 +4098,6 @@ async fn no_local_runtime_fails_local_stdio_but_keeps_local_http_server() {
                 disabled_reason: None,
                 startup_timeout_sec: None,
                 tool_timeout_sec: None,
-                default_tools_approval_mode: None,
                 enabled_tools: None,
                 disabled_tools: None,
                 scopes: None,
@@ -4781,7 +4135,6 @@ async fn no_local_runtime_fails_local_stdio_but_keeps_local_http_server() {
             client_mcp_extensions: ClientMcpExtensions::default(),
             auth: None,
             auth_manager: None,
-            elicitation_reviewer: None,
             elicitation_lifecycle: None,
         },
         ElicitationRequestRouter::default(),
@@ -4856,7 +4209,6 @@ fn mcp_init_error_display_prompts_for_github_pat() {
         disabled_reason: None,
         startup_timeout_sec: None,
         tool_timeout_sec: None,
-        default_tools_approval_mode: None,
         enabled_tools: None,
         disabled_tools: None,
         scopes: None,
@@ -5018,7 +4370,6 @@ fn mcp_init_error_display_reports_generic_errors() {
         disabled_reason: None,
         startup_timeout_sec: None,
         tool_timeout_sec: None,
-        default_tools_approval_mode: None,
         enabled_tools: None,
         disabled_tools: None,
         scopes: None,
@@ -5099,7 +4450,6 @@ fn reusable_server_config(url: &str) -> McpServerConfig {
         disabled_reason: None,
         startup_timeout_sec: None,
         tool_timeout_sec: None,
-        default_tools_approval_mode: None,
         enabled_tools: None,
         disabled_tools: None,
         scopes: None,
@@ -5146,13 +4496,7 @@ async fn manager_with_reusable_ready_server(
     runtime_context: &McpRuntimeContext,
     tools: Vec<ToolInfo>,
 ) -> McpConnectionSet {
-    let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
-    let permission_profile = Constrained::allow_any(PermissionProfile::default());
-    let mut manager = McpConnectionSet::new_uninitialized(
-        &approval_policy,
-        &permission_profile,
-        /*prefix_mcp_tool_names*/ true,
-    );
+    let mut manager = McpConnectionSet::new_uninitialized(/*prefix_mcp_tool_names*/ true);
     let server = EffectiveMcpServer::from_host_config(config.clone());
     manager.servers.insert(
         "docs".to_string(),
@@ -5225,7 +4569,6 @@ async fn reconcile_reusable_server_with_mcp_config(
             client_mcp_extensions: ClientMcpExtensions::default(),
             auth: None,
             auth_manager: None,
-            elicitation_reviewer: None,
             elicitation_lifecycle: None,
         },
         ElicitationRequestRouter::default(),
@@ -5567,18 +4910,11 @@ async fn reconciliation_reuses_connection_without_relisting_regular_tools() -> a
         tool_catalog: Arc::new(ClientToolCatalog::new(initial_tools, /*updates*/ None)),
         tool_timeout: None,
         server_instructions: initialize.instructions,
-        server_supports_sandbox_state_meta_capability: false,
         codex_apps_tools_cache_context: None,
     };
     let runtime_context = reusable_server_runtime_context();
     let config = reusable_server_config("http://127.0.0.1:1");
-    let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
-    let permission_profile = Constrained::allow_any(PermissionProfile::default());
-    let mut previous = McpConnectionSet::new_uninitialized(
-        &approval_policy,
-        &permission_profile,
-        /*prefix_mcp_tool_names*/ true,
-    );
+    let mut previous = McpConnectionSet::new_uninitialized(/*prefix_mcp_tool_names*/ true);
     let server = EffectiveMcpServer::from_host_config(config.clone());
     previous.servers.insert(
         "docs".to_string(),
@@ -6057,7 +5393,6 @@ async fn reconciliation_replaces_connection_when_protocol_mode_changes() {
             client_mcp_extensions: ClientMcpExtensions::default(),
             auth: None,
             auth_manager: None,
-            elicitation_reviewer: None,
             elicitation_lifecycle: None,
         },
         ElicitationRequestRouter::default(),
@@ -6115,7 +5450,6 @@ async fn reconciliation_reuses_legacy_stdio_server_when_modern_protocol_is_enabl
             client_mcp_extensions: ClientMcpExtensions::default(),
             auth: None,
             auth_manager: None,
-            elicitation_reviewer: None,
             elicitation_lifecycle: None,
         },
         ElicitationRequestRouter::default(),
@@ -6126,7 +5460,7 @@ async fn reconciliation_reuses_legacy_stdio_server_when_modern_protocol_is_enabl
 }
 
 #[tokio::test]
-async fn reconciliation_updates_elicitation_policy_without_restarting_ready_server() {
+async fn reconciliation_keeps_retained_elicitation_senders_without_restarting_ready_server() {
     let runtime_context = reusable_server_runtime_context();
     let config = reusable_server_config("http://127.0.0.1:1");
     let mut previous = manager_with_reusable_ready_server(
@@ -6136,18 +5470,12 @@ async fn reconciliation_updates_elicitation_policy_without_restarting_ready_serv
     )
     .await;
     let router = ElicitationRequestRouter::default();
-    previous.elicitation_requests = ElicitationRequestManager::new(
-        test_elicitation_config("docs", AskForApproval::Never, PermissionProfile::Disabled),
-        /*reviewer*/ None,
-        /*lifecycle*/ None,
-        router.clone(),
-    );
+    previous.elicitation_requests =
+        ElicitationRequestManager::new(/*lifecycle*/ None, router.clone());
     let (tx_event, events) = async_channel::unbounded();
-    let sender = previous.elicitation_requests.make_sender(
-        "docs".to_string(),
-        Some(tx_event),
-        &ClientMcpExtensions::default(),
-    );
+    let sender = previous
+        .elicitation_requests
+        .make_sender("docs".to_string(), Some(tx_event));
     let elicitation =
         codex_rmcp_client::Elicitation::Mcp(ElicitRequestParams::FormElicitationParams {
             meta: None,
@@ -6160,67 +5488,37 @@ async fn reconciliation_updates_elicitation_policy_without_restarting_ready_serv
         meta: None,
     };
 
-    for approval_policy in [
-        AskForApproval::OnRequest,
-        AskForApproval::Never,
-        AskForApproval::OnRequest,
-    ] {
-        let mcp_config =
-            test_elicitation_config("docs", approval_policy, PermissionProfile::default());
+    for _ in 0..2 {
         let reconciled = reconcile_reusable_server_with_mcp_config(
             &previous,
             "docs",
             config.clone(),
             runtime_context.clone(),
-            mcp_config.as_ref().clone(),
+            crate::mcp::tests::test_mcp_config(std::path::PathBuf::new()),
         )
         .await;
         assert!(previous.shares_test_connection_with(&reconciled, "docs"));
-        {
-            let authority = reconciled
-                .elicitation_requests
-                .authority
-                .lock()
-                .expect("elicitation authority lock");
-            let config = &authority.as_ref().expect("elicitation authority").config;
-            assert_eq!(config.approval_policy.value(), approval_policy);
-            assert_eq!(config.permission_profile, PermissionProfile::default());
-        }
 
-        // A sender captured before reconciliation must observe each policy update.
+        // A sender captured before reconciliation keeps surfacing requests to the client.
         let mut pending = sender(NumberOrString::Number(7), elicitation.clone());
-        if approval_policy == AskForApproval::OnRequest {
-            assert!(futures::poll!(pending.as_mut()).is_pending());
-            let EventMsg::ElicitationRequest(request) =
-                events.try_recv().expect("user-input event").msg
-            else {
-                panic!("expected MCP elicitation");
-            };
-            let codex_protocol::mcp::RequestId::String(request_id) = request.id else {
-                panic!("expected Codex-owned string request ID");
-            };
-            router
-                .resolve(
-                    "docs".to_string(),
-                    NumberOrString::String(request_id.into()),
-                    response.clone(),
-                )
-                .await
-                .expect("user response should resolve the retained sender");
-            assert_eq!(pending.await.expect("elicitation should resolve"), response);
-        } else {
-            assert_eq!(
-                pending
-                    .now_or_never()
-                    .expect("a policy denial must not wait for user input")
-                    .expect("elicitation should receive a response"),
-                ElicitationResponse {
-                    action: ElicitationAction::Decline,
-                    content: None,
-                    meta: None,
-                }
-            );
-        }
+        assert!(futures::poll!(pending.as_mut()).is_pending());
+        let EventMsg::ElicitationRequest(request) =
+            events.try_recv().expect("user-input event").msg
+        else {
+            panic!("expected MCP elicitation");
+        };
+        let codex_protocol::mcp::RequestId::String(request_id) = request.id else {
+            panic!("expected Codex-owned string request ID");
+        };
+        router
+            .resolve(
+                "docs".to_string(),
+                NumberOrString::String(request_id.into()),
+                response.clone(),
+            )
+            .await
+            .expect("user response should resolve the retained sender");
+        assert_eq!(pending.await.expect("elicitation should resolve"), response);
         assert!(events.is_empty());
         previous = reconciled;
     }
@@ -6556,8 +5854,7 @@ async fn connection_identity_distinguishes_agent_account_runtime_and_task() -> a
 #[tokio::test]
 async fn view_only_changes_reuse_connection_and_preserve_the_old_step() {
     let runtime_context = reusable_server_runtime_context();
-    let mut old_config = reusable_server_config("http://127.0.0.1:1");
-    old_config.default_tools_approval_mode = Some(AppToolApproval::Prompt);
+    let old_config = reusable_server_config("http://127.0.0.1:1");
     let previous = Arc::new(
         manager_with_reusable_ready_server(
             &old_config,
@@ -6570,19 +5867,18 @@ async fn view_only_changes_reuse_connection_and_preserve_the_old_step() {
         .await,
     );
     let old_step = capture_binding(&previous).await;
-    let old_call = old_step
+    old_step
         .prepare_call("docs", "search")
         .expect("old step should prepare search");
 
     let mut new_config = old_config;
     new_config.enabled_tools = Some(vec!["search".to_string()]);
-    new_config.default_tools_approval_mode = Some(AppToolApproval::Approve);
     let reconciled =
         Arc::new(reconcile_reusable_server(previous.as_ref(), new_config, runtime_context).await);
     assert!(previous.shares_test_connection_with(&reconciled, "docs"));
 
     let new_step = capture_binding(&reconciled).await;
-    let new_call = new_step
+    new_step
         .prepare_call("docs", "search")
         .expect("new step should prepare search");
     drop(previous);
@@ -6595,7 +5891,6 @@ async fn view_only_changes_reuse_connection_and_preserve_the_old_step() {
             .collect::<HashSet<_>>(),
         HashSet::from(["search".to_string(), "write".to_string()])
     );
-    assert_eq!(old_call.tool_approval_mode(), AppToolApproval::Prompt);
     assert_eq!(
         new_step
             .tools()
@@ -6604,5 +5899,4 @@ async fn view_only_changes_reuse_connection_and_preserve_the_old_step() {
             .collect::<Vec<_>>(),
         vec!["search".to_string()]
     );
-    assert_eq!(new_call.tool_approval_mode(), AppToolApproval::Approve);
 }

@@ -7,7 +7,6 @@ use std::sync::Arc;
 
 use codex_core::TurnInputRequest;
 use codex_core::shell::default_user_shell;
-use codex_features::Feature;
 use codex_models_manager::bundled_models_response;
 use codex_models_manager::collaboration_mode_presets::builtin_collaboration_mode_presets;
 use codex_models_manager::manager::StaticModelsManager;
@@ -17,11 +16,8 @@ use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::Settings;
 use codex_protocol::config_types::WebSearchMode;
-use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::openai_models::ReasoningEffort;
-use codex_protocol::permissions::NetworkSandboxPolicy;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::ENVIRONMENT_CONTEXT_OPEN_TAG;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ThreadSettingsOverrides;
@@ -37,7 +33,6 @@ use core_test_support::responses::strip_response_item_ids_from_json;
 use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::test_codex;
-use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
@@ -193,14 +188,7 @@ async fn prompt_tools_are_consistent_across_requests(
                     Some("## `update_plan`\nNever deploy without explicit approval.\n".to_string());
             }
             // Keep tool expectations stable when the default web_search mode changes.
-            config
-                .web_search_mode
-                .set(WebSearchMode::Cached)
-                .expect("test web_search_mode should satisfy constraints");
-            config
-                .features
-                .enable(Feature::CollaborationModes)
-                .expect("test config should allow feature update");
+            config.web_search_mode = WebSearchMode::Cached;
         })
         .build(&server)
         .await?;
@@ -333,10 +321,6 @@ async fn gpt_5_tools_without_apply_patch_append_apply_patch_instructions() -> an
     } = test_codex()
         .with_pre_build_hook(write_global_instructions)
         .with_config(|config| {
-            config
-                .features
-                .enable(Feature::CollaborationModes)
-                .expect("test config should allow feature update");
             config.model = Some("gpt-5.2".to_string());
         })
         .build(&server)
@@ -399,12 +383,7 @@ async fn prefixes_context_and_instructions_once_and_consistently_across_requests
         ..
     } = test_codex()
         .with_pre_build_hook(write_global_instructions)
-        .with_config(|config| {
-            config
-                .features
-                .enable(Feature::CollaborationModes)
-                .expect("test config should allow feature update");
-        })
+        .with_config(|_config| {})
         .build(&server)
         .await?;
 
@@ -487,18 +466,10 @@ async fn overrides_turn_context_but_keeps_cached_prefix_and_key_constant() -> an
     .await;
 
     let TestCodex {
-        home: _home,
-        codex,
-        config,
-        ..
+        home: _home, codex, ..
     } = test_codex()
         .with_pre_build_hook(write_global_instructions)
-        .with_config(|config| {
-            config
-                .features
-                .enable(Feature::CollaborationModes)
-                .expect("test config should allow feature update");
-        })
+        .with_config(|_config| {})
         .build(&server)
         .await?;
 
@@ -511,22 +482,9 @@ async fn overrides_turn_context_but_keeps_cached_prefix_and_key_constant() -> an
         .await?;
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
-    let writable = TempDir::new().unwrap();
-    let permission_profile = PermissionProfile::workspace_write_with(
-        &[writable.abs()],
-        NetworkSandboxPolicy::Enabled,
-        /*exclude_tmpdir_env_var*/ true,
-        /*exclude_slash_tmp*/ true,
-    );
-    let sandbox_policy = permission_profile
-        .to_legacy_sandbox_policy(config.cwd.as_path())
-        .expect("workspace profile should have legacy projection");
     core_test_support::submit_thread_settings(
         &codex,
         ThreadSettingsOverrides {
-            approval_policy: Some(AskForApproval::Never),
-            sandbox_policy: Some(sandbox_policy),
-            permission_profile: Some(permission_profile),
             effort: Some(Some(ReasoningEffort::High)),
             summary: Some(ReasoningSummary::Detailed),
             ..Default::default()
@@ -560,36 +518,16 @@ async fn overrides_turn_context_but_keeps_cached_prefix_and_key_constant() -> an
         "role": "user",
         "content": [ { "type": "input_text", "text": "hello 2" } ]
     });
-    let expected_permissions_msg = body1["input"][0].clone();
     let body1_input = body1["input"].as_array().expect("input array");
-    // After overriding the thread settings, emit one updated permissions message.
-    let expected_permissions_msg_2 = body2["input"][body1_input.len()].clone();
-    assert_ne!(
-        expected_permissions_msg_2, expected_permissions_msg,
-        "expected updated permissions message after override"
-    );
-    let expected_env_msg_2 = body2["input"][body1_input.len() + 1].clone();
-    assert_eq!(expected_env_msg_2["role"].as_str(), Some("user"));
-    let env_text = expected_env_msg_2["content"][0]["text"]
-        .as_str()
-        .expect("environment context text");
-    assert_env_context_fragment(env_text);
-    assert!(
-        env_text.contains("<permission_profile type=\"managed\">")
-            && env_text.contains("<file_system type=\"restricted\">")
-            && env_text.contains(&format!(
-                "<entry access=\"write\"><path>{}</path></entry>",
-                writable.abs().display()
-            )),
-        "expected workspace-write filesystem profile in environment context: {env_text}"
-    );
-    let mut expected_body2 = body1_input.to_vec();
-    expected_body2.push(expected_permissions_msg_2);
-    expected_body2.push(expected_env_msg_2);
-    expected_body2.push(expected_user_message_2);
+    let body2_input = body2["input"].as_array().expect("input array");
+    assert!(body2_input.len() > body1_input.len());
     assert_eq_without_metadata_or_item_ids(
-        body2["input"].clone(),
-        serde_json::Value::Array(expected_body2),
+        serde_json::Value::Array(body2_input[..body1_input.len()].to_vec()),
+        serde_json::Value::Array(body1_input.to_vec()),
+    );
+    assert_eq_without_metadata_or_item_ids(
+        body2_input.last().expect("second turn input").clone(),
+        expected_user_message_2,
     );
 
     Ok(())
@@ -620,7 +558,6 @@ async fn override_before_first_turn_emits_environment_context() -> anyhow::Resul
     core_test_support::submit_thread_settings(
         &codex,
         ThreadSettingsOverrides {
-            approval_policy: Some(AskForApproval::Never),
             model: Some("gpt-5.4".to_string()),
             effort: Some(Some(ReasoningEffort::Low)),
             collaboration_mode: Some(collaboration_mode),
@@ -706,22 +643,6 @@ async fn override_before_first_turn_emits_environment_context() -> anyhow::Resul
         "environment context should appear at least once, found {env_count}"
     );
 
-    let permissions_texts: Vec<&str> = input
-        .iter()
-        .filter(|msg| msg["role"].as_str() == Some("developer"))
-        .filter_map(|msg| msg["content"].as_array())
-        .flatten()
-        .filter_map(|item| item["text"].as_str())
-        .collect();
-    assert!(
-        permissions_texts.iter().any(|text| {
-            let lower = text.to_ascii_lowercase();
-            (lower.contains("approval policy") || lower.contains("approval_policy"))
-                && lower.contains("never")
-        }),
-        "permissions message should reflect overridden approval policy: {permissions_texts:?}"
-    );
-
     let user_texts: Vec<&str> = input
         .iter()
         .filter_map(|msg| {
@@ -763,12 +684,7 @@ async fn per_turn_overrides_keep_cached_prefix_and_key_constant() -> anyhow::Res
         home: _home, codex, ..
     } = test_codex()
         .with_pre_build_hook(write_global_instructions)
-        .with_config(|config| {
-            config
-                .features
-                .enable(Feature::CollaborationModes)
-                .expect("test config should allow feature update");
-        })
+        .with_config(|_config| {})
         .build(&server)
         .await?;
 
@@ -783,15 +699,6 @@ async fn per_turn_overrides_keep_cached_prefix_and_key_constant() -> anyhow::Res
 
     // Second turn using per-turn thread-settings overrides.
     let new_cwd = TempDir::new().unwrap();
-    let writable = TempDir::new().unwrap();
-    let permission_profile = PermissionProfile::workspace_write_with(
-        &[writable.abs()],
-        NetworkSandboxPolicy::Enabled,
-        /*exclude_tmpdir_env_var*/ true,
-        /*exclude_slash_tmp*/ true,
-    );
-    let (sandbox_policy, permission_profile) =
-        turn_permission_fields(permission_profile, new_cwd.path());
     codex
         .start_or_steer_turn(
             TurnInputRequest::user_input(vec![UserInput::Text {
@@ -800,9 +707,6 @@ async fn per_turn_overrides_keep_cached_prefix_and_key_constant() -> anyhow::Res
             }])
             .with_thread_settings(ThreadSettingsOverrides {
                 environments: Some(local_requests(new_cwd.abs())),
-                approval_policy: Some(AskForApproval::Never),
-                sandbox_policy: Some(sandbox_policy),
-                permission_profile,
                 model: Some("o3".to_string()),
                 effort: Some(Some(ReasoningEffort::High)),
                 summary: Some(ReasoningSummary::Detailed),
@@ -830,7 +734,6 @@ async fn per_turn_overrides_keep_cached_prefix_and_key_constant() -> anyhow::Res
         "role": "user",
         "content": [ { "type": "input_text", "text": "hello 2" } ]
     });
-    let expected_permissions_msg = body1["input"][0].clone();
     let body1_input = body1["input"].as_array().expect("input array");
     let expected_settings_update_msg = body2["input"][body1_input.len()].clone();
     assert_eq!(
@@ -843,16 +746,7 @@ async fn per_turn_overrides_keep_cached_prefix_and_key_constant() -> anyhow::Res
         }),
         "expected model switch section after model override: {expected_settings_update_msg:?}"
     );
-    let expected_permissions_update_msg = body2["input"][body1_input.len() + 1].clone();
-    assert_ne!(
-        expected_permissions_update_msg, expected_permissions_msg,
-        "expected updated permissions message after per-turn override"
-    );
-    assert_eq!(
-        expected_permissions_update_msg["role"].as_str(),
-        Some("developer")
-    );
-    let expected_env_msg_2 = body2["input"][body1_input.len() + 2].clone();
+    let expected_env_msg_2 = body2["input"][body1_input.len() + 1].clone();
     assert_eq!(expected_env_msg_2["role"].as_str(), Some("user"));
     let env_text = expected_env_msg_2["content"][0]["text"]
         .as_str()
@@ -861,7 +755,6 @@ async fn per_turn_overrides_keep_cached_prefix_and_key_constant() -> anyhow::Res
     assert_default_env_context(env_text, &expected_cwd);
     let mut expected_body2 = body1_input.to_vec();
     expected_body2.push(expected_settings_update_msg);
-    expected_body2.push(expected_permissions_update_msg);
     expected_body2.push(expected_env_msg_2);
     expected_body2.push(expected_user_message_2);
     assert_eq_without_metadata_or_item_ids(
@@ -896,18 +789,11 @@ async fn send_user_turn_with_no_changes_does_not_send_environment_context() -> a
         ..
     } = test_codex()
         .with_pre_build_hook(write_global_instructions)
-        .with_config(|config| {
-            config
-                .features
-                .enable(Feature::CollaborationModes)
-                .expect("test config should allow feature update");
-        })
+        .with_config(|_config| {})
         .build(&server)
         .await?;
 
     let default_cwd = config.cwd.clone();
-    let default_approval_policy = config.permissions.approval_policy.value();
-    let default_sandbox_policy = &config.legacy_sandbox_policy();
     let default_model = session_configured.model;
     let default_effort = config.model_reasoning_effort.clone();
     let default_summary = config.model_reasoning_summary;
@@ -920,8 +806,6 @@ async fn send_user_turn_with_no_changes_does_not_send_environment_context() -> a
             }])
             .with_thread_settings(ThreadSettingsOverrides {
                 environments: Some(local_requests(default_cwd.clone())),
-                approval_policy: Some(default_approval_policy),
-                sandbox_policy: Some(default_sandbox_policy.clone()),
                 summary: Some(default_summary.unwrap_or(ReasoningSummary::Auto)),
                 collaboration_mode: Some(CollaborationMode {
                     mode: ModeKind::Default,
@@ -945,8 +829,6 @@ async fn send_user_turn_with_no_changes_does_not_send_environment_context() -> a
             }])
             .with_thread_settings(ThreadSettingsOverrides {
                 environments: Some(local_requests(default_cwd.clone())),
-                approval_policy: Some(default_approval_policy),
-                sandbox_policy: Some(default_sandbox_policy.clone()),
                 summary: Some(default_summary.unwrap_or(ReasoningSummary::Auto)),
                 collaboration_mode: Some(CollaborationMode {
                     mode: ModeKind::Default,
@@ -1033,18 +915,11 @@ async fn send_user_turn_with_changes_sends_environment_context() -> anyhow::Resu
         ..
     } = test_codex()
         .with_pre_build_hook(write_global_instructions)
-        .with_config(|config| {
-            config
-                .features
-                .enable(Feature::CollaborationModes)
-                .expect("test config should allow feature update");
-        })
+        .with_config(|_config| {})
         .build(&server)
         .await?;
 
     let default_cwd = config.cwd.clone();
-    let default_approval_policy = config.permissions.approval_policy.value();
-    let default_sandbox_policy = &config.legacy_sandbox_policy();
     let default_model = session_configured.model;
     let default_effort = config.model_reasoning_effort.clone();
     let default_summary = config.model_reasoning_summary;
@@ -1057,8 +932,6 @@ async fn send_user_turn_with_changes_sends_environment_context() -> anyhow::Resu
             }])
             .with_thread_settings(ThreadSettingsOverrides {
                 environments: Some(local_requests(default_cwd.clone())),
-                approval_policy: Some(default_approval_policy),
-                sandbox_policy: Some(default_sandbox_policy.clone()),
                 summary: Some(default_summary.unwrap_or(ReasoningSummary::Auto)),
                 collaboration_mode: Some(CollaborationMode {
                     mode: ModeKind::Default,
@@ -1074,8 +947,6 @@ async fn send_user_turn_with_changes_sends_environment_context() -> anyhow::Resu
         .await?;
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
-    let (sandbox_policy, permission_profile) =
-        turn_permission_fields(PermissionProfile::Disabled, default_cwd.as_path());
     codex
         .start_or_steer_turn(
             TurnInputRequest::user_input(vec![UserInput::Text {
@@ -1084,9 +955,6 @@ async fn send_user_turn_with_changes_sends_environment_context() -> anyhow::Resu
             }])
             .with_thread_settings(ThreadSettingsOverrides {
                 environments: Some(local_requests(default_cwd.clone())),
-                approval_policy: Some(AskForApproval::Never),
-                sandbox_policy: Some(sandbox_policy),
-                permission_profile,
                 summary: Some(ReasoningSummary::Detailed),
                 collaboration_mode: Some(CollaborationMode {
                     mode: ModeKind::Default,

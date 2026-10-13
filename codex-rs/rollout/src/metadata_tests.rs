@@ -320,7 +320,6 @@ fn builder_from_items_falls_back_to_filename() {
         message: "noop".to_string(),
         replacement_history: None,
         retained_context: None,
-        guardian_history: None,
         mcp_resource_origins: None,
         window_number: None,
         first_window_id: None,

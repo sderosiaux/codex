@@ -1,7 +1,6 @@
 use anyhow::Result;
 use anyhow::anyhow;
 use codex_config::types::McpServerEnvVar;
-use codex_network_proxy::CUSTOM_CA_ENV_KEYS;
 use codex_protocol::shell_environment::is_non_inheritable_env_var;
 use http::HeaderMap;
 use http::HeaderName;
@@ -10,6 +9,23 @@ use http::header::USER_AGENT;
 use std::collections::HashMap;
 use std::env;
 use std::ffi::OsString;
+
+/// CA bundle variables forwarded to stdio MCP servers as absolute paths.
+///
+/// Best-effort compatibility set for common child toolchains that accept a CA bundle path.
+pub const CUSTOM_CA_ENV_KEYS: [&str; 11] = [
+    "CODEX_CA_CERTIFICATE",
+    "SSL_CERT_FILE",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+    "NODE_EXTRA_CA_CERTS",
+    "GIT_SSL_CAINFO",
+    "CARGO_HTTP_CAINFO",
+    "PIP_CERT",
+    "BUNDLE_SSL_CA_CERT",
+    "npm_config_cafile",
+    "NPM_CONFIG_CAFILE",
+];
 
 pub(crate) const MCP_USER_AGENT: &str = concat!("codex-mcp-client/", env!("CARGO_PKG_VERSION"));
 

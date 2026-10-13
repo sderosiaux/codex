@@ -11,25 +11,18 @@ use codex_features::Feature;
 use codex_image_generation_extension::install as install_image_generation_extension;
 use codex_login::CodexAuth;
 use codex_login::auth::BedrockApiKeyAuth;
-use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::models::ImageDetail;
 use codex_protocol::models::ImageReference;
 use codex_protocol::openai_models::InputModality;
-use codex_protocol::openai_models::ToolMode;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_protocol::user_input::UserInput;
 use codex_web_search_extension::install as install_web_search_extension;
-use core_test_support::apps_test_server::AppsTestServer;
-use core_test_support::apps_test_server::SEARCH_CALENDAR_CREATE_TOOL;
-use core_test_support::apps_test_server::SEARCH_CALENDAR_NAMESPACE;
-use core_test_support::apps_test_server::apps_enabled_builder;
 use core_test_support::responses;
 use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
-use core_test_support::wait_for_mcp_server;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 
@@ -46,13 +39,8 @@ fn responses_extensions(auth: &CodexAuth) -> Arc<ExtensionRegistry<Config>> {
 }
 
 fn configure_responses_tools(config: &mut Config) {
-    assert!(config.web_search_mode.set(WebSearchMode::Live).is_ok());
-    assert!(
-        config
-            .features
-            .disable(Feature::StandaloneWebSearch)
-            .is_ok()
-    );
+    config.web_search_mode = WebSearchMode::Live;
+    config.features.disable(Feature::StandaloneWebSearch);
 }
 
 fn configure_image_capable_model(model_info: &mut codex_protocol::openai_models::ModelInfo) {
@@ -87,194 +75,6 @@ fn additional_tools(body: &Value) -> Result<&[Value]> {
         .as_array()
         .map(Vec::as_slice)
         .context("additional_tools tools should be an array")
-}
-
-#[test_case::test_case(false; "standard")]
-#[test_case::test_case(true; "responses_lite")]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn base_instructions_use_input_items(responses_lite: bool) -> Result<()> {
-    skip_if_no_network!(Ok(()));
-
-    let server = responses::start_mock_server().await;
-    let response_mock = responses::mount_sse_once(
-        &server,
-        responses::sse(vec![
-            responses::ev_response_created("resp-1"),
-            responses::ev_completed("resp-1"),
-        ]),
-    )
-    .await;
-
-    let builder = || {
-        test_codex()
-            .with_model_info_override("gpt-5.4", move |model_info| {
-                model_info.use_responses_lite = responses_lite;
-                model_info.tool_mode = Some(ToolMode::CodeMode);
-            })
-            .with_config(|config| {
-                config.base_instructions = Some("test instructions".to_string());
-                config.code_mode.disable_in_process_fallback = true;
-            })
-    };
-    let test = builder().build(&server).await?;
-
-    test.submit_turn("hello").await?;
-
-    let body = response_mock.single_request().body_json();
-    assert!(body.get("instructions").is_none());
-
-    let input = body["input"]
-        .as_array()
-        .context("Responses request input should be an array")?;
-    let instructions_index = usize::from(responses_lite);
-    let instructions = &input[instructions_index];
-    assert!(
-        instructions["id"]
-            .as_str()
-            .is_some_and(|id| id.starts_with("msg_"))
-    );
-    assert_eq!(
-        instructions,
-        &serde_json::json!({
-            "id": instructions["id"],
-            "type": "message",
-            "role": "developer",
-            "content": [{
-                "type": "input_text",
-                "text": "test instructions",
-            }],
-            "internal_chat_message_metadata_passthrough": {
-                "content_item_kinds": ["model.base_instructions"],
-            },
-        })
-    );
-
-    let tools = if responses_lite {
-        assert!(body.get("tools").is_none());
-        assert_eq!(input[0]["type"], "additional_tools");
-        assert_eq!(input[0]["role"], "developer");
-        assert!(
-            input[0]["id"]
-                .as_str()
-                .is_some_and(|id| id.starts_with("at_"))
-        );
-        additional_tools(&body)?
-    } else {
-        body["tools"]
-            .as_array()
-            .context("standard Responses tools should remain at the top level")?
-    };
-    if responses_lite {
-        let functions_namespaces = tools
-            .iter()
-            .filter(|tool| tool["type"] == "namespace" && tool["name"] == "functions")
-            .collect::<Vec<_>>();
-        assert_eq!(functions_namespaces.len(), 1);
-        assert_eq!(functions_namespaces[0]["description"], "");
-        assert!(has_namespaced_tool(tools, "functions", "wait"));
-        assert!(has_namespaced_tool(tools, "functions", "exec"));
-        assert!(
-            tools
-                .iter()
-                .all(|tool| { !matches!(tool["type"].as_str(), Some("function" | "custom")) })
-        );
-    } else {
-        assert!(tools.iter().any(|tool| tool["name"] == "exec"));
-        assert!(tools.iter().any(|tool| tool["name"] == "wait"));
-    }
-    let client_metadata = body["client_metadata"]
-        .as_object()
-        .context("Responses request should include client metadata")?;
-    let turn_metadata: Value = serde_json::from_str(
-        client_metadata["x-codex-turn-metadata"]
-            .as_str()
-            .context("Responses request should include turn metadata")?,
-    )?;
-
-    assert!(turn_metadata.get("tool_namespaces_info").is_none());
-
-    let followup = responses::mount_sse_once(
-        &server,
-        responses::sse(vec![responses::ev_completed("resp-2")]),
-    )
-    .await;
-    let resumed = builder().restart(&server, &test).await?;
-    resumed.submit_turn("continue").await?;
-    assert_eq!(
-        &followup.single_request().input()[..=instructions_index],
-        &input[..=instructions_index]
-    );
-    assert_eq!(
-        followup.single_request().body_json()["tools"],
-        body["tools"]
-    );
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn responses_lite_includes_tool_namespaces_info_when_enabled() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-
-    let server = responses::start_mock_server().await;
-    let apps_server = AppsTestServer::mount(&server).await?;
-    let response_mock = responses::mount_sse_once(
-        &server,
-        responses::sse(vec![
-            responses::ev_response_created("resp-1"),
-            responses::ev_completed("resp-1"),
-        ]),
-    )
-    .await;
-
-    let mut builder = apps_enabled_builder(apps_server.chatgpt_base_url)
-        .with_model_info_override("gpt-5.4", |model_info| {
-            model_info.use_responses_lite = true;
-            model_info.tool_mode = Some(ToolMode::CodeMode);
-            model_info.supports_search_tool = false;
-        })
-        .with_config(|config| {
-            config.code_mode.disable_in_process_fallback = true;
-            config.tool_registry.turn_metadata_includes_tool_info = true;
-        });
-    let test = builder.build_with_auto_env(&server).await?;
-    wait_for_mcp_server(&test.codex, CODEX_APPS_MCP_SERVER_NAME).await?;
-
-    test.submit_turn("hello").await?;
-
-    let request = response_mock.single_request();
-    let body = request.body_json();
-    let turn_metadata: Value = serde_json::from_str(
-        body["client_metadata"]["x-codex-turn-metadata"]
-            .as_str()
-            .context("Responses request should include turn metadata")?,
-    )?;
-    let calendar = &turn_metadata["tool_namespaces_info"][SEARCH_CALENDAR_NAMESPACE];
-
-    assert_eq!(calendar["name"], SEARCH_CALENDAR_NAMESPACE);
-    assert_eq!(
-        calendar["functions"][SEARCH_CALENDAR_CREATE_TOOL],
-        serde_json::json!({
-            "name": SEARCH_CALENDAR_CREATE_TOOL,
-            "direct": true,
-            "deferred": false,
-            "code_mode_name": "mcp__codex_apps__calendar_create_event",
-            "source": {
-                "kind": "mcp",
-                "server_name": "codex_apps",
-            },
-        })
-    );
-
-    let compatibility_metadata: Value = serde_json::from_str(
-        request
-            .header("x-codex-turn-metadata")
-            .as_deref()
-            .context("Responses request should include compatibility turn metadata")?,
-    )?;
-    assert!(compatibility_metadata.get("tool_namespaces_info").is_none());
-
-    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -545,7 +345,7 @@ async fn assert_responses_lite_custom_provider_web_search(
         })
         .with_config(move |config| {
             configure_responses_tools(config);
-            assert!(config.web_search_mode.set(web_search_mode).is_ok());
+            config.web_search_mode = web_search_mode;
             config.model_provider.name = "custom-responses".to_string();
             config.model_provider.requires_openai_auth = false;
             config.model_provider.http_headers = None;

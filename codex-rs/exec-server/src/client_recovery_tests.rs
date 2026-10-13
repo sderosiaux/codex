@@ -171,7 +171,6 @@ fn recovery_handles_dense_tail_output_and_newer_notification() {
                 exit_code: Some(17),
                 closed: false,
                 failure: None,
-                sandbox_denied: false,
             })
             .expect("dense retained output should recover")
     );
@@ -206,7 +205,6 @@ fn recovery_rejects_output_at_closed_sequence() {
             exit_code: None,
             closed: true,
             failure: None,
-            sandbox_denied: false,
         })
         .expect_err("output should not occupy the closed sequence");
 
@@ -218,14 +216,13 @@ fn recovery_rejects_output_at_closed_sequence() {
 }
 
 #[tokio::test]
-async fn recovery_adds_sandbox_denial_to_pending_exit_event() {
+async fn recovery_publishes_pending_exit_event_after_recovered_output() {
     let state = SessionState::new(/*recoverable*/ true);
     assert!(
         !state
             .publish_ordered_event(ExecProcessEvent::Exited {
                 seq: 2,
                 exit_code: 1,
-                sandbox_denied: None,
             })
             .expect("pending exit should fit within reorder limits")
     );
@@ -235,14 +232,13 @@ async fn recovery_adds_sandbox_denial_to_pending_exit_event() {
             chunks: vec![ProcessOutputChunk {
                 seq: 1,
                 stream: ExecOutputStream::Stderr,
-                chunk: b"sandbox denied".to_vec().into(),
+                chunk: b"stderr output".to_vec().into(),
             }],
             next_seq: 3,
             exited: true,
             exit_code: Some(1),
             closed: false,
             failure: None,
-            sandbox_denied: true,
         })
         .expect("recovery should publish the pending exit");
 
@@ -256,7 +252,6 @@ async fn recovery_adds_sandbox_denial_to_pending_exit_event() {
         Ok(ExecProcessEvent::Exited {
             seq: 2,
             exit_code: 1,
-            sandbox_denied: Some(true),
         })
     );
 }

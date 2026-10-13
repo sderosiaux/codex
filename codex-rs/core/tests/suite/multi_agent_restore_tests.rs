@@ -9,7 +9,6 @@ use super::request_has_input_type;
 use super::request_has_model;
 use anyhow::Context;
 use anyhow::Result;
-use codex_features::Feature;
 use codex_history::RolloutItem;
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErrorDetails;
@@ -180,10 +179,6 @@ async fn cold_root_resume_overlaps_child_reads_and_applies_identities_in_graph_o
     let initial = test_codex()
         .with_config(move |config| {
             configure_multi_agent_v2_with_role(config, &initial_url);
-            config
-                .features
-                .enable(Feature::Sqlite)
-                .expect("enable SQLite");
             config.multi_agent_v2.max_concurrent_threads_per_session = 4;
         })
         .build_with_auto_env(&server)
@@ -262,10 +257,6 @@ async fn cold_root_resume_overlaps_child_reads_and_applies_identities_in_graph_o
         .with_thread_store(store)
         .with_config(move |config| {
             configure_multi_agent_v2_with_role(config, &resume_url);
-            config
-                .features
-                .enable(Feature::Sqlite)
-                .expect("enable SQLite");
             config.multi_agent_v2.max_concurrent_threads_per_session = 4;
         });
 

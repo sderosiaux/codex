@@ -2,17 +2,12 @@ use super::*;
 use crate::ModelsManagerConfig;
 use codex_prompts::render_model_instructions;
 use codex_protocol::config_types::Personality;
-use codex_protocol::openai_models::ApprovalMessages;
-use codex_protocol::openai_models::AutoReviewMessages;
 use codex_protocol::openai_models::CollaborationModeMessages;
-use codex_protocol::openai_models::ConfirmationPolicies;
-use codex_protocol::openai_models::GuardianV2ModelConfig;
 use codex_protocol::openai_models::ModelTokenBudgetConfig;
 use codex_protocol::openai_models::MultiAgentMessages;
 use codex_protocol::openai_models::MultiAgentModeMessages;
 use codex_protocol::openai_models::MultiAgentRoleMessages;
 use codex_protocol::openai_models::MultiAgentToolMessages;
-use codex_protocol::openai_models::PermissionMessages;
 use codex_protocol::openai_models::ToolMessage;
 use codex_protocol::openai_models::ToolMessages;
 use pretty_assertions::assert_eq;
@@ -30,27 +25,9 @@ fn base_instruction_override_is_literal_and_preserves_catalog_messages() {
     let persistent_instructions = "Follow up on the active task.";
     let async_message_description = "Catalog async message description.";
     let mut model = model_info_from_slug("unknown-model");
-    let approvals = ApprovalMessages {
-        on_request: Some("user approvals".to_string()),
-        on_request_auto_review: Some("auto approvals".to_string()),
-        never: Some("never approvals".to_string()),
-        unless_trusted: Some("unless-trusted approvals".to_string()),
-    };
     let collaboration_modes = CollaborationModeMessages {
         default: Some("default instructions".to_string()),
         plan: Some("plan instructions".to_string()),
-    };
-    let auto_review = AutoReviewMessages {
-        policy: Some("review policy".to_string()),
-        policy_template: Some("review policy template".to_string()),
-        node_repl_policy: None,
-        rejection_instructions: Some("rejection instructions".to_string()),
-        timeout_instructions: Some(String::new()),
-    };
-    let permissions = PermissionMessages {
-        danger_full_access: Some("danger".to_string()),
-        workspace_write: Some(String::new()),
-        read_only: None,
     };
     let multi_agent = MultiAgentMessages {
         role: Some(MultiAgentRoleMessages {
@@ -72,14 +49,6 @@ fn base_instruction_override_is_literal_and_preserves_catalog_messages() {
         auto_compact_fallback_prompt: "compact prompt".to_string(),
         auto_compact_fallback_buffer_tokens: 64,
     };
-    let guardian_v2 = GuardianV2ModelConfig {
-        classifier_instructions: Some("Guardian experiment".to_string()),
-        ..Default::default()
-    };
-    let confirmation_policies = ConfirmationPolicies {
-        browser_use: Some("# Browser policy\n\n{{literal_markdown}}\n".to_string()),
-        computer_use: Some("  # Native policy\r\n\n${native_markdown}\n".to_string()),
-    };
     let mut messages = ModelMessages {
         content_filter_guidance: None,
         persistent_instructions: Some(persistent_instructions.to_string()),
@@ -98,14 +67,9 @@ fn base_instruction_override_is_literal_and_preserves_catalog_messages() {
             ..Default::default()
         }),
         instructions_template: Some("template".to_string()),
-        approvals: Some(approvals),
         collaboration_modes: Some(collaboration_modes),
-        auto_review: Some(auto_review),
-        permissions: Some(permissions),
         multi_agent: Some(multi_agent),
         token_budget: Some(token_budget),
-        confirmation_policies: Some(confirmation_policies),
-        guardian_v2: Some(guardian_v2),
     };
     model.model_messages = Some(messages.clone());
     let config = ModelsManagerConfig {
@@ -159,12 +123,6 @@ fn personality_none_strips_catalog_instruction_sources_through_the_next_h1() {
                     ..Default::default()
                 }),
                 ..Default::default()
-            }),
-            approvals: Some(ApprovalMessages {
-                on_request: Some("user approvals".to_string()),
-                on_request_auto_review: None,
-                never: None,
-                unless_trusted: None,
             }),
             ..Default::default()
         };

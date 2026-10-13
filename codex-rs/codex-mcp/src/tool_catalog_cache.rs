@@ -210,7 +210,7 @@ impl McpToolCatalogCacheContext {
 
         let mut tools = tools.to_vec();
         for tool in &mut tools {
-            // Tool annotations affect approval and parallelism decisions, so only the live
+            // Tool annotations affect app enablement and parallelism decisions, so only the live
             // connection may supply them.
             tool.tool.annotations = None;
         }

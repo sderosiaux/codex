@@ -177,46 +177,6 @@ fn agent_plugin_mcp_tool_uses_fallback_for_oversized_schema() {
 }
 
 #[test]
-fn legacy_mcp_tool_accepts_oversized_schema() {
-    let properties: serde_json::Map<String, serde_json::Value> = (0..1_024)
-        .map(|index| (format!("property_{index}"), json!({"type": "string"})))
-        .collect();
-    let tool = rmcp::model::Tool::new(
-        "oversized",
-        "Large legacy schema",
-        std::sync::Arc::new(rmcp::model::object(json!({
-            "type": "object",
-            "properties": properties,
-        }))),
-    );
-
-    let schema_bytes = serde_json::to_vec(tool.input_schema.as_ref())
-        .expect("MCP input schema JSON")
-        .len();
-    assert!(schema_bytes > codex_code_mode::DEFAULT_INPUT_SCHEMA_MAX_BYTES);
-    for (server_limit, expected_limit, expected_type) in [
-        (
-            None,
-            codex_code_mode::DEFAULT_INPUT_SCHEMA_MAX_BYTES,
-            "args: unknown",
-        ),
-        (Some(schema_bytes), schema_bytes, "property_1023?: string;"),
-    ] {
-        let tool = super::mcp_tool_to_responses_api_tool(
-            &ToolName::from("oversized"),
-            &tool,
-            server_limit,
-        )
-        .expect("legacy MCP conversion must preserve existing acceptance");
-        let definition =
-            crate::tool_spec_to_code_mode_tool_definition(&crate::ToolSpec::Function(tool))
-                .expect("Code Mode tool");
-        assert_eq!(definition.input_schema_max_bytes, Some(expected_limit));
-        assert!(definition.description.contains(expected_type));
-    }
-}
-
-#[test]
 fn loadable_tool_spec_namespace_serializes_with_deferred_child_tools() {
     let namespace = LoadableToolSpec::Namespace(ResponsesApiNamespace {
         name: "mcp__codex_apps__calendar".to_string(),

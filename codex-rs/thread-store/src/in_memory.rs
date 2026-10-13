@@ -11,8 +11,6 @@ use std::sync::atomic::Ordering;
 use chrono::DateTime;
 use chrono::Utc;
 use codex_protocol::ThreadId;
-use codex_protocol::models::PermissionProfile;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::SessionContextWindow;
 use codex_protocol::protocol::SessionMeta;
 use codex_protocol::protocol::SessionMetaLine;
@@ -1170,12 +1168,6 @@ fn stored_thread_from_state(
         agent_role: metadata.and_then(|metadata| metadata.agent_role.clone().flatten()),
         agent_path: metadata.and_then(|metadata| metadata.agent_path.clone().flatten()),
         git_info: metadata.and_then(git_info_from_patch),
-        approval_mode: metadata
-            .and_then(|metadata| metadata.approval_mode)
-            .unwrap_or(AskForApproval::Never),
-        permission_profile: metadata
-            .and_then(|metadata| metadata.permission_profile.clone())
-            .unwrap_or_else(PermissionProfile::read_only),
         token_usage: metadata.and_then(|metadata| metadata.token_usage.clone()),
         first_user_message: metadata.and_then(|metadata| metadata.first_user_message.clone()),
         history,

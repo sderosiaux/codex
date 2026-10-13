@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/compact.rs
+assertion_line: 4807
 expression: "format_history_snapshot(\"Real paginated mid-turn compaction and cold resume from the bounded suffix.\",\n&requests,)"
 ---
 Scenario: Real paginated mid-turn compaction and cold resume from the bounded suffix.
@@ -8,9 +9,8 @@ Scenario: Real paginated mid-turn compaction and cold resume from the bounded su
 -- request 1 (turn) --
 00:message/developer:
     <MODEL_INSTRUCTIONS>
-01:message/developer[2]:
-    [01] <PERMISSIONS_INSTRUCTIONS>
-    [02] <COLLABORATION_MODE>
+01:message/developer:
+    <COLLABORATION_MODE>
 02:message/developer:
     You are `/root`, the primary agent in a team of agents collaborating to fulfill the user's goals.
 
@@ -38,9 +38,8 @@ Scenario: Real paginated mid-turn compaction and cold resume from the bounded su
 -- request 2 (compaction) --
 00:message/developer:
     <MODEL_INSTRUCTIONS>
-01:message/developer[2]:
-    [01] <PERMISSIONS_INSTRUCTIONS>
-    [02] <COLLABORATION_MODE>
+01:message/developer:
+    <COLLABORATION_MODE>
 02:message/developer:
     You are `/root`, the primary agent in a team of agents collaborating to fulfill the user's goals.
 
@@ -72,9 +71,8 @@ Scenario: Real paginated mid-turn compaction and cold resume from the bounded su
 -- request 3 (turn) --
 00:message/developer:
     <MODEL_INSTRUCTIONS>
-01:message/developer[2]:
-    [01] <PERMISSIONS_INSTRUCTIONS>
-    [02] <COLLABORATION_MODE>
+01:message/developer:
+    <COLLABORATION_MODE>
 02:message/developer:
     You are `/root`, the primary agent in a team of agents collaborating to fulfill the user's goals.
 

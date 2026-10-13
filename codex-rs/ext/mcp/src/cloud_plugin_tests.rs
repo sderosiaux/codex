@@ -142,7 +142,7 @@ async fn disabling_plugins_clears_cloud_catalog_and_skips_discovery() -> anyhow:
         let previous = config.clone();
         config
             .features
-            .set_enabled(Feature::Plugins, plugins_enabled)?;
+            .set_enabled(Feature::Plugins, plugins_enabled);
         for contributor in registry.config_contributors() {
             contributor.on_config_changed(&session, &thread, &previous, &config);
         }
@@ -207,7 +207,7 @@ async fn account_change_clears_hosted_plugins_before_waiting_for_executor() -> a
         .fallback_cwd(Some(home.path().to_path_buf()))
         .build()
         .await?;
-    config.features.enable(Feature::Plugins)?;
+    config.features.enable(Feature::Plugins);
     let manager = Arc::new(EnvironmentManager::default_for_tests());
     manager
         .materialize_pending_noise_environment("unready".to_string(), Arc::new(UnreadyExecutor))?;
@@ -405,14 +405,8 @@ async fn run_cloud_catalog_refresh_lifecycle() -> anyhow::Result<()> {
             model.supports_search_tool = false;
         })
         .with_config(move |config| {
-            config
-                .features
-                .enable(Feature::Plugins)
-                .expect("enable plugins in fixture");
-            config
-                .features
-                .enable(Feature::Apps)
-                .expect("enable apps in fixture");
+            config.features.enable(Feature::Plugins);
+            config.features.enable(Feature::Apps);
             config.chatgpt_base_url = apps_server.chatgpt_base_url;
         });
     let test = builder.build_with_auto_env(&server).await?;

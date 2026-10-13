@@ -1,11 +1,8 @@
-use crate::config::ManagedFeatures;
 use crate::context::ContextualUserFragment;
 use crate::context::ImageResizeNotice;
 use crate::context::ImageResizeNoticeSource;
 use crate::context::ResizedImage;
 use crate::original_image_detail::can_request_original_image_detail;
-use codex_analytics::ImageDetailSetting;
-use codex_analytics::ImagePreparationMetadata;
 use codex_attachment_store::AttachmentStore;
 use codex_attachment_store::UploadRequest;
 use codex_attachment_store::UploadResult;
@@ -13,6 +10,7 @@ use codex_context_fragments::AnnotatedContent;
 use codex_context_fragments::set_annotated_content;
 use codex_context_fragments::to_annotated_content;
 use codex_features::Feature;
+use codex_features::Features;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ContentItemKind;
 use codex_protocol::models::FunctionCallOutputContentItem;
@@ -42,10 +40,7 @@ pub(crate) enum ImagePreparationMode {
     UnifiedBudget,
 }
 
-pub(crate) fn unified_image_budget_enabled(
-    features: &ManagedFeatures,
-    model_info: &ModelInfo,
-) -> bool {
+pub(crate) fn unified_image_budget_enabled(features: &Features, model_info: &ModelInfo) -> bool {
     features.enabled(Feature::UnifiedImageBudget)
         && (model_info.use_responses_lite || can_request_original_image_detail(model_info))
 }
@@ -54,8 +49,6 @@ pub(crate) fn unified_image_budget_enabled(
 struct ImageOrigin<'a> {
     thread_id: &'a str,
     ephemeral: bool,
-    message_role: Option<&'a str>,
-    item_id: Option<&'a str>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -74,25 +67,12 @@ struct PreparedImageResize {
 
 pub(crate) struct PreparedInlineImage {
     encoded: EncodedImage,
-    effective_detail: ImageDetailSetting,
     resize: Option<PreparedImageResize>,
 }
 
 impl PreparedInlineImage {
     pub(crate) fn into_data_url(self) -> String {
         self.encoded.into_data_url()
-    }
-
-    fn metadata(&self, origin: ImageOrigin<'_>) -> ImagePreparationMetadata {
-        ImagePreparationMetadata {
-            message_role: origin.message_role.map(str::to_string),
-            item_id: origin.item_id.map(str::to_string),
-            effective_detail: self.effective_detail,
-            source_width: self.encoded.source_width,
-            source_height: self.encoded.source_height,
-            prepared_width: self.encoded.width,
-            prepared_height: self.encoded.height,
-        }
     }
 }
 
@@ -126,8 +106,7 @@ pub(crate) async fn prepare_response_items(
     mode: ImagePreparationMode,
     resize_notice_mode: ImageResizeNoticeMode,
     image_store: &dyn AttachmentStore,
-) -> Vec<ImagePreparationMetadata> {
-    let mut metadata = Vec::new();
+) {
     let mut prepared_items = Vec::with_capacity(items.len());
     for mut item in std::mem::take(items) {
         let mut annotated_content = to_annotated_content(&mut item);
@@ -141,15 +120,12 @@ pub(crate) async fn prepare_response_items(
                     ImageOrigin {
                         thread_id,
                         ephemeral,
-                        message_role: Some(role.as_str()),
-                        item_id: None,
                     },
                     if role.as_str() == "user" {
                         resize_notice_mode
                     } else {
                         ImageResizeNoticeMode::Disabled
                     },
-                    &mut metadata,
                     mode,
                     image_store,
                 )
@@ -159,31 +135,23 @@ pub(crate) async fn prepare_response_items(
                     ImageResizeNotice::new(ImageResizeNoticeSource::UserMessage, resized_images)
                 })
             }
-            ResponseItem::FunctionCallOutput {
-                call_id, output, ..
-            } => {
+            ResponseItem::FunctionCallOutput { output, .. } => {
                 prepare_tool_output(
                     thread_id,
                     ephemeral,
                     output,
-                    call_id.as_deref(),
                     resize_notice_mode,
-                    &mut metadata,
                     mode,
                     image_store,
                 )
                 .await
             }
-            ResponseItem::CustomToolCallOutput {
-                call_id, output, ..
-            } => {
+            ResponseItem::CustomToolCallOutput { output, .. } => {
                 prepare_tool_output(
                     thread_id,
                     ephemeral,
                     output,
-                    Some(call_id.as_str()),
                     resize_notice_mode,
-                    &mut metadata,
                     mode,
                     image_store,
                 )
@@ -211,7 +179,6 @@ pub(crate) async fn prepare_response_items(
         }
     }
     *items = prepared_items;
-    metadata
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -219,9 +186,7 @@ async fn prepare_tool_output(
     thread_id: &str,
     ephemeral: bool,
     output: &mut FunctionCallOutputPayload,
-    item_id: Option<&str>,
     resize_notice_mode: ImageResizeNoticeMode,
-    metadata: &mut Vec<ImagePreparationMetadata>,
     mode: ImagePreparationMode,
     image_store: &dyn AttachmentStore,
 ) -> Option<ImageResizeNotice> {
@@ -231,11 +196,8 @@ async fn prepare_tool_output(
         ImageOrigin {
             thread_id,
             ephemeral,
-            message_role: None,
-            item_id,
         },
         resize_notice_mode,
-        metadata,
         mode,
         image_store,
     )
@@ -254,7 +216,6 @@ async fn prepare_message_content(
     items: &mut [AnnotatedContent],
     origin: ImageOrigin<'_>,
     resize_notice_mode: ImageResizeNoticeMode,
-    metadata: &mut Vec<ImagePreparationMetadata>,
     mode: ImagePreparationMode,
     image_store: &dyn AttachmentStore,
 ) -> Vec<ResizedImage> {
@@ -269,7 +230,7 @@ async fn prepare_message_content(
     for item in items {
         if let ContentItem::InputImage { image, detail } = item.content_mut() {
             image_number += 1;
-            match prepare_image(image, detail, origin, metadata, mode, image_store).await {
+            match prepare_image(image, detail, origin, mode, image_store).await {
                 Ok(Some(resize)) if resize_notice_mode == ImageResizeNoticeMode::Enabled => {
                     resized_images.push(ResizedImage {
                         image_number,
@@ -298,7 +259,6 @@ async fn prepare_tool_output_content(
     items: &mut [FunctionCallOutputContentItem],
     origin: ImageOrigin<'_>,
     resize_notice_mode: ImageResizeNoticeMode,
-    metadata: &mut Vec<ImagePreparationMetadata>,
     mode: ImagePreparationMode,
     image_store: &dyn AttachmentStore,
 ) -> Vec<ResizedImage> {
@@ -311,7 +271,7 @@ async fn prepare_tool_output_content(
     for item in items {
         if let FunctionCallOutputContentItem::InputImage { image, detail } = item {
             image_number += 1;
-            match prepare_image(image, detail, origin, metadata, mode, image_store).await {
+            match prepare_image(image, detail, origin, mode, image_store).await {
                 Ok(Some(resize)) if resize_notice_mode == ImageResizeNoticeMode::Enabled => {
                     resized_images.push(ResizedImage {
                         image_number,
@@ -351,7 +311,6 @@ async fn prepare_image(
     image: &mut ImageReference,
     detail: &mut Option<ImageDetail>,
     origin: ImageOrigin<'_>,
-    metadata: &mut Vec<ImagePreparationMetadata>,
     mode: ImagePreparationMode,
     image_store: &dyn AttachmentStore,
 ) -> Result<Option<PreparedImageResize>, ImagePreparationError> {
@@ -361,7 +320,6 @@ async fn prepare_image(
     let Some(prepared) = resize_image(image_url, detail, mode)? else {
         return Ok(None);
     };
-    metadata.push(prepared.metadata(origin));
     let resize = prepared.resize;
     let request = UploadRequest {
         thread_id: origin.thread_id.to_owned(),
@@ -396,19 +354,11 @@ pub(crate) fn resize_image(
         return Ok(None);
     }
 
-    let (effective_detail, image_mode) = match mode {
-        ImagePreparationMode::UnifiedBudget => (
-            ImageDetailSetting::Original,
-            PromptImageMode::ORIGINAL_DETAIL,
-        ),
+    let image_mode = match mode {
+        ImagePreparationMode::UnifiedBudget => PromptImageMode::ORIGINAL_DETAIL,
         ImagePreparationMode::DetailBased => match detail {
-            None | Some(ImageDetail::Auto | ImageDetail::High) => {
-                (ImageDetailSetting::High, PromptImageMode::HIGH_DETAIL)
-            }
-            Some(ImageDetail::Original) => (
-                ImageDetailSetting::Original,
-                PromptImageMode::ORIGINAL_DETAIL,
-            ),
+            None | Some(ImageDetail::Auto | ImageDetail::High) => PromptImageMode::HIGH_DETAIL,
+            Some(ImageDetail::Original) => PromptImageMode::ORIGINAL_DETAIL,
             Some(ImageDetail::Low) => return Err(ImagePreparationError::UnsupportedLowDetail),
         },
     };
@@ -425,11 +375,7 @@ pub(crate) fn resize_image(
         // image detail field. Responses Lite removes this compatibility hint before sending.
         *detail = Some(ImageDetail::Original);
     }
-    Ok(Some(PreparedInlineImage {
-        encoded,
-        effective_detail,
-        resize,
-    }))
+    Ok(Some(PreparedInlineImage { encoded, resize }))
 }
 
 #[cfg(test)]

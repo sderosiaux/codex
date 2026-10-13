@@ -18,16 +18,13 @@ use crate::tools::context::ToolCallState;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
-use crate::tools::control_tool_analytics::ControlToolCallGuard;
 use crate::tools::flat_tool_name;
 use crate::tools::handlers::multi_agents_spec::MULTI_AGENT_V1_NAMESPACE;
 use crate::tools::hook_names::HookToolName;
 use crate::tools::lifecycle::notify_tool_finish;
 use crate::tools::lifecycle::notify_tool_start;
 use crate::tools::router::tool_log_payload;
-use crate::tools::tool_dispatch_trace::ToolDispatchTrace;
 use crate::util::error_or_panic;
-use codex_analytics::ControlToolCallStatus;
 use codex_extension_api::ToolCallOutcome;
 use codex_extension_api::ToolPolicy;
 use codex_history::CodexHarnessMetadata;
@@ -62,36 +59,14 @@ pub(crate) trait CoreToolRuntime: ToolExecutor<ToolInvocation> {
         false
     }
 
-    /// Whether this built-in control tool needs a structured tool-call event.
-    fn is_builtin_control_tool(&self) -> bool {
-        false
-    }
-
     /// Returns a shared spec when both the spec and search metadata are immutable.
     fn immutable_spec(&self) -> Option<&Arc<ToolSpec>> {
-        None
-    }
-
-    /// Returns lazily cached, augmented Code Mode definitions owned by this runtime.
-    /// Input and output schemas must be cleared after rendering their declarations.
-    /// Return None when the requested rendering inputs differ from the cached inputs.
-    fn cached_code_mode_definitions(
-        &self,
-        _code_mode_input_schema_max_bytes: Option<usize>,
-        _tool_description_first: bool,
-    ) -> Option<&[codex_code_mode::ToolDefinition]> {
         None
     }
 
     /// Returns a readiness wait for this exact tool before taking the execution gate.
     fn wait_until_ready<'a>(&'a self, _session: &'a Arc<Session>) -> Option<BoxFuture<'a, ()>> {
         None
-    }
-
-    /// True for MCP/app and client-supplied dynamic tools.
-    /// A built-in stays false even if a client's tool has the same name.
-    fn is_third_party_tool(&self) -> bool {
-        false
     }
 
     /// Returns the owning server only for MCP-backed tool runtimes.
@@ -109,9 +84,6 @@ pub(crate) trait CoreToolRuntime: ToolExecutor<ToolInvocation> {
     fn telemetry_tags(&self, _invocation: &ToolInvocation) -> ToolTelemetryTags {
         Vec::new()
     }
-
-    /// Observes a tool result only after all PostToolUse hooks accept it.
-    fn on_tool_result_accepted(&self, _invocation: &ToolInvocation, _result: &dyn ToolOutput) {}
 
     fn post_tool_use_payload(
         &self,
@@ -228,13 +200,6 @@ impl AnyToolResult {
             }),
         }
     }
-
-    pub(crate) fn code_mode_result(self) -> serde_json::Value {
-        let Self {
-            payload, result, ..
-        } = self;
-        result.code_mode_result(&payload)
-    }
 }
 
 struct PostToolUseFeedbackOutput {
@@ -261,14 +226,6 @@ impl ToolOutput for PostToolUseFeedbackOutput {
 
     fn to_response_item(&self, call_id: &str, payload: &ToolPayload) -> ResponseInputItem {
         self.model_visible.to_response_item(call_id, payload)
-    }
-
-    fn code_mode_result(&self, payload: &ToolPayload) -> Value {
-        self.original.code_mode_result(payload)
-    }
-
-    fn tool_result_metadata(&self) -> Option<&Value> {
-        self.original.tool_result_metadata()
     }
 }
 
@@ -440,21 +397,6 @@ impl ToolRegistry {
         }
     }
 
-    pub(crate) fn prepend_trusted(&mut self, runtime: Arc<dyn CoreToolRuntime>) {
-        let tool_name = runtime.tool_name().with_default_namespace();
-        if !self.tool_policy.allows(&tool_name) {
-            return;
-        }
-        if self.tools.contains_key(&tool_name) {
-            error_or_panic(format!("tool {tool_name} already registered"));
-            return;
-        }
-
-        let exposure = runtime.exposure();
-        let tool = self.prepare_tool(runtime, exposure);
-        self.tools.shift_insert(0, tool_name, tool);
-    }
-
     pub(crate) fn register_external(&mut self, runtime: Arc<dyn CoreToolRuntime>) -> bool {
         let exposure = runtime.exposure();
         self.register_external_with_exposure(runtime, exposure)
@@ -565,14 +507,6 @@ impl ToolRegistry {
         Self::from_tools(std::iter::empty())
     }
 
-    #[cfg(test)]
-    pub(crate) fn with_handler_for_test<T>(handler: Arc<T>) -> Self
-    where
-        T: CoreToolRuntime + 'static,
-    {
-        Self::from_tools([handler as Arc<dyn CoreToolRuntime>])
-    }
-
     pub(crate) fn tool(&self, name: &ToolName) -> Option<Arc<dyn CoreToolRuntime>> {
         self.registered_tool(name)
             .map(|tool| Arc::clone(&tool.runtime))
@@ -625,9 +559,6 @@ impl ToolRegistry {
             .session_telemetry
             .clone()
             .with_product_sku(invocation.turn.config.apps_mcp_product_sku.as_deref());
-        // TODO(anp): Reconcile these tags with TurnEnvironment::sandbox_context
-        // instead of reporting the thread-wide backend for environment-scoped tools.
-        let sandbox_tags = invocation.turn.turn_metadata_state.sandbox_tags;
 
         {
             let mut active = invocation
@@ -646,14 +577,11 @@ impl ToolRegistry {
             }
         }
 
-        let dispatch_trace = ToolDispatchTrace::start(&invocation);
         let tool = match self.tool(&tool_name) {
             Some(tool) => tool,
             None => {
                 let message = unsupported_tool_call_message(&invocation.payload, &tool_name);
                 let log_payload = tool_log_payload(&invocation.payload, &invocation.source);
-                let mut tool_result_tags = Vec::with_capacity(2);
-                sandbox_tags.append_metric_tags(&mut tool_result_tags);
                 otel.tool_result_with_tags(
                     &tool_name,
                     &call_id_owned,
@@ -661,18 +589,16 @@ impl ToolRegistry {
                     Duration::ZERO,
                     /*success*/ false,
                     &message,
-                    &tool_result_tags,
+                    /*extra_tags*/ &[],
                     /*extra_trace_fields*/ &[],
                 );
                 let err = FunctionCallError::RespondToModel(message);
-                dispatch_trace.record_failed(&err);
                 return Err(err);
             }
         };
         let telemetry_tags = tool.telemetry_tags(&invocation);
-        let mut tool_result_tags = Vec::with_capacity(2 + telemetry_tags.len() + 1);
+        let mut tool_result_tags = Vec::with_capacity(telemetry_tags.len() + 1);
         let mut extra_trace_fields = Vec::new();
-        sandbox_tags.append_metric_tags(&mut tool_result_tags);
         for (key, value) in &telemetry_tags {
             if matches!(*key, "mcp_server" | "mcp_server_origin") {
                 extra_trace_fields.push((*key, value.as_str()));
@@ -694,7 +620,6 @@ impl ToolRegistry {
                 &extra_trace_fields,
             );
             let err = FunctionCallError::Fatal(message);
-            dispatch_trace.record_failed(&err);
             return Err(err);
         }
 
@@ -710,12 +635,7 @@ impl ToolRegistry {
             .await?
             {
                 PreToolUseHookResult::Blocked(message) => {
-                    if tool.is_builtin_control_tool() {
-                        let mut analytics = ControlToolCallGuard::new(&invocation);
-                        analytics.finish(ControlToolCallStatus::Rejected);
-                    }
                     let err = FunctionCallError::RespondToModel(message);
-                    dispatch_trace.record_failed(&err);
                     notify_tool_finish_if_unclaimed(
                         &invocation,
                         call_state.as_deref(),
@@ -731,11 +651,6 @@ impl ToolRegistry {
                         invocation = updated_invocation;
                     }
                     Err(err) => {
-                        if tool.is_builtin_control_tool() {
-                            let mut analytics = ControlToolCallGuard::new(&invocation);
-                            analytics.finish(ControlToolCallStatus::Failed);
-                        }
-                        dispatch_trace.record_failed(&err);
                         notify_tool_finish_if_unclaimed(
                             &invocation,
                             call_state.as_deref(),
@@ -758,9 +673,6 @@ impl ToolRegistry {
                 .or_cancel_tool(&cancellation_token)
                 .await?;
         }
-        let mut control_tool_analytics = tool
-            .is_builtin_control_tool()
-            .then(|| ControlToolCallGuard::new(&invocation));
 
         if let Some(command) = shell_script_for_invocation(&invocation) {
             let parsed = parse_shell_script(&command);
@@ -800,13 +712,6 @@ impl ToolRegistry {
             Ok(result) => result.result.success_for_logging(),
             Err(_) => false,
         };
-        if let Some(analytics) = control_tool_analytics.as_mut() {
-            analytics.finish(if success {
-                ControlToolCallStatus::Completed
-            } else {
-                ControlToolCallStatus::Failed
-            });
-        }
         emit_metric_for_tool_read(&invocation, success);
         let post_tool_use_payload = if success {
             result
@@ -866,7 +771,6 @@ impl ToolRegistry {
                             "PostToolUse hook blocked the tool result".to_string()
                         });
                         let err = FunctionCallError::RespondToModel(message);
-                        dispatch_trace.record_failed(&err);
                         return Err(err);
                     }
                     if let Some(feedback_message) = outcome.feedback_message {
@@ -879,19 +783,9 @@ impl ToolRegistry {
                         });
                     }
                 }
-                tool.on_tool_result_accepted(&invocation, result.result.as_ref());
-                dispatch_trace.record_completed(
-                    &invocation,
-                    &result.call_id,
-                    &result.payload,
-                    result.result.as_ref(),
-                );
                 Ok(result)
             }
-            Err(err) => {
-                dispatch_trace.record_failed(&err);
-                Err(err)
-            }
+            Err(err) => Err(err),
         }
     }
 }

@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -9,16 +8,9 @@ use codex_config::AbsolutePathBuf;
 use codex_config::ConfigLayerEntry;
 use codex_config::ConfigLayerSource;
 use codex_config::ConfigLayerStack;
-use codex_config::ConfigRequirements;
-use codex_config::ConfigRequirementsToml;
-use codex_config::Constrained;
-use codex_config::ConstrainedWithSource;
 use codex_config::HookEventsToml;
 use codex_config::HookHandlerConfig;
-use codex_config::ManagedHooksRequirementsToml;
 use codex_config::MatcherGroup;
-use codex_config::RequirementSource;
-use codex_config::Sourced;
 use codex_config::TomlValue;
 use codex_plugin::ExecutorPluginHookSource;
 use codex_plugin::PluginHookSource;
@@ -31,7 +23,6 @@ use codex_protocol::protocol::HookOutputEntry;
 use codex_protocol::protocol::HookOutputEntryKind;
 use codex_protocol::protocol::HookRunStatus;
 use codex_protocol::protocol::HookSource;
-use codex_protocol::protocol::HookTrustStatus;
 use futures::FutureExt;
 use futures::future::BoxFuture;
 use pretty_assertions::assert_eq;
@@ -44,7 +35,6 @@ use super::CommandShell;
 use super::ConfiguredHandler;
 use super::ConfiguredHandlerKind;
 use super::HandlerSourcePath;
-use super::HookListEntryHandler;
 use crate::events::interrupt::InterruptRequest;
 use crate::events::pre_tool_use::PreToolUseRequest;
 use crate::events::stop::StopHookTarget;
@@ -72,94 +62,6 @@ pub(crate) fn mcp_executor() -> Arc<dyn HookMcpExecutor> {
         output: String::new(),
         outputs_by_tool: HashMap::new(),
     })
-}
-
-#[test]
-fn permission_request_timeout_only_counts_synchronous_handlers() {
-    let mut engine = ClaudeHooksEngine::new(
-        /*enabled*/ true,
-        /*bypass_hook_trust*/ false,
-        /*config_layer_stack*/ None,
-        Vec::new(),
-        Vec::new(),
-        command_runtime(CommandShell {
-            program: String::new(),
-            args: Vec::new(),
-        }),
-        mcp_executor(),
-    );
-    let command = "echo synchronous permission hook";
-    let synchronous_handler = ConfiguredHandler {
-        builtin: false,
-        event_name: HookEventName::PermissionRequest,
-        matcher: None,
-        timeout_sec: 5,
-        status_message: None,
-        additional_context_limit: Default::default(),
-        source_path: cwd().join("hooks.json").into(),
-        source: HookSource::User,
-        display_order: 0,
-        kind: ConfiguredHandlerKind::Command {
-            command: command.to_string(),
-            r#async: false,
-            env: HashMap::new(),
-        },
-    };
-    let asynchronous_handler = ConfiguredHandler {
-        timeout_sec: 600,
-        kind: ConfiguredHandlerKind::Command {
-            command: command.to_string(),
-            r#async: true,
-            env: HashMap::new(),
-        },
-        ..synchronous_handler.clone()
-    };
-
-    engine.handlers = vec![synchronous_handler, asynchronous_handler.clone()];
-    assert_eq!(
-        engine.max_permission_request_timeout(),
-        Duration::from_secs(5)
-    );
-
-    engine.handlers = vec![asynchronous_handler];
-    assert_eq!(engine.max_permission_request_timeout(), Duration::ZERO);
-}
-
-fn managed_hooks_for_current_platform(
-    managed_dir: impl AsRef<Path>,
-    hooks: HookEventsToml,
-) -> ManagedHooksRequirementsToml {
-    let managed_dir = managed_dir.as_ref().to_path_buf();
-    ManagedHooksRequirementsToml {
-        managed_dir: if cfg!(windows) {
-            None
-        } else {
-            Some(managed_dir.clone())
-        },
-        windows_managed_dir: if cfg!(windows) {
-            Some(managed_dir)
-        } else {
-            None
-        },
-        hooks,
-    }
-}
-
-fn pre_tool_use_hook_events(command: impl Into<String>) -> HookEventsToml {
-    HookEventsToml {
-        pre_tool_use: vec![MatcherGroup {
-            matcher: Some("^Bash$".to_string()),
-            hooks: vec![HookHandlerConfig::Command {
-                command: command.into(),
-                command_windows: None,
-                timeout_sec: Some(10),
-                r#async: false,
-                status_message: Some("checking".to_string()),
-                additional_context_limit: None,
-            }],
-        }],
-        ..Default::default()
-    }
 }
 
 fn config_toml_with_pre_tool_use(command: &str) -> TomlValue {
@@ -202,335 +104,15 @@ fn config_toml_with_pre_tool_use(command: &str) -> TomlValue {
     config_toml
 }
 
-fn requirements_with_managed_hooks_only(
-    allow_managed_hooks_only: bool,
-    managed_hooks: Option<ManagedHooksRequirementsToml>,
-) -> (ConfigRequirements, ConfigRequirementsToml) {
-    (
-        ConfigRequirements {
-            allow_managed_hooks_only: Some(Sourced::new(
-                allow_managed_hooks_only,
-                RequirementSource::LegacyManagedConfigTomlFromMdm,
-            )),
-            managed_hooks: managed_hooks.clone().map(|hooks| {
-                ConstrainedWithSource::new(
-                    Constrained::allow_any(hooks),
-                    Some(RequirementSource::LegacyManagedConfigTomlFromMdm),
-                )
-            }),
-            ..ConfigRequirements::default()
-        },
-        ConfigRequirementsToml {
-            allow_managed_hooks_only: Some(allow_managed_hooks_only),
-            hooks: managed_hooks,
-            ..ConfigRequirementsToml::default()
-        },
-    )
-}
-
-fn required_hooks_stack(
-    managed_hooks: ManagedHooksRequirementsToml,
-    source: RequirementSource,
-) -> ConfigLayerStack {
-    ConfigLayerStack::new(
-        Vec::new(),
-        ConfigRequirements {
-            managed_hooks: Some(ConstrainedWithSource::new(
-                Constrained::allow_any(managed_hooks.clone()),
-                Some(source),
-            )),
-            ..ConfigRequirements::default()
-        },
-        ConfigRequirementsToml {
-            hooks: Some(managed_hooks),
-            ..ConfigRequirementsToml::default()
-        },
-    )
-    .expect("config layer stack")
-}
-
 #[test]
-fn required_managed_hooks_allow_disabled_hooks_feature() {
-    let temp = tempdir().expect("create temp dir");
-    let managed_hooks =
-        managed_hooks_for_current_platform(temp.path(), pre_tool_use_hook_events("  "));
-    let config_layer_stack = required_hooks_stack(
-        managed_hooks,
-        RequirementSource::LegacyManagedConfigTomlFromMdm,
-    );
-
-    for plugin_hook_sources in [
-        Vec::new(),
-        vec![bundled_cleanup_source(
-            "browser@openai-bundled",
-            "node_repl",
-            "Stop",
-        )],
-    ] {
-        let (hooks, _result_receiver) = crate::Hooks::new(
-            crate::HooksConfig {
-                feature_enabled: false,
-                config_layer_stack: Some(config_layer_stack.clone()),
-                plugin_hook_sources,
-                ..Default::default()
-            },
-            ThreadId::new(),
-            mcp_executor(),
-        )
-        .expect("disabled hooks feature should not enforce managed requirements hooks");
-
-        assert!(hooks.startup_warnings().is_empty());
-    }
-}
-
-#[test]
-fn required_managed_hooks_reject_invalid_matchers() {
-    let temp = tempdir().expect("create temp dir");
-    let mut events = pre_tool_use_hook_events("echo managed");
-    events.pre_tool_use[0].matcher = Some("[".to_string());
-    let config_layer_stack = required_hooks_stack(
-        managed_hooks_for_current_platform(temp.path(), events),
-        RequirementSource::LegacyManagedConfigTomlFromMdm,
-    );
-
-    let error = crate::Hooks::new(
-        crate::HooksConfig {
-            feature_enabled: true,
-            config_layer_stack: Some(config_layer_stack),
-            ..Default::default()
-        },
-        ThreadId::new(),
-        mcp_executor(),
-    )
-    .err()
-    .expect("invalid required managed matcher should reject startup");
-
-    assert!(error.to_string().contains("invalid matcher"));
-}
-
-#[test]
-fn required_managed_hooks_allow_invalid_matchers_without_handlers() {
-    let temp = tempdir().expect("create temp dir");
-    let mut events = pre_tool_use_hook_events("echo managed");
-    events.pre_tool_use.push(MatcherGroup {
-        matcher: Some("[".to_string()),
-        hooks: Vec::new(),
-    });
-    let config_layer_stack = required_hooks_stack(
-        managed_hooks_for_current_platform(temp.path(), events),
-        RequirementSource::LegacyManagedConfigTomlFromMdm,
-    );
-
-    let (hooks, _result_receiver) = crate::Hooks::new(
-        crate::HooksConfig {
-            feature_enabled: true,
-            config_layer_stack: Some(config_layer_stack),
-            ..Default::default()
-        },
-        ThreadId::new(),
-        mcp_executor(),
-    )
-    .expect("an empty matcher group should not prevent required managed hooks from loading");
-
-    assert_eq!(hooks.startup_warnings().len(), 1);
-    assert!(hooks.startup_warnings()[0].contains("invalid matcher"));
-}
-
-#[test]
-fn required_managed_hooks_reject_empty_commands() {
-    let temp = tempdir().expect("create temp dir");
-    let config_layer_stack = required_hooks_stack(
-        managed_hooks_for_current_platform(temp.path(), pre_tool_use_hook_events("  ")),
-        RequirementSource::LegacyManagedConfigTomlFromMdm,
-    );
-
-    let error = crate::Hooks::new(
-        crate::HooksConfig {
-            feature_enabled: true,
-            config_layer_stack: Some(config_layer_stack),
-            ..Default::default()
-        },
-        ThreadId::new(),
-        mcp_executor(),
-    )
-    .err()
-    .expect("empty required managed command should reject startup");
-
-    assert!(error.to_string().contains("skipping empty hook command"));
-}
-
-#[test]
-fn required_managed_hooks_reject_unsupported_handler_types() {
-    let temp = tempdir().expect("create temp dir");
-    let events = HookEventsToml {
-        pre_tool_use: vec![MatcherGroup {
-            matcher: Some("^Bash$".to_string()),
-            hooks: vec![HookHandlerConfig::Prompt {}],
-        }],
-        ..Default::default()
-    };
-    let config_layer_stack = required_hooks_stack(
-        managed_hooks_for_current_platform(temp.path(), events),
-        RequirementSource::LegacyManagedConfigTomlFromMdm,
-    );
-
-    let error = crate::Hooks::new(
-        crate::HooksConfig {
-            feature_enabled: true,
-            config_layer_stack: Some(config_layer_stack),
-            ..Default::default()
-        },
-        ThreadId::new(),
-        mcp_executor(),
-    )
-    .err()
-    .expect("unsupported required managed handler should reject startup");
-
-    assert!(
-        error
-            .to_string()
-            .contains("prompt hooks are not supported yet")
-    );
-}
-
-#[test]
-fn required_managed_mcp_hooks_reject_empty_targets() {
-    let temp = tempdir().expect("create temp dir");
-    let events = HookEventsToml {
-        pre_tool_use: vec![MatcherGroup {
-            matcher: Some("^Bash$".to_string()),
-            hooks: vec![HookHandlerConfig::McpTool {
-                server: "policy".to_string(),
-                tool: " ".to_string(),
-                input: Default::default(),
-                timeout_sec: None,
-                status_message: None,
-            }],
-        }],
-        ..Default::default()
-    };
-    let config_layer_stack = required_hooks_stack(
-        managed_hooks_for_current_platform(temp.path(), events),
-        RequirementSource::LegacyManagedConfigTomlFromMdm,
-    );
-
-    let error = crate::Hooks::new(
-        crate::HooksConfig {
-            feature_enabled: true,
-            config_layer_stack: Some(config_layer_stack),
-            ..Default::default()
-        },
-        ThreadId::new(),
-        mcp_executor(),
-    )
-    .err()
-    .expect("invalid required managed MCP hook should reject startup");
-
-    assert!(
-        error
-            .to_string()
-            .contains("server and tool must not be empty")
-    );
-}
-
-#[test]
-fn required_managed_session_end_mcp_hooks_reject_startup() {
-    let temp = tempdir().expect("create temp dir");
-    let events = HookEventsToml {
-        session_end: vec![MatcherGroup {
-            matcher: None,
-            hooks: vec![HookHandlerConfig::McpTool {
-                server: "policy".to_string(),
-                tool: "check".to_string(),
-                input: Default::default(),
-                timeout_sec: None,
-                status_message: None,
-            }],
-        }],
-        ..Default::default()
-    };
-    let config_layer_stack = required_hooks_stack(
-        managed_hooks_for_current_platform(temp.path(), events),
-        RequirementSource::LegacyManagedConfigTomlFromMdm,
-    );
-
-    let error = crate::Hooks::new(
-        crate::HooksConfig {
-            feature_enabled: true,
-            config_layer_stack: Some(config_layer_stack),
-            ..Default::default()
-        },
-        ThreadId::new(),
-        mcp_executor(),
-    )
-    .err()
-    .expect("required managed SessionEnd MCP hook should reject startup");
-
-    assert!(
-        error
-            .to_string()
-            .contains("SessionEnd MCP hooks are not supported")
-    );
-}
-
-#[test]
-fn required_managed_hooks_with_unknown_source_still_reject_discovery_failures() {
-    let temp = tempdir().expect("create temp dir");
-    let config_layer_stack = required_hooks_stack(
-        managed_hooks_for_current_platform(temp.path(), pre_tool_use_hook_events("")),
-        RequirementSource::Unknown,
-    );
-
-    let error = crate::Hooks::new(
-        crate::HooksConfig {
-            feature_enabled: true,
-            config_layer_stack: Some(config_layer_stack),
-            ..Default::default()
-        },
-        ThreadId::new(),
-        mcp_executor(),
-    )
-    .err()
-    .expect("unknown-source managed requirements hook should still reject startup");
-
-    assert!(error.to_string().contains("skipping empty hook command"));
-}
-
-#[test]
-fn valid_required_managed_hooks_allow_startup() {
-    let temp = tempdir().expect("create temp dir");
-    let config_layer_stack = required_hooks_stack(
-        managed_hooks_for_current_platform(temp.path(), pre_tool_use_hook_events("echo managed")),
-        RequirementSource::LegacyManagedConfigTomlFromMdm,
-    );
-
-    let (hooks, _result_receiver) = crate::Hooks::new(
-        crate::HooksConfig {
-            feature_enabled: true,
-            config_layer_stack: Some(config_layer_stack),
-            ..Default::default()
-        },
-        ThreadId::new(),
-        mcp_executor(),
-    )
-    .expect("valid managed requirements hook should allow startup");
-
-    assert!(hooks.startup_warnings().is_empty());
-}
-
-#[test]
-fn managed_config_layer_hook_failures_remain_startup_warnings() {
+fn system_config_layer_hook_failures_are_startup_warnings() {
     let temp = tempdir().expect("create temp dir");
     let config_path =
         AbsolutePathBuf::try_from(temp.path().join("config.toml")).expect("absolute config path");
-    let config_layer_stack = ConfigLayerStack::new(
-        vec![ConfigLayerEntry::new(
-            ConfigLayerSource::System { file: config_path },
-            config_toml_with_pre_tool_use("  "),
-        )],
-        ConfigRequirements::default(),
-        ConfigRequirementsToml::default(),
-    )
+    let config_layer_stack = ConfigLayerStack::new(vec![ConfigLayerEntry::new(
+        ConfigLayerSource::System { file: config_path },
+        config_toml_with_pre_tool_use("  "),
+    )])
     .expect("config layer stack");
 
     let (hooks, _result_receiver) = crate::Hooks::new(
@@ -541,413 +123,40 @@ fn managed_config_layer_hook_failures_remain_startup_warnings() {
         },
         ThreadId::new(),
         mcp_executor(),
-    )
-    .expect("managed config layer hooks should remain optional");
+    );
 
     assert_eq!(hooks.startup_warnings().len(), 1);
     assert!(hooks.startup_warnings()[0].contains("skipping empty hook command"));
 }
 
-#[tokio::test]
-async fn requirements_managed_hooks_execute_from_managed_dir() {
-    let temp = tempdir().expect("create temp dir");
-    let managed_dir =
-        AbsolutePathBuf::try_from(temp.path().join("managed-hooks")).expect("absolute path");
-    fs::create_dir_all(managed_dir.as_path()).expect("create managed hooks dir");
-    let script_path = managed_dir.join("pre_tool_use.py");
-    let log_path = managed_dir.join("pre_tool_use_log.jsonl");
-    fs::write(
-        script_path.as_path(),
-        format!(
-            r#"import json
-from pathlib import Path
-import sys
-
-payload = json.load(sys.stdin)
-with Path(r"{log_path}").open("a", encoding="utf-8") as handle:
-    handle.write(json.dumps(payload) + "\n")
-"#,
-            log_path = log_path.display(),
-        ),
-    )
-    .expect("write managed hook script");
-
-    let managed_hooks = managed_hooks_for_current_platform(
-        managed_dir.clone(),
-        HookEventsToml {
-            pre_tool_use: vec![MatcherGroup {
-                matcher: Some("^Bash$".to_string()),
-                hooks: vec![HookHandlerConfig::Command {
-                    command: format!("python3 {}", script_path.display()),
-                    command_windows: None,
-                    timeout_sec: Some(10),
-                    r#async: false,
-                    status_message: Some("checking".to_string()),
-                    additional_context_limit: None,
-                }],
-            }],
-            ..Default::default()
-        },
-    );
-    let config_layer_stack = ConfigLayerStack::new(
-        Vec::new(),
-        ConfigRequirements {
-            managed_hooks: Some(ConstrainedWithSource::new(
-                Constrained::allow_any(managed_hooks.clone()),
-                Some(RequirementSource::LegacyManagedConfigTomlFromMdm),
-            )),
-            ..ConfigRequirements::default()
-        },
-        ConfigRequirementsToml {
-            hooks: Some(managed_hooks),
-            ..ConfigRequirementsToml::default()
-        },
-    )
-    .expect("config layer stack");
-
-    let engine = ClaudeHooksEngine::new(
-        /*enabled*/ true,
-        /*bypass_hook_trust*/ false,
-        Some(&config_layer_stack),
-        Vec::new(),
-        Vec::new(),
-        command_runtime(CommandShell {
-            program: String::new(),
-            args: Vec::new(),
-        }),
-        mcp_executor(),
-    );
-
-    assert!(engine.warnings().is_empty());
-    assert_eq!(engine.handlers.len(), 1);
-    assert_eq!(
-        engine.handlers[0].source,
-        HookSource::LegacyManagedConfigMdm
-    );
-    let listed = crate::list_hooks(crate::HooksConfig {
-        legacy_notify_argv: None,
-        feature_enabled: true,
-        bypass_hook_trust: false,
-        config_layer_stack: Some(config_layer_stack.clone()),
-        plugin_hook_sources: Vec::new(),
-        plugin_hook_load_warnings: Vec::new(),
-        shell_program: None,
-        shell_args: Vec::new(),
-    });
-    assert!(listed.hooks[0].is_managed);
-    let cwd = cwd();
-    let preview = engine.preview_pre_tool_use(&PreToolUseRequest {
-        session_id: ThreadId::new(),
-        turn_id: "turn-1".to_string(),
-        subagent: None,
-        cwd: cwd.clone(),
-        transcript_path: None,
-        model: "gpt-test".to_string(),
-        permission_mode: "default".to_string(),
-        tool_name: "Bash".to_string(),
-        matcher_aliases: Vec::new(),
-        tool_use_id: "tool-1".to_string(),
-        tool_input: serde_json::json!({ "command": "echo hello" }),
-    });
-    assert_eq!(preview.len(), 1);
-    assert_eq!(preview[0].source_path, managed_dir);
-
-    let outcome = engine
-        .run_pre_tool_use(PreToolUseRequest {
-            session_id: ThreadId::new(),
-            turn_id: "turn-1".to_string(),
-            subagent: None,
-            cwd,
-            transcript_path: None,
-            model: "gpt-test".to_string(),
-            permission_mode: "default".to_string(),
-            tool_name: "Bash".to_string(),
-            matcher_aliases: Vec::new(),
-            tool_use_id: "tool-1".to_string(),
-            tool_input: serde_json::json!({ "command": "echo hello" }),
-        })
-        .await;
-
-    assert!(!outcome.should_block);
-    let log_contents = fs::read_to_string(log_path).expect("read managed hook log");
-    assert!(log_contents.contains("\"hook_event_name\": \"PreToolUse\""));
-}
-
-#[tokio::test]
-async fn requirements_managed_hooks_execute_windows_command_override() {
-    let temp = tempdir().expect("create temp dir");
-    let managed_dir =
-        AbsolutePathBuf::try_from(temp.path().join("managed-hooks")).expect("absolute path");
-    fs::create_dir_all(managed_dir.as_path()).expect("create managed hooks dir");
-
-    let managed_hooks = managed_hooks_for_current_platform(
-        managed_dir,
-        HookEventsToml {
-            pre_tool_use: vec![MatcherGroup {
-                matcher: Some("^Bash$".to_string()),
-                hooks: vec![HookHandlerConfig::Command {
-                    command: "exit 17".to_string(),
-                    command_windows: Some("exit /B 19".to_string()),
-                    timeout_sec: Some(10),
-                    r#async: false,
-                    status_message: Some("checking".to_string()),
-                    additional_context_limit: None,
-                }],
-            }],
-            ..Default::default()
-        },
-    );
-    let config_layer_stack = ConfigLayerStack::new(
-        Vec::new(),
-        ConfigRequirements {
-            managed_hooks: Some(ConstrainedWithSource::new(
-                Constrained::allow_any(managed_hooks.clone()),
-                Some(RequirementSource::LegacyManagedConfigTomlFromMdm),
-            )),
-            ..ConfigRequirements::default()
-        },
-        ConfigRequirementsToml {
-            hooks: Some(managed_hooks),
-            ..ConfigRequirementsToml::default()
-        },
-    )
-    .expect("config layer stack");
-
-    let engine = ClaudeHooksEngine::new(
-        /*enabled*/ true,
-        /*bypass_hook_trust*/ false,
-        Some(&config_layer_stack),
-        Vec::new(),
-        Vec::new(),
-        command_runtime(CommandShell {
-            program: String::new(),
-            args: Vec::new(),
-        }),
-        mcp_executor(),
-    );
-
-    let outcome = engine
-        .run_pre_tool_use(PreToolUseRequest {
-            session_id: ThreadId::new(),
-            turn_id: "turn-1".to_string(),
-            subagent: None,
-            cwd: cwd(),
-            transcript_path: None,
-            model: "gpt-test".to_string(),
-            permission_mode: "default".to_string(),
-            tool_name: "Bash".to_string(),
-            matcher_aliases: Vec::new(),
-            tool_use_id: "tool-1".to_string(),
-            tool_input: serde_json::json!({ "command": "echo hello" }),
-        })
-        .await;
-
-    assert!(!outcome.should_block);
-    let expected_exit_code = if cfg!(windows) { 19 } else { 17 };
-    assert_eq!(outcome.hook_events.len(), 1);
-    assert_eq!(outcome.hook_events[0].run.status, HookRunStatus::Failed);
-    assert_eq!(
-        outcome.hook_events[0].run.entries,
-        vec![HookOutputEntry {
-            kind: HookOutputEntryKind::Error,
-            text: format!("hook exited with code {expected_exit_code}"),
-        }]
-    );
-}
-
 #[test]
-fn unknown_requirement_source_hooks_stay_managed() {
+fn user_disablement_applies_to_system_layer_hooks() {
     let temp = tempdir().expect("create temp dir");
-    let managed_dir =
-        AbsolutePathBuf::try_from(temp.path().join("managed-hooks")).expect("absolute path");
-    fs::create_dir_all(managed_dir.as_path()).expect("create managed hooks dir");
-    let managed_hooks = managed_hooks_for_current_platform(
-        managed_dir,
-        HookEventsToml {
-            pre_tool_use: vec![MatcherGroup {
-                matcher: Some("^Bash$".to_string()),
-                hooks: vec![HookHandlerConfig::Command {
-                    command: "python3 /tmp/managed.py".to_string(),
-                    command_windows: None,
-                    timeout_sec: Some(10),
-                    r#async: false,
-                    status_message: Some("checking".to_string()),
-                    additional_context_limit: None,
-                }],
-            }],
-            ..Default::default()
-        },
-    );
-    let config_layer_stack = ConfigLayerStack::new(
-        Vec::new(),
-        ConfigRequirements {
-            managed_hooks: Some(ConstrainedWithSource::new(
-                Constrained::allow_any(managed_hooks.clone()),
-                Some(RequirementSource::Unknown),
-            )),
-            ..ConfigRequirements::default()
-        },
-        ConfigRequirementsToml {
-            hooks: Some(managed_hooks),
-            ..ConfigRequirementsToml::default()
-        },
-    )
-    .expect("config layer stack");
-
-    let engine = ClaudeHooksEngine::new(
-        /*enabled*/ true,
-        /*bypass_hook_trust*/ false,
-        Some(&config_layer_stack),
-        Vec::new(),
-        Vec::new(),
-        command_runtime(CommandShell {
-            program: String::new(),
-            args: Vec::new(),
-        }),
-        mcp_executor(),
-    );
-
-    assert_eq!(engine.handlers.len(), 1);
-    assert_eq!(engine.handlers[0].source, HookSource::Unknown);
-    let discovered = super::discovery::discover_handlers(
-        Some(&config_layer_stack),
-        Vec::new(),
-        Vec::new(),
-        /*bypass_hook_trust*/ false,
-    );
-    assert_eq!(discovered.hook_entries.len(), 1);
-    assert_eq!(discovered.hook_entries[0].source, HookSource::Unknown);
-    assert_eq!(discovered.hook_entries[0].enabled, true);
-    assert_eq!(discovered.hook_entries[0].is_managed, true);
-    assert_eq!(
-        discovered.hook_entries[0].trust_status,
-        HookTrustStatus::Managed
-    );
-}
-
-#[test]
-fn user_disablement_filters_non_managed_hooks_but_not_managed_hooks() {
-    let temp = tempdir().expect("create temp dir");
-    let managed_dir =
-        AbsolutePathBuf::try_from(temp.path().join("managed-hooks")).expect("absolute path");
-    fs::create_dir_all(managed_dir.as_path()).expect("create managed hooks dir");
-    let managed_hooks = managed_hooks_for_current_platform(
-        managed_dir.clone(),
-        HookEventsToml {
-            pre_tool_use: vec![MatcherGroup {
-                matcher: Some("^Bash$".to_string()),
-                hooks: vec![HookHandlerConfig::Command {
-                    command: "python3 /tmp/managed.py".to_string(),
-                    command_windows: None,
-                    timeout_sec: Some(10),
-                    r#async: false,
-                    status_message: Some("checking".to_string()),
-                    additional_context_limit: None,
-                }],
-            }],
-            ..Default::default()
-        },
-    );
-    let config_path =
-        AbsolutePathBuf::try_from(temp.path().join("config.toml")).expect("absolute path");
-    let managed_disabled_key = format!("{}:pre_tool_use:0:0", managed_dir.display());
-    let user_disabled_key = format!("{}:pre_tool_use:0:0", config_path.display());
-    let user_config = config_with_pre_tool_use_hook_and_states(
-        "python3 /tmp/user.py",
-        [&managed_disabled_key, &user_disabled_key],
-    );
-    let config_layer_stack = ConfigLayerStack::new(
-        vec![ConfigLayerEntry::new(
-            ConfigLayerSource::User {
-                file: config_path,
-                profile: None,
-            },
-            user_config,
-        )],
-        ConfigRequirements {
-            managed_hooks: Some(ConstrainedWithSource::new(
-                Constrained::allow_any(managed_hooks.clone()),
-                Some(RequirementSource::LegacyManagedConfigTomlFromMdm),
-            )),
-            ..ConfigRequirements::default()
-        },
-        ConfigRequirementsToml {
-            hooks: Some(managed_hooks),
-            ..ConfigRequirementsToml::default()
-        },
-    )
-    .expect("config layer stack");
-
-    let engine = ClaudeHooksEngine::new(
-        /*enabled*/ true,
-        /*bypass_hook_trust*/ false,
-        Some(&config_layer_stack),
-        Vec::new(),
-        Vec::new(),
-        command_runtime(CommandShell {
-            program: String::new(),
-            args: Vec::new(),
-        }),
-        mcp_executor(),
-    );
-
-    assert_eq!(engine.handlers.len(), 1);
-    assert_eq!(
-        engine.handlers[0].source,
-        HookSource::LegacyManagedConfigMdm
-    );
-    let discovered = super::discovery::discover_handlers(
-        Some(&config_layer_stack),
-        Vec::new(),
-        Vec::new(),
-        /*bypass_hook_trust*/ false,
-    );
-    assert_eq!(discovered.hook_entries.len(), 2);
-    assert_eq!(discovered.hook_entries[0].key, managed_disabled_key);
-    assert_eq!(discovered.hook_entries[0].enabled, true);
-    assert!(discovered.hook_entries[0].is_managed);
-    assert_eq!(
-        discovered.hook_entries[0].trust_status,
-        HookTrustStatus::Managed
-    );
-    assert_eq!(discovered.hook_entries[1].key, user_disabled_key);
-    assert_eq!(discovered.hook_entries[1].enabled, false);
-    assert!(!discovered.hook_entries[1].is_managed);
-}
-
-#[test]
-fn user_disablement_does_not_filter_managed_layer_hooks() {
-    let temp = tempdir().expect("create temp dir");
-    let managed_config_path =
-        AbsolutePathBuf::try_from(temp.path().join("managed_config.toml")).expect("absolute path");
+    let system_config_path =
+        AbsolutePathBuf::try_from(temp.path().join("system-config.toml")).expect("absolute path");
     let user_config_path =
         AbsolutePathBuf::try_from(temp.path().join("config.toml")).expect("absolute path");
-    let managed_key = format!("{}:pre_tool_use:0:0", managed_config_path.display());
-
-    let config_layer_stack = ConfigLayerStack::new(
-        vec![
-            ConfigLayerEntry::new(
-                ConfigLayerSource::User {
-                    file: user_config_path,
-                    profile: None,
-                },
-                config_with_hook_state(&managed_key, /*enabled*/ false),
-            ),
-            ConfigLayerEntry::new(
-                ConfigLayerSource::LegacyManagedConfigTomlFromFile {
-                    file: managed_config_path,
-                },
-                config_with_pre_tool_use_hook("python3 /tmp/managed-layer.py"),
-            ),
-        ],
-        ConfigRequirements::default(),
-        ConfigRequirementsToml::default(),
-    )
+    let system_key = format!("{}:pre_tool_use:0:0", system_config_path.display());
+    let user_key = format!("{}:pre_tool_use:0:0", user_config_path.display());
+    let config_layer_stack = ConfigLayerStack::new(vec![
+        ConfigLayerEntry::new(
+            ConfigLayerSource::System {
+                file: system_config_path,
+            },
+            config_with_pre_tool_use_hook("python3 /tmp/system.py"),
+        ),
+        ConfigLayerEntry::new(
+            ConfigLayerSource::User {
+                file: user_config_path,
+                profile: None,
+            },
+            config_with_pre_tool_use_hook_and_states("python3 /tmp/user.py", [&system_key]),
+        ),
+    ])
     .expect("config layer stack");
 
     let engine = ClaudeHooksEngine::new(
         /*enabled*/ true,
-        /*bypass_hook_trust*/ false,
         Some(&config_layer_stack),
         Vec::new(),
         Vec::new(),
@@ -959,23 +168,19 @@ fn user_disablement_does_not_filter_managed_layer_hooks() {
     );
 
     assert_eq!(engine.handlers.len(), 1);
+    assert_eq!(engine.handlers[0].source, HookSource::User);
+    let discovered =
+        super::discovery::discover_handlers(Some(&config_layer_stack), Vec::new(), Vec::new());
     assert_eq!(
-        engine.handlers[0].source,
-        HookSource::LegacyManagedConfigFile
-    );
-    let discovered = super::discovery::discover_handlers(
-        Some(&config_layer_stack),
-        Vec::new(),
-        Vec::new(),
-        /*bypass_hook_trust*/ false,
-    );
-    assert_eq!(discovered.hook_entries.len(), 1);
-    assert_eq!(discovered.hook_entries[0].key, managed_key);
-    assert_eq!(discovered.hook_entries[0].enabled, true);
-    assert!(discovered.hook_entries[0].is_managed);
-    assert_eq!(
-        discovered.hook_entries[0].trust_status,
-        HookTrustStatus::Managed
+        discovered
+            .hook_entries
+            .iter()
+            .map(|entry| (entry.key.as_str(), entry.source, entry.enabled))
+            .collect::<Vec<_>>(),
+        vec![
+            (system_key.as_str(), HookSource::System, false),
+            (user_key.as_str(), HookSource::User, true),
+        ]
     );
 }
 
@@ -1026,437 +231,6 @@ fn config_with_pre_tool_use_hook(command: &str) -> TomlValue {
         },
     }))
     .expect("config TOML should deserialize")
-}
-
-fn trusted_plugin_hook_stack(
-    config_path: AbsolutePathBuf,
-    plugin_hook_sources: &[PluginHookSource],
-) -> ConfigLayerStack {
-    let discovered = super::discovery::discover_handlers(
-        /*config_layer_stack*/ None,
-        plugin_hook_sources.to_vec(),
-        Vec::new(),
-        /*bypass_hook_trust*/ false,
-    );
-    let state = discovered
-        .hook_entries
-        .into_iter()
-        .map(|entry| {
-            (
-                entry.key,
-                serde_json::json!({
-                    "trusted_hash": entry.current_hash,
-                }),
-            )
-        })
-        .collect::<serde_json::Map<_, _>>();
-    let config = serde_json::from_value(serde_json::json!({
-        "hooks": {
-            "state": state,
-        },
-    }))
-    .expect("config TOML should deserialize");
-
-    ConfigLayerStack::new(
-        vec![ConfigLayerEntry::new(
-            ConfigLayerSource::User {
-                file: config_path,
-                profile: None,
-            },
-            config,
-        )],
-        ConfigRequirements::default(),
-        ConfigRequirementsToml::default(),
-    )
-    .expect("config layer stack")
-}
-
-#[test]
-fn requirements_managed_hooks_load_when_managed_dir_is_missing() {
-    let temp = tempdir().expect("create temp dir");
-    let missing_dir = temp.path().join("missing-managed-hooks");
-    let managed_hooks = managed_hooks_for_current_platform(
-        missing_dir.clone(),
-        HookEventsToml {
-            pre_tool_use: vec![MatcherGroup {
-                matcher: Some("^Bash$".to_string()),
-                hooks: vec![HookHandlerConfig::Command {
-                    command: "echo hi".to_string(),
-                    command_windows: None,
-                    timeout_sec: Some(10),
-                    r#async: false,
-                    status_message: Some("checking".to_string()),
-                    additional_context_limit: None,
-                }],
-            }],
-            ..Default::default()
-        },
-    );
-    let config_layer_stack = ConfigLayerStack::new(
-        Vec::new(),
-        ConfigRequirements {
-            managed_hooks: Some(ConstrainedWithSource::new(
-                Constrained::allow_any(managed_hooks.clone()),
-                Some(RequirementSource::LegacyManagedConfigTomlFromMdm),
-            )),
-            ..ConfigRequirements::default()
-        },
-        ConfigRequirementsToml {
-            hooks: Some(managed_hooks),
-            ..ConfigRequirementsToml::default()
-        },
-    )
-    .expect("config layer stack");
-
-    let engine = ClaudeHooksEngine::new(
-        /*enabled*/ true,
-        /*bypass_hook_trust*/ false,
-        Some(&config_layer_stack),
-        Vec::new(),
-        Vec::new(),
-        command_runtime(CommandShell {
-            program: String::new(),
-            args: Vec::new(),
-        }),
-        mcp_executor(),
-    );
-
-    assert!(engine.warnings().is_empty());
-    let cwd = cwd();
-    let preview = engine.preview_pre_tool_use(&PreToolUseRequest {
-        session_id: ThreadId::new(),
-        turn_id: "turn-1".to_string(),
-        subagent: None,
-        cwd,
-        transcript_path: None,
-        model: "gpt-test".to_string(),
-        permission_mode: "default".to_string(),
-        tool_name: "Bash".to_string(),
-        matcher_aliases: Vec::new(),
-        tool_use_id: "tool-1".to_string(),
-        tool_input: serde_json::json!({ "command": "echo hello" }),
-    });
-    assert_eq!(preview.len(), 1);
-    assert_eq!(
-        engine.handlers[0].kind,
-        ConfiguredHandlerKind::Command {
-            command: "echo hi".to_string(),
-            r#async: false,
-            env: HashMap::new(),
-        }
-    );
-    assert_eq!(
-        engine.handlers[0].source_path,
-        AbsolutePathBuf::try_from(missing_dir)
-            .expect("absolute missing dir")
-            .into()
-    );
-}
-
-#[test]
-fn allow_managed_hooks_only_false_keeps_unmanaged_hooks() {
-    let temp = tempdir().expect("create temp dir");
-    let config_path =
-        AbsolutePathBuf::try_from(temp.path().join("config.toml")).expect("absolute config path");
-    let (requirements, requirements_toml) = requirements_with_managed_hooks_only(
-        /*allow_managed_hooks_only*/ false, /*managed_hooks*/ None,
-    );
-    let config_layer_stack = ConfigLayerStack::new(
-        vec![ConfigLayerEntry::new(
-            ConfigLayerSource::User {
-                file: config_path,
-                profile: None,
-            },
-            config_toml_with_pre_tool_use("python3 /tmp/user-hook.py"),
-        )],
-        requirements,
-        requirements_toml,
-    )
-    .expect("config layer stack");
-
-    let engine = ClaudeHooksEngine::new(
-        /*enabled*/ true,
-        /*bypass_hook_trust*/ false,
-        Some(&config_layer_stack),
-        Vec::new(),
-        Vec::new(),
-        command_runtime(CommandShell {
-            program: String::new(),
-            args: Vec::new(),
-        }),
-        mcp_executor(),
-    );
-
-    assert!(engine.warnings().is_empty());
-    assert!(engine.handlers.is_empty());
-    let discovered = super::discovery::discover_handlers(
-        Some(&config_layer_stack),
-        Vec::new(),
-        Vec::new(),
-        /*bypass_hook_trust*/ false,
-    );
-    assert_eq!(discovered.hook_entries.len(), 1);
-    assert!(!discovered.hook_entries[0].is_managed);
-    assert_eq!(
-        discovered.hook_entries[0].handler,
-        HookListEntryHandler::Command {
-            command: "python3 /tmp/user-hook.py".to_string(),
-            r#async: false,
-        }
-    );
-}
-
-#[test]
-fn allow_managed_hooks_only_in_config_toml_does_not_enable_policy() {
-    let temp = tempdir().expect("create temp dir");
-    let config_path =
-        AbsolutePathBuf::try_from(temp.path().join("config.toml")).expect("absolute config path");
-    let mut config_toml = config_toml_with_pre_tool_use("python3 /tmp/user-hook.py");
-    let TomlValue::Table(config_table) = &mut config_toml else {
-        unreachable!("config TOML root should be a table");
-    };
-    config_table.insert(
-        "allow_managed_hooks_only".to_string(),
-        TomlValue::Boolean(true),
-    );
-    let config_layer_stack = ConfigLayerStack::new(
-        vec![ConfigLayerEntry::new(
-            ConfigLayerSource::User {
-                file: config_path,
-                profile: None,
-            },
-            config_toml,
-        )],
-        ConfigRequirements::default(),
-        ConfigRequirementsToml::default(),
-    )
-    .expect("config layer stack");
-
-    let engine = ClaudeHooksEngine::new(
-        /*enabled*/ true,
-        /*bypass_hook_trust*/ false,
-        Some(&config_layer_stack),
-        Vec::new(),
-        Vec::new(),
-        command_runtime(CommandShell {
-            program: String::new(),
-            args: Vec::new(),
-        }),
-        mcp_executor(),
-    );
-
-    assert!(engine.warnings().is_empty());
-    assert!(engine.handlers.is_empty());
-    let discovered = super::discovery::discover_handlers(
-        Some(&config_layer_stack),
-        Vec::new(),
-        Vec::new(),
-        /*bypass_hook_trust*/ false,
-    );
-    assert_eq!(discovered.hook_entries.len(), 1);
-    assert!(!discovered.hook_entries[0].is_managed);
-    assert_eq!(
-        discovered.hook_entries[0].handler,
-        HookListEntryHandler::Command {
-            command: "python3 /tmp/user-hook.py".to_string(),
-            r#async: false,
-        }
-    );
-}
-
-#[test]
-fn allow_managed_hooks_only_skips_unmanaged_json_and_toml_hooks() {
-    let temp = tempdir().expect("create temp dir");
-    let config_path =
-        AbsolutePathBuf::try_from(temp.path().join("config.toml")).expect("absolute config path");
-    let hooks_json_path =
-        AbsolutePathBuf::try_from(temp.path().join("hooks.json")).expect("absolute hooks path");
-    fs::write(
-        hooks_json_path.as_path(),
-        r#"{
-              "hooks": {
-                "PreToolUse": [
-                  {
-                    "matcher": "^Bash$",
-                    "hooks": [
-                      {
-                        "type": "command",
-                        "command": "python3 /tmp/json-hook.py"
-                      }
-                    ]
-                  }
-                ]
-              }
-            }"#,
-    )
-    .expect("write hooks.json");
-    let (requirements, requirements_toml) = requirements_with_managed_hooks_only(
-        /*allow_managed_hooks_only*/ true, /*managed_hooks*/ None,
-    );
-    let config_layer_stack = ConfigLayerStack::new(
-        vec![ConfigLayerEntry::new(
-            ConfigLayerSource::User {
-                file: config_path,
-                profile: None,
-            },
-            config_toml_with_pre_tool_use("python3 /tmp/toml-hook.py"),
-        )],
-        requirements,
-        requirements_toml,
-    )
-    .expect("config layer stack");
-
-    let engine = ClaudeHooksEngine::new(
-        /*enabled*/ true,
-        /*bypass_hook_trust*/ false,
-        Some(&config_layer_stack),
-        Vec::new(),
-        Vec::new(),
-        command_runtime(CommandShell {
-            program: String::new(),
-            args: Vec::new(),
-        }),
-        mcp_executor(),
-    );
-
-    assert!(engine.handlers.is_empty());
-    assert!(engine.warnings().is_empty());
-}
-
-#[test]
-fn allow_managed_hooks_only_skips_unmanaged_plugin_hooks() {
-    let temp = tempdir().expect("create temp dir");
-    let plugin_root =
-        AbsolutePathBuf::try_from(temp.path().join("demo-plugin")).expect("plugin root");
-    let plugin_data_root =
-        AbsolutePathBuf::try_from(temp.path().join("plugin-data")).expect("plugin data root");
-    let source_path = plugin_root.join("hooks/hooks.json");
-    let plugin_id = PluginId::parse("demo-plugin@test-marketplace").expect("plugin id");
-    let plugin_hook_sources = vec![PluginHookSource {
-        plugin_id,
-        plugin_root,
-        plugin_data_root,
-        source_path,
-        source_relative_path: "hooks/hooks.json".to_string(),
-        hooks: pre_tool_use_hook_events("python3 /tmp/plugin-hook.py"),
-    }];
-    let (requirements, requirements_toml) = requirements_with_managed_hooks_only(
-        /*allow_managed_hooks_only*/ true, /*managed_hooks*/ None,
-    );
-    let config_layer_stack = ConfigLayerStack::new(Vec::new(), requirements, requirements_toml)
-        .expect("config layer stack");
-
-    let engine = ClaudeHooksEngine::new(
-        /*enabled*/ true,
-        /*bypass_hook_trust*/ false,
-        Some(&config_layer_stack),
-        plugin_hook_sources,
-        Vec::new(),
-        command_runtime(CommandShell {
-            program: String::new(),
-            args: Vec::new(),
-        }),
-        mcp_executor(),
-    );
-
-    assert!(engine.handlers.is_empty());
-    assert!(engine.warnings().is_empty());
-}
-
-#[test]
-fn allow_managed_hooks_only_keeps_managed_requirement_and_config_layer_hooks() {
-    let temp = tempdir().expect("create temp dir");
-    let managed_dir =
-        AbsolutePathBuf::try_from(temp.path().join("managed-hooks")).expect("absolute path");
-    fs::create_dir_all(managed_dir.as_path()).expect("create managed hooks dir");
-    let system_config_path =
-        AbsolutePathBuf::try_from(temp.path().join("system").join("config.toml"))
-            .expect("absolute system config path");
-    let system_parent = system_config_path
-        .as_path()
-        .parent()
-        .expect("system config parent");
-    fs::create_dir_all(system_parent).expect("create system config dir");
-    let legacy_config_path = AbsolutePathBuf::try_from(temp.path().join("managed_config.toml"))
-        .expect("absolute legacy config path");
-
-    let managed_hooks = managed_hooks_for_current_platform(
-        managed_dir,
-        pre_tool_use_hook_events("python3 /tmp/requirements-hook.py"),
-    );
-    let (requirements, requirements_toml) = requirements_with_managed_hooks_only(
-        /*allow_managed_hooks_only*/ true,
-        Some(managed_hooks),
-    );
-    let config_layer_stack = ConfigLayerStack::new(
-        vec![
-            ConfigLayerEntry::new(
-                ConfigLayerSource::Mdm {
-                    domain: "com.openai.codex".to_string(),
-                    key: "config".to_string(),
-                },
-                config_toml_with_pre_tool_use("python3 /tmp/mdm-hook.py"),
-            ),
-            ConfigLayerEntry::new(
-                ConfigLayerSource::System {
-                    file: system_config_path,
-                },
-                config_toml_with_pre_tool_use("python3 /tmp/system-hook.py"),
-            ),
-            ConfigLayerEntry::new(
-                ConfigLayerSource::LegacyManagedConfigTomlFromFile {
-                    file: legacy_config_path,
-                },
-                config_toml_with_pre_tool_use("python3 /tmp/legacy-file-hook.py"),
-            ),
-            ConfigLayerEntry::new(
-                ConfigLayerSource::LegacyManagedConfigTomlFromMdm,
-                config_toml_with_pre_tool_use("python3 /tmp/legacy-mdm-hook.py"),
-            ),
-        ],
-        requirements,
-        requirements_toml,
-    )
-    .expect("config layer stack");
-
-    let engine = ClaudeHooksEngine::new(
-        /*enabled*/ true,
-        /*bypass_hook_trust*/ false,
-        Some(&config_layer_stack),
-        Vec::new(),
-        Vec::new(),
-        command_runtime(CommandShell {
-            program: String::new(),
-            args: Vec::new(),
-        }),
-        mcp_executor(),
-    );
-
-    assert!(engine.warnings().is_empty());
-    assert_eq!(
-        engine
-            .handlers
-            .iter()
-            .map(|handler| match &handler.kind {
-                ConfiguredHandlerKind::Command { command, .. } => Some(command.as_str()),
-                ConfiguredHandlerKind::McpTool { .. } => None,
-            })
-            .collect::<Vec<_>>(),
-        vec![
-            Some("python3 /tmp/requirements-hook.py"),
-            Some("python3 /tmp/mdm-hook.py"),
-            Some("python3 /tmp/system-hook.py"),
-            Some("python3 /tmp/legacy-file-hook.py"),
-            Some("python3 /tmp/legacy-mdm-hook.py"),
-        ]
-    );
-    let discovered = super::discovery::discover_handlers(
-        Some(&config_layer_stack),
-        Vec::new(),
-        Vec::new(),
-        /*bypass_hook_trust*/ false,
-    );
-    assert!(discovered.hook_entries.iter().all(|entry| entry.is_managed));
 }
 
 #[test]
@@ -1521,21 +295,16 @@ fn discovers_hooks_from_json_and_toml_in_the_same_layer() {
         TomlValue::Array(vec![pre_tool_use_group]),
     );
     config_table.insert("hooks".to_string(), hooks_table);
-    let config_layer_stack = ConfigLayerStack::new(
-        vec![ConfigLayerEntry::new(
-            ConfigLayerSource::System {
-                file: config_path.clone(),
-            },
-            config_toml,
-        )],
-        ConfigRequirements::default(),
-        ConfigRequirementsToml::default(),
-    )
+    let config_layer_stack = ConfigLayerStack::new(vec![ConfigLayerEntry::new(
+        ConfigLayerSource::System {
+            file: config_path.clone(),
+        },
+        config_toml,
+    )])
     .expect("config layer stack");
 
     let engine = ClaudeHooksEngine::new(
         /*enabled*/ true,
-        /*bypass_hook_trust*/ false,
         Some(&config_layer_stack),
         Vec::new(),
         Vec::new(),
@@ -1607,31 +376,26 @@ fn profile_user_layers_load_shared_hooks_json_once() {
             }"#,
     )
     .expect("write hooks.json");
-    let config_layer_stack = ConfigLayerStack::new(
-        vec![
-            ConfigLayerEntry::new(
-                ConfigLayerSource::User {
-                    file: config_path,
-                    profile: None,
-                },
-                TomlValue::Table(Default::default()),
-            ),
-            ConfigLayerEntry::new(
-                ConfigLayerSource::User {
-                    file: profile_path,
-                    profile: Some("work".to_string()),
-                },
-                TomlValue::Table(Default::default()),
-            ),
-        ],
-        ConfigRequirements::default(),
-        ConfigRequirementsToml::default(),
-    )
+    let config_layer_stack = ConfigLayerStack::new(vec![
+        ConfigLayerEntry::new(
+            ConfigLayerSource::User {
+                file: config_path,
+                profile: None,
+            },
+            TomlValue::Table(Default::default()),
+        ),
+        ConfigLayerEntry::new(
+            ConfigLayerSource::User {
+                file: profile_path,
+                profile: Some("work".to_string()),
+            },
+            TomlValue::Table(Default::default()),
+        ),
+    ])
     .expect("config layer stack");
 
     let engine = ClaudeHooksEngine::new(
         /*enabled*/ true,
-        /*bypass_hook_trust*/ true,
         Some(&config_layer_stack),
         Vec::new(),
         Vec::new(),
@@ -1662,7 +426,6 @@ fn profile_user_layers_load_shared_hooks_json_once() {
 
     let listed = crate::list_hooks(crate::HooksConfig {
         feature_enabled: true,
-        bypass_hook_trust: true,
         config_layer_stack: Some(config_layer_stack),
         ..Default::default()
     });
@@ -1694,19 +457,14 @@ fn malformed_hooks_json_is_reported_as_startup_warning() {
         }"#,
     )
     .expect("write hooks.json");
-    let config_layer_stack = ConfigLayerStack::new(
-        vec![ConfigLayerEntry::new(
-            ConfigLayerSource::System { file: config_path },
-            TomlValue::Table(Default::default()),
-        )],
-        ConfigRequirements::default(),
-        ConfigRequirementsToml::default(),
-    )
+    let config_layer_stack = ConfigLayerStack::new(vec![ConfigLayerEntry::new(
+        ConfigLayerSource::System { file: config_path },
+        TomlValue::Table(Default::default()),
+    )])
     .expect("config layer stack");
 
     let engine = ClaudeHooksEngine::new(
         /*enabled*/ true,
-        /*bypass_hook_trust*/ false,
         Some(&config_layer_stack),
         Vec::new(),
         Vec::new(),
@@ -1749,7 +507,7 @@ fn bundled_cleanup_source(plugin_id: &str, server: &str, event: &str) -> PluginH
 }
 
 #[test]
-fn bundled_cleanup_hooks_are_trusted_without_saved_hashes() {
+fn bundled_cleanup_hooks_are_builtin() {
     for (plugin_id, server) in [
         ("browser@openai-bundled", "node_repl"),
         ("chrome@openai-bundled", "node_repl"),
@@ -1763,22 +521,15 @@ fn bundled_cleanup_hooks_are_trusted_without_saved_hashes() {
                 /*config_layer_stack*/ None,
                 vec![bundled_cleanup_source(plugin_id, server, event)],
                 Vec::new(),
-                /*bypass_hook_trust*/ false,
             );
             assert_eq!(discovered.handlers.len(), 1, "{plugin_id} {event}");
             assert_eq!(
                 discovered
                     .hook_entries
                     .iter()
-                    .map(|entry| (
-                        entry.plugin_id.as_deref(),
-                        entry.trust_status,
-                        entry.enabled,
-                        entry.is_managed,
-                        entry.builtin,
-                    ))
+                    .map(|entry| (entry.plugin_id.as_deref(), entry.enabled, entry.builtin))
                     .collect::<Vec<_>>(),
-                vec![(Some(plugin_id), HookTrustStatus::Trusted, true, false, true)],
+                vec![(Some(plugin_id), true, true)],
                 "{plugin_id} {event}"
             );
             assert!(discovered.handlers[0].builtin, "{plugin_id} {event}");
@@ -1787,7 +538,7 @@ fn bundled_cleanup_hooks_are_trusted_without_saved_hashes() {
 }
 
 #[test]
-fn bundled_cleanup_trust_does_not_extend_to_other_handlers() {
+fn bundled_cleanup_builtin_flag_does_not_extend_to_other_handlers() {
     let mut source = bundled_cleanup_source("browser@openai-bundled", "node_repl", "Stop");
     let cleanup = source.hooks.stop[0].hooks[0].clone();
     source.hooks.stop[0].hooks.extend([
@@ -1822,27 +573,28 @@ fn bundled_cleanup_trust_does_not_extend_to_other_handlers() {
         /*config_layer_stack*/ None,
         vec![source],
         Vec::new(),
-        /*bypass_hook_trust*/ false,
     );
-    assert_eq!(discovered.handlers.len(), 1);
+    // Every enabled handler runs; only the allowlisted cleanup handler is builtin.
+    assert_eq!(
+        discovered
+            .handlers
+            .iter()
+            .map(|handler| handler.builtin)
+            .collect::<Vec<_>>(),
+        vec![true, false, false, false, false]
+    );
     assert_eq!(
         discovered
             .hook_entries
             .iter()
-            .map(|entry| (entry.trust_status, entry.builtin))
+            .map(|entry| entry.builtin)
             .collect::<Vec<_>>(),
-        vec![
-            (HookTrustStatus::Trusted, true),
-            (HookTrustStatus::Untrusted, false),
-            (HookTrustStatus::Untrusted, false),
-            (HookTrustStatus::Untrusted, false),
-            (HookTrustStatus::Untrusted, false),
-        ]
+        vec![true, false, false, false, false]
     );
 }
 
 #[test]
-fn bundled_cleanup_trust_requires_matching_plugin_server_and_event() {
+fn bundled_cleanup_builtin_requires_matching_plugin_server_and_event() {
     for (plugin_id, server, event) in [
         ("other@openai-bundled", "node_repl", "Stop"),
         ("browser@other", "node_repl", "Stop"),
@@ -1861,19 +613,16 @@ fn bundled_cleanup_trust_requires_matching_plugin_server_and_event() {
             /*config_layer_stack*/ None,
             vec![bundled_cleanup_source(plugin_id, server, event)],
             Vec::new(),
-            /*bypass_hook_trust*/ false,
         );
-        assert!(discovered.handlers.is_empty(), "{plugin_id} {event}");
+        assert_eq!(discovered.handlers.len(), 1, "{plugin_id} {event}");
+        assert!(!discovered.handlers[0].builtin, "{plugin_id} {event}");
         assert_eq!(discovered.hook_entries.len(), 1);
-        assert_eq!(
-            discovered.hook_entries[0].trust_status,
-            HookTrustStatus::Untrusted
-        );
+        assert!(!discovered.hook_entries[0].builtin, "{plugin_id} {event}");
     }
 }
 
 #[test]
-fn local_hosted_app_cleanup_hooks_require_saved_trust() {
+fn local_hosted_app_cleanup_hooks_are_not_builtin() {
     let mut source = bundled_cleanup_source("browser@openai-curated-remote", "codex_apps", "Stop");
     source.hooks.stop[0].hooks[0] = HookHandlerConfig::McpTool {
         server: "codex_apps".to_string(),
@@ -1886,86 +635,66 @@ fn local_hosted_app_cleanup_hooks_require_saved_trust() {
         /*config_layer_stack*/ None,
         vec![source],
         Vec::new(),
-        /*bypass_hook_trust*/ false,
     );
-    assert!(discovered.handlers.is_empty());
+    assert_eq!(
+        discovered
+            .handlers
+            .iter()
+            .map(|handler| handler.builtin)
+            .collect::<Vec<_>>(),
+        vec![false]
+    );
     assert_eq!(
         discovered
             .hook_entries
             .iter()
-            .map(|entry| entry.trust_status)
+            .map(|entry| entry.builtin)
             .collect::<Vec<_>>(),
-        vec![HookTrustStatus::Untrusted]
+        vec![false]
     );
 }
 
 #[test]
-fn builtin_cleanup_ignores_disablement_but_preserves_managed_only_policy() {
+fn builtin_cleanup_ignores_disablement() {
     let source = bundled_cleanup_source("browser@openai-bundled", "node_repl", "Stop");
     let discovered = super::discovery::discover_handlers(
         /*config_layer_stack*/ None,
         vec![source.clone()],
         Vec::new(),
-        /*bypass_hook_trust*/ false,
     );
     let expected_entry = discovered.hook_entries[0].clone();
-    let disabled_stack = ConfigLayerStack::new(
-        vec![ConfigLayerEntry::new(
-            ConfigLayerSource::User {
-                file: cwd().join("config.toml"),
-                profile: None,
-            },
-            config_with_hook_state(&expected_entry.key, /*enabled*/ false),
-        )],
-        ConfigRequirements::default(),
-        ConfigRequirementsToml::default(),
-    )
+    let disabled_stack = ConfigLayerStack::new(vec![ConfigLayerEntry::new(
+        ConfigLayerSource::User {
+            file: cwd().join("config.toml"),
+            profile: None,
+        },
+        config_with_hook_state(&expected_entry.key, /*enabled*/ false),
+    )])
     .expect("disabled hook config");
     let disabled = super::discovery::discover_handlers(
         Some(&disabled_stack),
         vec![source.clone()],
         Vec::new(),
-        /*bypass_hook_trust*/ false,
     );
     assert_eq!(disabled.handlers, discovered.handlers);
     assert_eq!(disabled.hook_entries, vec![expected_entry]);
 
-    let (requirements, requirements_toml) = requirements_with_managed_hooks_only(
-        /*allow_managed_hooks_only*/ true, /*managed_hooks*/ None,
-    );
-    let managed_stack = ConfigLayerStack::new(Vec::new(), requirements, requirements_toml)
-        .expect("managed-only config");
-    let managed_only = super::discovery::discover_handlers(
-        Some(&managed_stack),
-        vec![source.clone()],
+    let feature_disabled = ClaudeHooksEngine::new(
+        /*enabled*/ false,
+        Some(&disabled_stack),
+        vec![source],
         Vec::new(),
-        /*bypass_hook_trust*/ false,
+        command_runtime(CommandShell {
+            program: String::new(),
+            args: Vec::new(),
+        }),
+        mcp_executor(),
     );
-    assert!(managed_only.handlers.is_empty());
-    assert!(managed_only.hook_entries.is_empty());
-
-    for (stack, expected) in [
-        (&disabled_stack, discovered.handlers),
-        (&managed_stack, Vec::new()),
-    ] {
-        let feature_disabled = ClaudeHooksEngine::new(
-            /*enabled*/ false,
-            /*bypass_hook_trust*/ false,
-            Some(stack),
-            vec![source.clone()],
-            Vec::new(),
-            command_runtime(CommandShell {
-                program: String::new(),
-                args: Vec::new(),
-            }),
-            mcp_executor(),
-        );
-        assert_eq!(feature_disabled.handlers, expected);
-    }
+    assert_eq!(feature_disabled.handlers, discovered.handlers);
 }
 
 #[test]
-fn disabled_hooks_feature_keeps_builtin_cleanup_but_not_trusted_plugin_hooks() {
+fn disabled_hooks_feature_keeps_builtin_cleanup_but_not_plugin_hooks() {
     let mut source = bundled_cleanup_source("browser@openai-bundled", "node_repl", "Stop");
     source.hooks.stop[0].hooks.push(HookHandlerConfig::Command {
         command: "echo ordinary hook".to_string(),
@@ -1975,19 +704,16 @@ fn disabled_hooks_feature_keeps_builtin_cleanup_but_not_trusted_plugin_hooks() {
         status_message: None,
         additional_context_limit: None,
     });
-    let stack = trusted_plugin_hook_stack(cwd().join("config.toml"), &[source.clone()]);
     let discovered = super::discovery::discover_handlers(
-        Some(&stack),
+        /*config_layer_stack*/ None,
         vec![source.clone()],
         Vec::new(),
-        /*bypass_hook_trust*/ false,
     );
     assert_eq!(discovered.handlers.len(), 2);
 
     let engine = ClaudeHooksEngine::new(
         /*enabled*/ false,
-        /*bypass_hook_trust*/ false,
-        Some(&stack),
+        /*config_layer_stack*/ None,
         vec![source],
         Vec::new(),
         command_runtime(CommandShell {
@@ -2044,14 +770,9 @@ print(json.dumps({
             ..Default::default()
         },
     }];
-    let config_layer_stack = trusted_plugin_hook_stack(
-        AbsolutePathBuf::try_from(temp.path().join("config.toml")).expect("absolute config path"),
-        &plugin_hook_sources,
-    );
     let engine = ClaudeHooksEngine::new(
         /*enabled*/ true,
-        /*bypass_hook_trust*/ false,
-        Some(&config_layer_stack),
+        /*config_layer_stack*/ None,
         plugin_hook_sources.clone(),
         Vec::new(),
         command_runtime(CommandShell {
@@ -2080,7 +801,6 @@ print(json.dumps({
     let listed = crate::list_hooks(crate::HooksConfig {
         legacy_notify_argv: None,
         feature_enabled: true,
-        bypass_hook_trust: false,
         config_layer_stack: None,
         plugin_hook_sources,
         plugin_hook_load_warnings: Vec::new(),
@@ -2165,14 +885,9 @@ fn plugin_hook_sources_expand_plugin_placeholders() {
             ..Default::default()
         },
     }];
-    let config_layer_stack = trusted_plugin_hook_stack(
-        AbsolutePathBuf::try_from(temp.path().join("config.toml")).expect("absolute config path"),
-        &plugin_hook_sources,
-    );
     let engine = ClaudeHooksEngine::new(
         /*enabled*/ true,
-        /*bypass_hook_trust*/ false,
-        Some(&config_layer_stack),
+        /*config_layer_stack*/ None,
         plugin_hook_sources,
         Vec::new(),
         command_runtime(CommandShell {
@@ -2216,7 +931,6 @@ fn plugin_hook_sources_expand_plugin_placeholders() {
 fn plugin_hook_load_warnings_are_startup_warnings() {
     let engine = ClaudeHooksEngine::new(
         /*enabled*/ true,
-        /*bypass_hook_trust*/ false,
         /*config_layer_stack*/ None,
         Vec::new(),
         vec!["failed plugin hook".to_string()],
@@ -2269,7 +983,6 @@ fn executor_stop_hook_fixture() -> (
     });
     let mut engine = ClaudeHooksEngine::new(
         /*enabled*/ true,
-        /*bypass_hook_trust*/ false,
         /*config_layer_stack*/ None,
         Vec::new(),
         Vec::new(),
@@ -2598,11 +1311,6 @@ async fn memory_consolidation_stop_preserves_policy_and_executor_cleanup() {
         (HookSource::SessionFlags, false),
         (HookSource::Plugin, false),
         (HookSource::System, true),
-        (HookSource::Mdm, true),
-        (HookSource::CloudRequirements, true),
-        (HookSource::CloudManagedConfig, true),
-        (HookSource::LegacyManagedConfigFile, true),
-        (HookSource::LegacyManagedConfigMdm, true),
         (HookSource::Unknown, true),
     ] {
         let (mut engine, calls, mut request, expected_executor_call, _source) =
@@ -2702,17 +1410,13 @@ async fn mcp_tool_hooks_expand_event_input_and_apply_pre_tool_decisions() {
         .to_string(),
     )
     .expect("write MCP hooks.json");
-    let config_layer_stack = ConfigLayerStack::new(
-        vec![ConfigLayerEntry::new(
-            ConfigLayerSource::User {
-                file: config_path,
-                profile: None,
-            },
-            TomlValue::Table(Default::default()),
-        )],
-        ConfigRequirements::default(),
-        ConfigRequirementsToml::default(),
-    )
+    let config_layer_stack = ConfigLayerStack::new(vec![ConfigLayerEntry::new(
+        ConfigLayerSource::User {
+            file: config_path,
+            profile: None,
+        },
+        TomlValue::Table(Default::default()),
+    )])
     .expect("config layer stack");
 
     let request = PreToolUseRequest {
@@ -2743,7 +1447,6 @@ async fn mcp_tool_hooks_expand_event_input_and_apply_pre_tool_decisions() {
     };
     let engine = ClaudeHooksEngine::new(
         /*enabled*/ true,
-        /*bypass_hook_trust*/ true,
         Some(&config_layer_stack),
         Vec::new(),
         Vec::new(),
@@ -2811,17 +1514,13 @@ async fn mcp_interrupt_hooks_expand_event_input_and_bound_timeout() {
         .to_string(),
     )
     .expect("write MCP Interrupt hooks.json");
-    let config_layer_stack = ConfigLayerStack::new(
-        vec![ConfigLayerEntry::new(
-            ConfigLayerSource::User {
-                file: config_path,
-                profile: None,
-            },
-            TomlValue::Table(Default::default()),
-        )],
-        ConfigRequirements::default(),
-        ConfigRequirementsToml::default(),
-    )
+    let config_layer_stack = ConfigLayerStack::new(vec![ConfigLayerEntry::new(
+        ConfigLayerSource::User {
+            file: config_path,
+            profile: None,
+        },
+        TomlValue::Table(Default::default()),
+    )])
     .expect("config layer stack");
 
     let calls = Arc::new(Mutex::new(Vec::new()));
@@ -2835,7 +1534,6 @@ async fn mcp_interrupt_hooks_expand_event_input_and_bound_timeout() {
     };
     let engine = ClaudeHooksEngine::new(
         /*enabled*/ true,
-        /*bypass_hook_trust*/ true,
         Some(&config_layer_stack),
         Vec::new(),
         Vec::new(),

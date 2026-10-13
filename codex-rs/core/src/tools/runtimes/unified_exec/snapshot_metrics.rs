@@ -17,11 +17,6 @@ pub(super) struct SnapshotMetrics {
 
 impl SnapshotMetrics {
     pub(super) fn start(req: &UnifiedExecRequest, config: &Config) -> Option<Self> {
-        let brokered = config
-            .permissions
-            .network
-            .as_ref()
-            .is_some_and(|network| network.enabled() && network.credential_broker_enabled());
         // Executor snapshots emit at their own selection boundary. Disabled,
         // remote legacy, and non-login invocations are outside this denominator.
         if !cfg!(unix)
@@ -29,24 +24,19 @@ impl SnapshotMetrics {
             || req.turn_environment.environment.is_remote()
             || !config.features.enabled(Feature::ShellSnapshot)
             || !req.shell.is_posix_login()
-            || (req.cwd != req.turn_environment.selection.cwd && !brokered)
+            || req.cwd != req.turn_environment.selection.cwd
         {
             return None;
         }
-        let state = if brokered {
-            // Protected snapshots use a separate lazy cache, not the prewarm task.
-            "protected"
-        } else {
-            match req.turn_environment.shell_snapshot.peek() {
-                None => "prewarm_pending",
-                Some(Some(snapshot))
-                    if &snapshot.shell_environment_policy
-                        == req.turn_environment.shell_environment_policy() =>
-                {
-                    "prewarm_ready"
-                }
-                Some(_) => "unavailable",
+        let state = match req.turn_environment.shell_snapshot.peek() {
+            None => "prewarm_pending",
+            Some(Some(snapshot))
+                if &snapshot.shell_environment_policy
+                    == req.turn_environment.shell_environment_policy() =>
+            {
+                "prewarm_ready"
             }
+            Some(_) => "unavailable",
         };
         Some(Self {
             started_at: Instant::now(),

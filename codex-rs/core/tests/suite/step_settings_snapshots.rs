@@ -57,11 +57,8 @@ async fn ordinary_settings_updates_keep_the_running_turn_snapshot() -> Result<()
         .with_config(|config| {
             // This regression exercises ordinary turn construction without
             // enabling the diagnostic active-settings path.
-            config
-                .features
-                .enable(Feature::DefaultModeRequestUserInput)
-                .unwrap();
-            config.features.enable(Feature::FastMode).unwrap();
+            config.features.enable(Feature::DefaultModeRequestUserInput);
+            config.features.enable(Feature::FastMode);
             let template = bundled_models_response()
                 .unwrap()
                 .models

@@ -6,7 +6,6 @@ use super::MAX_CAPABILITIES;
 use super::MAX_RESPONSE_BYTES;
 use super::MAX_WARNINGS;
 use crate::CapabilityRootDiscoverRequest;
-use crate::DiscoverV2CapabilitiesRequest;
 use crate::ExecutorSkill;
 use crate::LocalFileSystem;
 use crate::capability_discovery::discover_root;
@@ -73,14 +72,13 @@ async fn discovery_preserves_inventory_and_v1_metadata() -> anyhow::Result<()> {
             SKILL,
         )?;
     }
-    let file_system = LocalFileSystem::unsandboxed();
+    let file_system = LocalFileSystem::new();
     let plugin_root = request.codex_home.join("plugins/cache/test/demo/local")?;
     let v1 = discover_root(
         &file_system,
         CapabilityRootDiscoverRequest {
             id: "demo@test".to_string(),
             path: plugin_root.clone(),
-            sandbox: None,
         },
     )
     .await;
@@ -88,15 +86,7 @@ async fn discovery_preserves_inventory_and_v1_metadata() -> anyhow::Result<()> {
     assert_eq!(v1.skills.len(), 4);
     let manager = CapabilityManager::new(file_system);
     manager.prewarm_locations(request.clone()).await?;
-    let response = manager
-        .get_or_refresh_discovery(
-            request.clone(),
-            DiscoverV2CapabilitiesRequest {
-                cwd: PathUri::from_host_native_path(temp.path().join("project"))?,
-                sandbox: None,
-            },
-        )
-        .await?;
+    let response = manager.get_or_refresh_discovery(request.clone()).await?;
     assert_eq!(
         response
             .plugins
@@ -180,40 +170,22 @@ fn expected_skill(path: PathUri, namespace: Option<&str>) -> ExecutorSkill {
 
 #[tokio::test]
 async fn discovery_reports_location_failures_without_paths() -> anyhow::Result<()> {
-    use codex_protocol::models::PermissionProfile;
-    use codex_protocol::permissions::FileSystemSandboxPolicy;
-    use codex_protocol::permissions::NetworkSandboxPolicy;
-
     let temp = tempfile::tempdir()?;
     request(temp.path())?;
     let locations = crate::discover_v2::capability_locations::CapabilityLocations {
         warnings: vec!["could not scan plugin cache /private/plugins/cache".into()],
         ..Default::default()
     };
-    let sandbox = crate::FileSystemSandboxContext::from_permission_profile(
-        PermissionProfile::from_runtime_permissions(
-            &FileSystemSandboxPolicy::restricted(Vec::new()),
-            NetworkSandboxPolicy::Restricted,
-        ),
-        PathUri::from_host_native_path(temp.path().join("project"))?,
+    let response = super::load_capability_discoveries(&LocalFileSystem::new(), &locations).await?;
+    assert_eq!(
+        *response,
+        crate::DiscoverV2CapabilitiesResponse {
+            warnings: vec![
+                "some capability locations could not be resolved; discovery may be incomplete"
+                    .into(),
+            ],
+            ..Default::default()
+        }
     );
-    for sandbox in [None, Some(&sandbox)] {
-        let response = super::load_capability_discoveries(
-            &LocalFileSystem::unsandboxed(),
-            &locations,
-            sandbox,
-        )
-        .await?;
-        assert_eq!(
-            *response,
-            crate::DiscoverV2CapabilitiesResponse {
-                warnings: vec![
-                    "some capability locations could not be resolved; discovery may be incomplete"
-                        .into(),
-                ],
-                ..Default::default()
-            }
-        );
-    }
     Ok(())
 }

@@ -115,10 +115,8 @@ impl SkillProvider for ExecutorSkillProvider {
                     ));
                     continue;
                 };
-                // TODO(anp): Take this accessor from the selected turn root when discovery receives
-                // turn permissions; until then, preserve direct access through its existing filesystem.
                 let outcome = load_environment_skills_from_root(
-                    &FileSystemEnvironmentAccessor::unrestricted(&file_system),
+                    &FileSystemEnvironmentAccessor::new(&file_system),
                     path,
                     self.restriction_product,
                 )

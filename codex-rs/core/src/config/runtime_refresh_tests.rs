@@ -1,10 +1,9 @@
-//! Ordinary refresh resolution and enterprise revocation without Session construction.
+//! Ordinary refresh resolution and enterprise MCP revocation without Session construction.
 
 use super::*;
 use crate::config::ConfigBuilder;
 use codex_config::CONFIG_TOML_FILE;
 use codex_config::ConfigLayerSource;
-use codex_config::test_support::CloudConfigBundleFixture;
 use codex_core_plugins::PluginLoadOutcome;
 use pretty_assertions::assert_eq;
 
@@ -19,32 +18,25 @@ async fn base_config() -> (tempfile::TempDir, Config) {
     (home, config)
 }
 
-async fn layered_config(
-    base: &Config,
-    user: &str,
-    managed: &str,
-    requirements: &str,
-    session: &str,
-) -> Config {
+async fn layered_config(base: &Config, user: &str, session: &str) -> Config {
     std::fs::write(base.codex_home.join(CONFIG_TOML_FILE), user).unwrap();
     let overrides: toml::Table = toml::from_str(session).unwrap();
     ConfigBuilder::without_managed_config_for_tests()
         .codex_home(base.codex_home.to_path_buf())
         .fallback_cwd(Some(base.cwd.to_path_buf()))
         .cli_overrides(overrides.into_iter().collect())
-        .cloud_config_bundle(
-            CloudConfigBundleFixture::enterprise_config(managed)
-                .add_enterprise_requirement(format!("[features]\n{requirements}"))
-                .into_loader(),
-        )
         .build()
         .await
         .unwrap()
 }
 
 fn enterprise_config(issuer: &str, resource: &str) -> String {
+    enterprise_config_with_xaa(issuer, resource, /*use_xaa*/ true)
+}
+
+fn enterprise_config_with_xaa(issuer: &str, resource: &str, use_xaa: bool) -> String {
     format!(
-        "[features]\nuse_xaa = true\napps = false\nsecret_auth_storage = false\n\
+        "[features]\nuse_xaa = {use_xaa}\napps = false\nsecret_auth_storage = false\n\
          [mcp_servers.enterprise]\nurl = 'https://resource.example/mcp'\nauth = 'ema_auth'\n\
          oauth_resource = '{resource}'\n\
          [mcp_enterprise_managed_auth.idp]\nissuer = '{issuer}'\nclient_id = '{issuer}-client'\n"
@@ -60,11 +52,20 @@ fn runtime_servers(config: &Config) -> HashMap<String, McpServerConfig> {
 #[test_case::test_case(RuntimeConfigRefresh::User; "user refresh")]
 #[test_case::test_case(RuntimeConfigRefresh::Mcp; "MCP refresh")]
 #[tokio::test]
-async fn refresh_honors_fresh_managed_denial(scope: RuntimeConfigRefresh) {
+async fn refresh_honors_fresh_xaa_opt_out(scope: RuntimeConfigRefresh) {
     let (_home, base) = base_config().await;
-    let enterprise = enterprise_config("https://idp.example", "resource");
-    let current = layered_config(&base, &enterprise, "", "use_xaa = true", "").await;
-    let next = layered_config(&base, &enterprise, "", "use_xaa = false", "").await;
+    let current = layered_config(
+        &base,
+        &enterprise_config_with_xaa("https://idp.example", "resource", /*use_xaa*/ true),
+        "",
+    )
+    .await;
+    let next = layered_config(
+        &base,
+        &enterprise_config_with_xaa("https://idp.example", "resource", /*use_xaa*/ false),
+        "",
+    )
+    .await;
     let refreshed = current.resolve_runtime_refresh(&next, scope).unwrap();
     assert!(!runtime_servers(&refreshed)["enterprise"].enabled);
     assert!(refreshed.mcp_enterprise_managed_auth.is_none());
@@ -76,25 +77,21 @@ async fn plugin_refresh_resolves_only_the_final_layer_combination() {
     let (_home, base) = base_config().await;
     let snapshot = |user: &str, project: &str| {
         let mut config = base.clone();
-        config.config_layer_stack = codex_config::ConfigLayerStack::new(
-            vec![
-                codex_config::ConfigLayerEntry::new(
-                    ConfigLayerSource::User {
-                        file: base.codex_home.join(CONFIG_TOML_FILE),
-                        profile: None,
-                    },
-                    toml::from_str(user).unwrap(),
-                ),
-                codex_config::ConfigLayerEntry::new(
-                    ConfigLayerSource::Project {
-                        dot_codex_folder: base.codex_home.join(".codex"),
-                    },
-                    toml::from_str(project).unwrap(),
-                ),
-            ],
-            Default::default(),
-            Default::default(),
-        )
+        config.config_layer_stack = codex_config::ConfigLayerStack::new(vec![
+            codex_config::ConfigLayerEntry::new(
+                ConfigLayerSource::User {
+                    file: base.codex_home.join(CONFIG_TOML_FILE),
+                    profile: None,
+                },
+                toml::from_str(user).unwrap(),
+            ),
+            codex_config::ConfigLayerEntry::new(
+                ConfigLayerSource::Project {
+                    dot_codex_folder: base.codex_home.join(".codex"),
+                },
+                toml::from_str(project).unwrap(),
+            ),
+        ])
         .unwrap();
         config.plugins = config
             .config_layer_stack
@@ -132,8 +129,6 @@ async fn refresh_honors_disabled_enterprise_host_load_result() {
         &base,
         &enterprise_config("https://idp.example", "resource"),
         "",
-        "",
-        "",
     )
     .await;
     let mut failed = current.clone();
@@ -153,17 +148,17 @@ async fn ordinary_transport_transitions_use_the_resolved_incoming_map() {
     for scope in [RuntimeConfigRefresh::User, RuntimeConfigRefresh::Mcp] {
         let (current, incoming) = match scope {
             RuntimeConfigRefresh::User => (
-                layered_config(&base, "", "", "", url).await,
-                layered_config(&base, command, "", "", "").await,
+                layered_config(&base, "", url).await,
+                layered_config(&base, command, "").await,
             ),
             RuntimeConfigRefresh::Mcp => (
-                layered_config(&base, command, "", "", "").await,
-                layered_config(&base, "", url, "", "").await,
+                layered_config(&base, command, "").await,
+                layered_config(&base, url, "").await,
             ),
             RuntimeConfigRefresh::UserFiles => unreachable!(),
         };
         let refreshed = current.resolve_runtime_refresh(&incoming, scope).unwrap();
-        assert_eq!(refreshed.mcp_servers.get(), incoming.mcp_servers.get());
+        assert_eq!(refreshed.mcp_servers, incoming.mcp_servers);
     }
 }
 
@@ -173,16 +168,12 @@ async fn mcp_refresh_preserves_current_user_and_session_layers_without_reopening
     let current = layered_config(
         &base,
         &enterprise_config("https://current-idp.example", "current-resource"),
-        "",
-        "",
         "[mcp_servers.enterprise]\nenabled = false",
     )
     .await;
     let next = layered_config(
         &base,
         &enterprise_config("https://old-idp.example", "old-resource"),
-        "",
-        "",
         "",
     )
     .await;
@@ -225,12 +216,10 @@ async fn refresh_revokes_changed_enterprise_admission(change: &str) {
         &base,
         &enterprise_config("https://idp.example", "resource"),
         "",
-        "",
-        "",
     )
     .await;
     let mut incoming = current.clone();
-    let mut servers = incoming.mcp_servers.get().clone();
+    let mut servers = incoming.mcp_servers.clone();
     match change {
         "removed" => {
             servers.remove("enterprise");
@@ -264,7 +253,7 @@ async fn refresh_revokes_changed_enterprise_admission(change: &str) {
         }
         _ => unreachable!(),
     }
-    incoming.mcp_servers.set(servers).unwrap();
+    incoming.mcp_servers = servers;
     for scope in [RuntimeConfigRefresh::User, RuntimeConfigRefresh::Mcp] {
         let revoked = current.resolve_runtime_refresh(&incoming, scope).unwrap();
         assert!(revoked.mcp_enterprise_managed_auth.is_none());
@@ -278,8 +267,8 @@ async fn refresh_revokes_changed_enterprise_admission(change: &str) {
 #[tokio::test]
 async fn mcp_refresh_preserves_apps_until_new_session() {
     let (_home, base) = base_config().await;
-    let current = layered_config(&base, "[features]\napps = true", "", "", "").await;
-    let next = layered_config(&base, "[features]\napps = true", "", "apps = false", "").await;
+    let current = layered_config(&base, "[features]\napps = true", "").await;
+    let next = layered_config(&base, "[features]\napps = false", "").await;
     let refreshed = current
         .resolve_runtime_refresh(&next, RuntimeConfigRefresh::Mcp)
         .unwrap();

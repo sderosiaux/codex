@@ -11,9 +11,7 @@ use codex_login::CodexAuth;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
-use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ModelsResponse;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::user_input::UserInput;
@@ -27,7 +25,6 @@ use core_test_support::responses::sse;
 use core_test_support::responses::sse_response;
 use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::test_codex;
-use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event_with_timeout;
 use pretty_assertions::assert_eq;
 use wiremock::MockServer;
@@ -58,10 +55,7 @@ async fn refresh_models_on_models_etag_mismatch_and_avoid_duplicate_models_fetch
             // Keep this test deterministic: no request retries, and a small stream retry budget.
             config.model_provider.request_max_retries = Some(0);
             config.model_provider.stream_max_retries = Some(1);
-            config
-                .features
-                .disable(Feature::Apps)
-                .expect("test config should allow feature update");
+            config.features.disable(Feature::Apps);
         });
 
     let test = builder.build(&server).await?;
@@ -69,8 +63,6 @@ async fn refresh_models_on_models_etag_mismatch_and_avoid_duplicate_models_fetch
     let cwd = Arc::clone(&test.cwd);
     let session_model = test.session_configured.model.clone();
     let cwd_path = cwd.abs();
-    let (sandbox_policy, permission_profile) =
-        turn_permission_fields(PermissionProfile::Disabled, cwd_path.as_path());
 
     assert_eq!(spawn_models_mock.requests().len(), 1);
     assert_eq!(spawn_models_mock.single_request_path(), "/v1/models");
@@ -117,9 +109,6 @@ async fn refresh_models_on_models_etag_mismatch_and_avoid_duplicate_models_fetch
             }])
             .with_thread_settings(ThreadSettingsOverrides {
                 environments: Some(local_requests(cwd_path)),
-                approval_policy: Some(AskForApproval::Never),
-                sandbox_policy: Some(sandbox_policy),
-                permission_profile,
                 collaboration_mode: Some(CollaborationMode {
                     mode: ModeKind::Default,
                     settings: Settings {

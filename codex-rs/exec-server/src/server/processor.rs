@@ -9,18 +9,15 @@ use tokio_util::task::AbortOnDropHandle;
 use tracing::debug;
 use tracing::warn;
 
-use crate::ExecServerRuntimeOptions;
 use crate::LocalFileSystem;
 use crate::connection::CHANNEL_CAPACITY;
 use crate::connection::JsonRpcConnection;
 use crate::connection::JsonRpcConnectionEvent;
 use crate::discover_v2::capability_locations::CapabilityLocationRequest;
 use crate::discover_v2::capability_manager::CapabilityManager;
-use crate::rpc::RpcCallError;
 use crate::rpc::RpcNotificationSender;
 use crate::rpc::RpcServerOutboundMessage;
 use crate::rpc::encode_server_message;
-use crate::rpc_server_requests::RpcServerRequestSender;
 use crate::server::ExecServerHandler;
 use crate::server::RequestDispatchMode;
 use crate::server::registry::build_router;
@@ -38,7 +35,6 @@ pub(crate) struct ConnectionProcessor {
     capability_manager: Arc<CapabilityManager>,
     capability_prewarm: Arc<AbortOnDropHandle<()>>,
     session_registry: Arc<SessionRegistry>,
-    runtime_paths: ExecServerRuntimeOptions,
     telemetry: ExecServerTelemetry,
     http_client_factory: HttpClientFactory,
     request_dispatch_mode: RequestDispatchMode,
@@ -46,9 +42,8 @@ pub(crate) struct ConnectionProcessor {
 
 impl ConnectionProcessor {
     #[cfg(test)]
-    pub(crate) fn new(runtime_paths: ExecServerRuntimeOptions) -> Self {
+    pub(crate) fn new() -> Self {
         Self::new_with_location_request(
-            runtime_paths,
             ExecServerTelemetry::default(),
             codex_http_client::HttpClientFactory::new(
                 codex_http_client::OutboundProxyPolicy::ReqwestDefault,
@@ -62,7 +57,6 @@ impl ConnectionProcessor {
     }
 
     pub(crate) fn new_with_telemetry(
-        runtime_paths: ExecServerRuntimeOptions,
         telemetry: ExecServerTelemetry,
         http_client_factory: HttpClientFactory,
         request_dispatch_mode: RequestDispatchMode,
@@ -74,7 +68,6 @@ impl ConnectionProcessor {
                     .and_then(|home| PathUri::from_host_native_path(home).ok()),
             });
         Self::new_with_location_request(
-            runtime_paths,
             telemetry,
             http_client_factory,
             request_dispatch_mode,
@@ -83,7 +76,6 @@ impl ConnectionProcessor {
     }
 
     fn new_with_location_request(
-        runtime_paths: ExecServerRuntimeOptions,
         telemetry: ExecServerTelemetry,
         http_client_factory: HttpClientFactory,
         request_dispatch_mode: RequestDispatchMode,
@@ -91,8 +83,7 @@ impl ConnectionProcessor {
     ) -> Self {
         // Library callers may bypass CLI startup. Capture the version before serving clients.
         let _ = BuildInfo::get();
-        let capability_manager =
-            CapabilityManager::new(LocalFileSystem::with_runtime_paths(runtime_paths.clone()));
+        let capability_manager = CapabilityManager::new(LocalFileSystem::new());
         let manager = Arc::clone(&capability_manager);
         // Start before any client connects; all sessions share these inert global locations.
         let prewarm = tokio::spawn(async move {
@@ -109,7 +100,6 @@ impl ConnectionProcessor {
             session_registry: SessionRegistry::new(telemetry.clone()),
             capability_manager,
             capability_prewarm: Arc::new(AbortOnDropHandle::new(prewarm)),
-            runtime_paths,
             telemetry,
             http_client_factory,
             request_dispatch_mode,
@@ -160,7 +150,6 @@ async fn run_connection(
         capability_manager: _capability_manager,
         capability_prewarm: _capability_prewarm,
         session_registry,
-        runtime_paths,
         telemetry,
         http_client_factory,
         request_dispatch_mode,
@@ -176,13 +165,7 @@ async fn run_connection(
     let (outgoing_tx, mut outgoing_rx) =
         mpsc::channel::<RpcServerOutboundMessage>(CHANNEL_CAPACITY);
     let notifications = RpcNotificationSender::new(outgoing_tx.clone());
-    let requests = notifications.request_sender();
-    let mut handler = ExecServerHandler::new(
-        session_registry,
-        notifications,
-        runtime_paths,
-        http_client_factory,
-    );
+    let mut handler = ExecServerHandler::new(session_registry, notifications, http_client_factory);
     handler.executor_registration = executor_registration;
     let handler = Arc::new(handler);
 
@@ -206,7 +189,6 @@ async fn run_connection(
         Arc::clone(&handler),
         outgoing_tx.clone(),
         disconnected_rx.clone(),
-        requests.clone(),
         telemetry,
         request_dispatch_mode,
     );
@@ -274,45 +256,15 @@ async fn run_connection(
         }
     }
 
-    if *disconnected_rx.borrow() {
-        complete_queued_client_responses(&requests, &mut incoming_rx);
-    }
-    requests.close();
     dispatcher.shutdown().await;
     handler.shutdown().await;
     drop(handler);
-    drop(requests);
     drop(outgoing_tx);
     for task in connection_tasks {
         task.abort();
         let _ = task.await;
     }
     let _ = outbound_task.await;
-}
-
-fn complete_queued_client_responses(
-    requests: &RpcServerRequestSender,
-    incoming_rx: &mut mpsc::Receiver<JsonRpcConnectionEvent>,
-) {
-    while let Ok(event) = incoming_rx.try_recv() {
-        let (request_id, response) = match event {
-            JsonRpcConnectionEvent::Message(JSONRPCMessage::Response(response)) => {
-                (response.id, Ok(response.result))
-            }
-            JsonRpcConnectionEvent::Message(JSONRPCMessage::Error(error)) => {
-                (error.id, Err(RpcCallError::Server(error.error)))
-            }
-            JsonRpcConnectionEvent::Message(
-                JSONRPCMessage::Request(_) | JSONRPCMessage::Notification(_),
-            )
-            | JsonRpcConnectionEvent::QueuedRequest { .. }
-            | JsonRpcConnectionEvent::MalformedMessage { .. }
-            | JsonRpcConnectionEvent::Disconnected { .. } => continue,
-        };
-        if !requests.complete(request_id.clone(), response) {
-            warn!("ignoring unexpected client response while disconnecting: {request_id:?}");
-        }
-    }
 }
 
 #[cfg(test)]
@@ -336,16 +288,14 @@ mod tests {
     use tokio::io::DuplexStream;
     use tokio::io::Lines;
     use tokio::io::duplex;
-    use tokio::sync::mpsc;
+
     use tokio::task::JoinHandle;
     use tokio::time::timeout;
 
-    use super::complete_queued_client_responses;
     use super::run_connection;
-    use crate::ExecServerRuntimeOptions;
     use crate::ProcessId;
     use crate::connection::JsonRpcConnection;
-    use crate::connection::JsonRpcConnectionEvent;
+
     use crate::protocol::ENVIRONMENT_INFO_METHOD;
     use crate::protocol::ENVIRONMENT_STATUS_METHOD;
     use crate::protocol::EXEC_METHOD;
@@ -356,26 +306,18 @@ mod tests {
     use crate::protocol::EnvironmentStatusKind;
     use crate::protocol::ExecParams;
     use crate::protocol::ExecResponse;
-    use crate::protocol::ExecServerNetworkPolicyDecision;
     use crate::protocol::INITIALIZE_METHOD;
     use crate::protocol::INITIALIZED_METHOD;
     use crate::protocol::InitializeParams;
     use crate::protocol::InitializeResponse;
-    use crate::protocol::NETWORK_POLICY_REQUEST_METHOD;
-    use crate::protocol::NetworkPolicyRequestResponse;
     use crate::protocol::ReadParams;
     use crate::protocol::TerminateParams;
     use crate::protocol::TerminateResponse;
-    use crate::rpc::RpcServerOutboundMessage;
-    use crate::rpc_server_requests::RpcServerRequestSender;
+
     use crate::server::session_registry::SessionRegistry;
 
     #[tokio::test]
     async fn startup_prewarms_without_a_client_connection() -> anyhow::Result<()> {
-        let paths = ExecServerRuntimeOptions::new(
-            std::env::current_exe()?,
-            /*codex_linux_sandbox_exe*/ None,
-        )?;
         let directory = tempfile::tempdir()?;
         let request = crate::discover_v2::capability_locations::CapabilityLocationRequest {
             codex_home: PathUri::from_host_native_path(directory.path().join("codex"))?,
@@ -386,7 +328,6 @@ mod tests {
         let skill_root = directory.path().join("codex/skills");
         std::fs::create_dir_all(&skill_root)?;
         let mut processor = super::ConnectionProcessor::new_with_location_request(
-            paths,
             crate::ExecServerTelemetry::default(),
             codex_http_client::HttpClientFactory::new(
                 codex_http_client::OutboundProxyPolicy::ReqwestDefault,
@@ -470,61 +411,6 @@ mod tests {
             .await
             .expect("processor should exit")
             .expect("processor should join");
-    }
-
-    /// A callback response received before EOF must survive transport shutdown.
-    #[tokio::test]
-    async fn disconnect_completes_queued_network_policy_response() {
-        let (outgoing_tx, mut outgoing_rx) = mpsc::channel(/*buffer*/ 1);
-        let requests = RpcServerRequestSender::new(outgoing_tx);
-        let pending_request = {
-            let requests = requests.clone();
-            tokio::spawn(async move {
-                requests
-                    .call_with_timeout::<_, NetworkPolicyRequestResponse>(
-                        NETWORK_POLICY_REQUEST_METHOD,
-                        &(),
-                        Duration::from_secs(1),
-                    )
-                    .await
-            })
-        };
-        let RpcServerOutboundMessage::Request(request) = outgoing_rx
-            .recv()
-            .await
-            .expect("network policy request should be queued")
-        else {
-            panic!("expected outbound network policy request");
-        };
-
-        let (incoming_tx, mut incoming_rx) = mpsc::channel(/*buffer*/ 2);
-        incoming_tx
-            .try_send(JsonRpcConnectionEvent::Message(JSONRPCMessage::Response(
-                JSONRPCResponse {
-                    id: request.id,
-                    result: serde_json::to_value(NetworkPolicyRequestResponse {
-                        decision: ExecServerNetworkPolicyDecision::Allow,
-                    })
-                    .expect("serialize network policy response"),
-                },
-            )))
-            .expect("queue network policy response");
-        incoming_tx
-            .try_send(JsonRpcConnectionEvent::Disconnected { reason: None })
-            .expect("queue transport disconnect");
-
-        complete_queued_client_responses(&requests, &mut incoming_rx);
-        requests.close();
-
-        assert_eq!(
-            pending_request
-                .await
-                .expect("network policy request should join")
-                .expect("network policy request should complete"),
-            NetworkPolicyRequestResponse {
-                decision: ExecServerNetworkPolicyDecision::Allow,
-            }
-        );
     }
 
     #[tokio::test]
@@ -629,20 +515,12 @@ mod tests {
             connection,
             super::ConnectionProcessor {
                 session_registry: registry,
-                ..super::ConnectionProcessor::new(test_runtime_paths())
+                ..super::ConnectionProcessor::new()
             },
             crate::telemetry::ConnectionTransport::Stdio,
             /*executor_registration*/ None,
         ));
         (client_writer, BufReader::new(client_reader).lines(), task)
-    }
-
-    fn test_runtime_paths() -> ExecServerRuntimeOptions {
-        ExecServerRuntimeOptions::new(
-            std::env::current_exe().expect("current exe"),
-            /*codex_linux_sandbox_exe*/ None,
-        )
-        .expect("runtime paths")
     }
 
     async fn send_request<P: Serialize>(
@@ -716,10 +594,6 @@ mod tests {
             tty: false,
             pipe_stdin: false,
             arg0: None,
-            sandbox: None,
-            enforce_managed_network: false,
-            managed_network: None,
-            network_proxy: None,
         }
     }
 

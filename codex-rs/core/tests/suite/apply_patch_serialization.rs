@@ -1,7 +1,6 @@
 #![cfg(not(target_os = "windows"))]
 
 use anyhow::Result;
-use codex_protocol::models::PermissionProfile;
 use core_test_support::assert_regex_match;
 use core_test_support::skip_if_no_network;
 use core_test_support::skip_if_target_windows;
@@ -25,10 +24,7 @@ async fn apply_patch_custom_tool_call_creates_file() -> Result<()> {
 
     harness
         .test()
-        .submit_turn_with_permission_profile(
-            "apply the patch via custom tool to create a file",
-            PermissionProfile::Disabled,
-        )
+        .submit_turn("apply the patch via custom tool to create a file")
         .await?;
 
     let output = harness.apply_patch_output(call_id).await;
@@ -68,10 +64,7 @@ async fn apply_patch_custom_tool_call_updates_existing_file() -> Result<()> {
 
     harness
         .test()
-        .submit_turn_with_permission_profile(
-            "apply the patch via custom tool to update a file",
-            PermissionProfile::Disabled,
-        )
+        .submit_turn("apply the patch via custom tool to update a file")
         .await?;
 
     let output = harness.apply_patch_output(call_id).await;
@@ -109,10 +102,7 @@ async fn apply_patch_custom_tool_call_reports_failure_output() -> Result<()> {
 
     harness
         .test()
-        .submit_turn_with_permission_profile(
-            "attempt a failing apply_patch via custom tool",
-            PermissionProfile::Disabled,
-        )
+        .submit_turn("attempt a failing apply_patch via custom tool")
         .await?;
 
     let output = harness.apply_patch_output(call_id).await;

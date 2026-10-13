@@ -1,7 +1,3 @@
-#[path = "plugin_measurement_catalog.rs"]
-mod measurement_catalog;
-pub(crate) use measurement_catalog::fetch_measurement_reference_bundle;
-
 use crate::app_mcp_routing::apply_app_mcp_routing_policy;
 use crate::error_subtype::http_status_sub_error_type;
 use crate::http_client_selector::HttpClientSelector;
@@ -10,7 +6,6 @@ use crate::store::PLUGINS_CACHE_DIR;
 use crate::store::PluginStore;
 use chrono::DateTime;
 use chrono::Utc;
-use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::PluginAuthPolicy;
 use codex_app_server_protocol::PluginAvailability;
 use codex_app_server_protocol::PluginDisabledReason;
@@ -116,7 +111,6 @@ const MAX_RECOMMENDED_PLUGIN_NAME_LEN: usize = 64;
 const MAX_RECOMMENDED_PLUGIN_DISPLAY_NAME_LEN: usize = 64;
 const MAX_REMOTE_DEFAULT_PROMPT_COUNT: usize = 3;
 const MAX_REMOTE_DEFAULT_PROMPT_LEN: usize = 128;
-const INVALID_REQUEST_ERROR_CODE: i64 = -32600;
 const REMOTE_INSTALLED_MARKETPLACE_DISPLAY_ORDER: [(&str, &str); 6] = [
     (
         REMOTE_GLOBAL_MARKETPLACE_NAME,
@@ -379,15 +373,12 @@ pub fn is_valid_remote_plugin_id(plugin_id: &str) -> bool {
             .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '~')
 }
 
-pub fn validate_remote_plugin_id(plugin_id: &str) -> Result<(), JSONRPCErrorError> {
+pub fn validate_remote_plugin_id(plugin_id: &str) -> Result<(), String> {
     if !is_valid_remote_plugin_id(plugin_id) {
-        return Err(JSONRPCErrorError {
-            code: INVALID_REQUEST_ERROR_CODE,
-            message:
-                "invalid remote plugin id: only ASCII letters, digits, `_`, `-`, and `~` are allowed"
-                    .to_string(),
-            data: None,
-        });
+        return Err(
+            "invalid remote plugin id: only ASCII letters, digits, `_`, `-`, and `~` are allowed"
+                .to_string(),
+        );
     }
 
     Ok(())

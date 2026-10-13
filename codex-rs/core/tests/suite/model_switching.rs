@@ -3,14 +3,12 @@ use codex_config::types::Personality;
 use codex_core::CodexThread;
 use codex_core::ForkSnapshot;
 use codex_core::TurnInputRequest;
-use codex_core::config::Constrained;
 use codex_features::Feature;
 use codex_history::RolloutItem;
 use codex_login::CodexAuth;
 use codex_models_manager::bundled_models_response;
 use codex_models_manager::manager::RefreshStrategy;
 use codex_prompts::render_model_instructions;
-use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::ReasoningSummary;
@@ -20,7 +18,6 @@ use codex_protocol::config_types::Settings;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::models::BaseInstructionsProvenance;
 use codex_protocol::models::ImageReference;
-use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ModelInfo;
@@ -31,7 +28,6 @@ use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::openai_models::TruncationPolicyConfig;
 use codex_protocol::openai_models::default_input_modalities;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ThreadSettingsOverrides;
@@ -54,7 +50,6 @@ use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::local_requests;
 use core_test_support::test_codex::test_codex;
-use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_match;
 use pretty_assertions::assert_eq;
@@ -65,13 +60,8 @@ use test_case::test_case;
 use wiremock::MockServer;
 
 fn read_only_user_turn(test: &TestCodex, items: Vec<UserInput>, model: String) -> TurnInputRequest {
-    let (sandbox_policy, permission_profile) =
-        turn_permission_fields(PermissionProfile::read_only(), test.cwd_path());
     TurnInputRequest::user_input(items).with_thread_settings(ThreadSettingsOverrides {
         environments: Some(local_requests(test.config.cwd.clone())),
-        approval_policy: Some(AskForApproval::Never),
-        sandbox_policy: Some(sandbox_policy),
-        permission_profile,
         collaboration_mode: Some(CollaborationMode {
             mode: ModeKind::Default,
             settings: Settings {
@@ -127,12 +117,8 @@ fn test_model_info(
         supports_experimental_context: false,
         use_responses_lite: false,
         supports_reasoning_effort_updates: false,
-        guardian: None,
-        node_repl_auto_review_required: false,
         node_repl_disabled: false,
-        auto_review_model_override: None,
         model_specialty: None,
-        tool_mode: None,
         multi_agent_version: None,
         multi_agent_reasoning_effort: None,
         priority: 1,
@@ -166,7 +152,6 @@ fn test_model_info(
 fn configure_model_switching_fixture(model: &mut ModelInfo) {
     // Exercise model selection and history without changing the request transport,
     // starting Code Mode, or compacting the mocked history on a model switch.
-    model.tool_mode = None;
     model.multi_agent_version = None;
     model.use_responses_lite = false;
     model.comp_hash = None;
@@ -508,14 +493,9 @@ async fn settings_update_during_active_turn_applies_to_next_turn_only() -> Resul
     let mut builder = test_codex()
         .with_model_info_override("gpt-5.6-terra", configure_model_switching_fixture)
         .with_config(|config| {
-            config
-                .features
-                .enable(Feature::DefaultModeRequestUserInput)
-                .expect("test config should allow feature update");
+            config.features.enable(Feature::DefaultModeRequestUserInput);
             config.model_reasoning_effort = Some(ReasoningEffort::Low);
             config.model_reasoning_summary = Some(ReasoningSummary::Concise);
-            config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
-            config.approvals_reviewer = ApprovalsReviewer::User;
         });
     let test = builder.build_with_auto_env(&server).await?;
 
@@ -538,8 +518,6 @@ async fn settings_update_during_active_turn_applies_to_next_turn_only() -> Resul
             effort: Some(Some(ReasoningEffort::High)),
             summary: Some(ReasoningSummary::Detailed),
             service_tier: Some(Some(ServiceTier::Fast.request_value().to_string())),
-            approval_policy: Some(AskForApproval::Never),
-            approvals_reviewer: Some(ApprovalsReviewer::AutoReview),
             ..Default::default()
         },
     )
@@ -880,10 +858,7 @@ async fn model_change_projects_media_without_changing_live_or_replayed_history(
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
         .with_config(move |config| {
             config.model = Some(text_model_slug.to_string());
-            config
-                .features
-                .enable(Feature::UnifiedImageBudget)
-                .expect("enable unified image budget");
+            config.features.enable(Feature::UnifiedImageBudget);
         });
     let test = builder.build_with_auto_env(&server).await?;
     let models_manager = test.thread_manager.get_models_manager();
@@ -1260,12 +1235,8 @@ async fn model_switch_to_smaller_model_updates_token_context_window() -> Result<
         supports_experimental_context: false,
         use_responses_lite: false,
         supports_reasoning_effort_updates: false,
-        guardian: None,
-        node_repl_auto_review_required: false,
         node_repl_disabled: false,
-        auto_review_model_override: None,
         model_specialty: None,
-        tool_mode: None,
         multi_agent_version: None,
         multi_agent_reasoning_effort: None,
         priority: 1,

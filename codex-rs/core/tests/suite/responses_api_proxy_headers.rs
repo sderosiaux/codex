@@ -8,8 +8,6 @@ use codex_features::Feature;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
-use codex_protocol::models::PermissionProfile;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::user_input::UserInput;
@@ -26,7 +24,6 @@ use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::local_requests;
 use core_test_support::test_codex::test_codex;
-use core_test_support::test_codex::turn_permission_fields;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use std::time::Duration;
@@ -91,10 +88,7 @@ async fn responses_api_parent_and_subagent_requests_include_identity_headers_and
     .await;
 
     let mut builder = test_codex().with_config(|config| {
-        config
-            .features
-            .disable(Feature::EnableRequestCompression)
-            .expect("test config should allow feature update");
+        config.features.disable(Feature::EnableRequestCompression);
         config
             .responses_api_metadata
             .insert("codex_security_surface".to_string(), "sdk".to_string());
@@ -158,8 +152,6 @@ async fn responses_api_parent_and_subagent_requests_include_identity_headers_and
 async fn submit_turn_with_timeout(test: &TestCodex, prompt: &str) -> Result<()> {
     let session_model = test.session_configured.model.clone();
     let cwd = test.config.cwd.clone();
-    let (sandbox_policy, permission_profile) =
-        turn_permission_fields(PermissionProfile::workspace_write(), cwd.as_path());
     test.codex
         .start_or_steer_turn(
             TurnInputRequest::user_input(vec![UserInput::Text {
@@ -168,9 +160,6 @@ async fn submit_turn_with_timeout(test: &TestCodex, prompt: &str) -> Result<()> 
             }])
             .with_thread_settings(ThreadSettingsOverrides {
                 environments: Some(local_requests(cwd)),
-                approval_policy: Some(AskForApproval::OnRequest),
-                sandbox_policy: Some(sandbox_policy),
-                permission_profile,
                 collaboration_mode: Some(CollaborationMode {
                     mode: ModeKind::Default,
                     settings: Settings {

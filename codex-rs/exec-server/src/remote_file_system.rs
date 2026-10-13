@@ -17,7 +17,6 @@ use crate::ExecutorFileSystemFuture;
 use crate::FileMetadata;
 use crate::FileSystemReadStream;
 use crate::FileSystemResult;
-use crate::FileSystemSandboxContext;
 use crate::GetMetadataOptions;
 use crate::ReadDirectoryEntry;
 use crate::ReadFileOptions;
@@ -58,18 +57,11 @@ impl RemoteFileSystem {
         }
     }
 
-    async fn canonicalize(
-        &self,
-        path: &PathUri,
-        sandbox: Option<&FileSystemSandboxContext>,
-    ) -> FileSystemResult<PathUri> {
+    async fn canonicalize(&self, path: &PathUri) -> FileSystemResult<PathUri> {
         trace!("remote fs canonicalize");
         let client = self.client.get().await.map_err(map_remote_error)?;
         let response = client
-            .fs_canonicalize(FsCanonicalizeParams {
-                path: path.clone(),
-                sandbox: sandbox.cloned(),
-            })
+            .fs_canonicalize(FsCanonicalizeParams { path: path.clone() })
             .await
             .map_err(map_remote_error)?;
         Ok(response.path)
@@ -79,7 +71,6 @@ impl RemoteFileSystem {
         &self,
         path: &PathUri,
         options: ReadFileOptions,
-        sandbox: Option<&FileSystemSandboxContext>,
     ) -> FileSystemResult<Vec<u8>> {
         trace!("remote fs read_file");
         let client = self.client.get().await.map_err(map_remote_error)?;
@@ -87,7 +78,6 @@ impl RemoteFileSystem {
             .fs_read_file(FsReadFileParams {
                 path: path.clone(),
                 follow_symlinks: (!options.follow_symlinks).then_some(false),
-                sandbox: sandbox.cloned(),
             })
             .await
             .map_err(map_remote_error)?;
@@ -99,14 +89,10 @@ impl RemoteFileSystem {
         })
     }
 
-    async fn read_file_stream(
-        &self,
-        path: &PathUri,
-        sandbox: Option<&FileSystemSandboxContext>,
-    ) -> FileSystemResult<FileSystemReadStream> {
+    async fn read_file_stream(&self, path: &PathUri) -> FileSystemResult<FileSystemReadStream> {
         trace!("remote fs read_file_stream");
         let client = self.client.get().await.map_err(map_remote_error)?;
-        file_stream::open(client, path.clone(), sandbox).await
+        file_stream::open(client, path.clone()).await
     }
 
     async fn write_file(
@@ -114,7 +100,6 @@ impl RemoteFileSystem {
         path: &PathUri,
         contents: Vec<u8>,
         options: WriteFileOptions,
-        sandbox: Option<&FileSystemSandboxContext>,
     ) -> FileSystemResult<()> {
         trace!("remote fs write_file");
         let client = self.client.get().await.map_err(map_remote_error)?;
@@ -123,7 +108,6 @@ impl RemoteFileSystem {
                 path: path.clone(),
                 data_base64: STANDARD.encode(contents),
                 follow_symlinks: (!options.follow_symlinks).then_some(false),
-                sandbox: sandbox.cloned(),
             })
             .await;
         self.metadata_requests.lock().await.clear();
@@ -135,7 +119,6 @@ impl RemoteFileSystem {
         &self,
         path: &PathUri,
         options: CreateDirectoryOptions,
-        sandbox: Option<&FileSystemSandboxContext>,
     ) -> FileSystemResult<()> {
         trace!("remote fs create_directory");
         let client = self.client.get().await.map_err(map_remote_error)?;
@@ -144,7 +127,6 @@ impl RemoteFileSystem {
                 path: path.clone(),
                 recursive: Some(options.recursive),
                 follow_symlinks: (!options.follow_symlinks).then_some(false),
-                sandbox: sandbox.cloned(),
             })
             .await;
         self.metadata_requests.lock().await.clear();
@@ -157,10 +139,9 @@ impl RemoteFileSystem {
         &self,
         path: &PathUri,
         options: GetMetadataOptions,
-        sandbox: Option<&FileSystemSandboxContext>,
     ) -> FileSystemResult<FileMetadata> {
-        if sandbox.is_some() || !options.follow_symlinks {
-            return self.get_metadata_uncached(path, options, sandbox).await;
+        if !options.follow_symlinks {
+            return self.get_metadata_uncached(path, options).await;
         }
 
         let request = {
@@ -170,7 +151,7 @@ impl RemoteFileSystem {
         };
         let result = match request
             .get_or_init(|| async {
-                self.get_metadata_uncached(path, options, /*sandbox*/ None)
+                self.get_metadata_uncached(path, options)
                     .await
                     .map_err(Arc::new)
             })
@@ -196,7 +177,6 @@ impl RemoteFileSystem {
         &self,
         path: &PathUri,
         options: GetMetadataOptions,
-        sandbox: Option<&FileSystemSandboxContext>,
     ) -> FileSystemResult<FileMetadata> {
         trace!("remote fs get_metadata");
         let client = self.client.get().await.map_err(map_remote_error)?;
@@ -204,7 +184,6 @@ impl RemoteFileSystem {
             .fs_get_metadata(FsGetMetadataParams {
                 path: path.clone(),
                 follow_symlinks: (!options.follow_symlinks).then_some(false),
-                sandbox: sandbox.cloned(),
             })
             .await
             .map_err(map_remote_error)?;
@@ -218,18 +197,11 @@ impl RemoteFileSystem {
         })
     }
 
-    async fn read_directory(
-        &self,
-        path: &PathUri,
-        sandbox: Option<&FileSystemSandboxContext>,
-    ) -> FileSystemResult<Vec<ReadDirectoryEntry>> {
+    async fn read_directory(&self, path: &PathUri) -> FileSystemResult<Vec<ReadDirectoryEntry>> {
         trace!("remote fs read_directory");
         let client = self.client.get().await.map_err(map_remote_error)?;
         let response = client
-            .fs_read_directory(FsReadDirectoryParams {
-                path: path.clone(),
-                sandbox: sandbox.cloned(),
-            })
+            .fs_read_directory(FsReadDirectoryParams { path: path.clone() })
             .await
             .map_err(map_remote_error)?;
         Ok(response
@@ -243,30 +215,19 @@ impl RemoteFileSystem {
             .collect())
     }
 
-    async fn walk(
-        &self,
-        path: &PathUri,
-        options: WalkOptions,
-        sandbox: Option<&FileSystemSandboxContext>,
-    ) -> FileSystemResult<WalkOutcome> {
+    async fn walk(&self, path: &PathUri, options: WalkOptions) -> FileSystemResult<WalkOutcome> {
         trace!("remote fs walk");
         let client = self.client.get().await.map_err(map_remote_error)?;
         client
             .fs_walk(FsWalkParams {
                 path: path.clone(),
                 options,
-                sandbox: sandbox.cloned(),
             })
             .await
             .map_err(map_remote_error)
     }
 
-    async fn remove(
-        &self,
-        path: &PathUri,
-        options: RemoveOptions,
-        sandbox: Option<&FileSystemSandboxContext>,
-    ) -> FileSystemResult<()> {
+    async fn remove(&self, path: &PathUri, options: RemoveOptions) -> FileSystemResult<()> {
         trace!("remote fs remove");
         let client = self.client.get().await.map_err(map_remote_error)?;
         let result = client
@@ -275,7 +236,6 @@ impl RemoteFileSystem {
                 recursive: Some(options.recursive),
                 force: Some(options.force),
                 follow_symlinks: (!options.follow_symlinks).then_some(false),
-                sandbox: sandbox.cloned(),
             })
             .await;
         self.metadata_requests.lock().await.clear();
@@ -288,7 +248,6 @@ impl RemoteFileSystem {
         source_path: &PathUri,
         destination_path: &PathUri,
         options: CopyOptions,
-        sandbox: Option<&FileSystemSandboxContext>,
     ) -> FileSystemResult<()> {
         trace!("remote fs copy");
         let client = self.client.get().await.map_err(map_remote_error)?;
@@ -297,7 +256,6 @@ impl RemoteFileSystem {
                 source_path: source_path.clone(),
                 destination_path: destination_path.clone(),
                 recursive: options.recursive,
-                sandbox: sandbox.cloned(),
             })
             .await;
         self.metadata_requests.lock().await.clear();
@@ -307,29 +265,23 @@ impl RemoteFileSystem {
 }
 
 impl ExecutorFileSystem for RemoteFileSystem {
-    fn canonicalize<'a>(
-        &'a self,
-        path: &'a PathUri,
-        sandbox: Option<&'a FileSystemSandboxContext>,
-    ) -> ExecutorFileSystemFuture<'a, PathUri> {
-        Box::pin(RemoteFileSystem::canonicalize(self, path, sandbox))
+    fn canonicalize<'a>(&'a self, path: &'a PathUri) -> ExecutorFileSystemFuture<'a, PathUri> {
+        Box::pin(RemoteFileSystem::canonicalize(self, path))
     }
 
     fn read_file<'a>(
         &'a self,
         path: &'a PathUri,
         options: ReadFileOptions,
-        sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, Vec<u8>> {
-        Box::pin(RemoteFileSystem::read_file(self, path, options, sandbox))
+        Box::pin(RemoteFileSystem::read_file(self, path, options))
     }
 
     fn read_file_stream<'a>(
         &'a self,
         path: &'a PathUri,
-        sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, FileSystemReadStream> {
-        Box::pin(RemoteFileSystem::read_file_stream(self, path, sandbox))
+        Box::pin(RemoteFileSystem::read_file_stream(self, path))
     }
 
     fn write_file<'a>(
@@ -337,57 +289,47 @@ impl ExecutorFileSystem for RemoteFileSystem {
         path: &'a PathUri,
         contents: Vec<u8>,
         options: WriteFileOptions,
-        sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, ()> {
-        Box::pin(RemoteFileSystem::write_file(
-            self, path, contents, options, sandbox,
-        ))
+        Box::pin(RemoteFileSystem::write_file(self, path, contents, options))
     }
 
     fn create_directory<'a>(
         &'a self,
         path: &'a PathUri,
         options: CreateDirectoryOptions,
-        sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, ()> {
-        Box::pin(RemoteFileSystem::create_directory(
-            self, path, options, sandbox,
-        ))
+        Box::pin(RemoteFileSystem::create_directory(self, path, options))
     }
 
     fn get_metadata<'a>(
         &'a self,
         path: &'a PathUri,
         options: GetMetadataOptions,
-        sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, FileMetadata> {
-        Box::pin(RemoteFileSystem::get_metadata(self, path, options, sandbox))
+        Box::pin(RemoteFileSystem::get_metadata(self, path, options))
     }
 
     fn read_directory<'a>(
         &'a self,
         path: &'a PathUri,
-        sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, Vec<ReadDirectoryEntry>> {
-        Box::pin(RemoteFileSystem::read_directory(self, path, sandbox))
+        Box::pin(RemoteFileSystem::read_directory(self, path))
     }
 
     fn walk<'a>(
         &'a self,
         path: &'a PathUri,
         options: WalkOptions,
-        sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, WalkOutcome> {
-        Box::pin(RemoteFileSystem::walk(self, path, options, sandbox))
+        Box::pin(RemoteFileSystem::walk(self, path, options))
     }
 
     fn remove<'a>(
         &'a self,
         path: &'a PathUri,
         options: RemoveOptions,
-        sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, ()> {
-        Box::pin(RemoteFileSystem::remove(self, path, options, sandbox))
+        Box::pin(RemoteFileSystem::remove(self, path, options))
     }
 
     fn copy<'a>(
@@ -395,14 +337,12 @@ impl ExecutorFileSystem for RemoteFileSystem {
         source_path: &'a PathUri,
         destination_path: &'a PathUri,
         options: CopyOptions,
-        sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, ()> {
         Box::pin(RemoteFileSystem::copy(
             self,
             source_path,
             destination_path,
             options,
-            sandbox,
         ))
     }
 }

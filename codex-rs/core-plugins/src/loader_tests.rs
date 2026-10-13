@@ -5,8 +5,6 @@ use crate::test_support::test_skill_root_loader;
 use crate::test_support::write_file;
 use codex_config::ConfigLayerEntry;
 use codex_config::ConfigLayerSource;
-use codex_config::ConfigRequirements;
-use codex_config::ConfigRequirementsToml;
 use codex_config::config_toml::ConfigToml;
 use codex_plugin::PluginId;
 use codex_utils_plugins::AGENT_PLUGIN_SCHEMA_URI;
@@ -266,14 +264,10 @@ async fn installed_agent_plugin_uses_isolated_data_root_for_stdio_mcp() {
   }
 }"#,
     );
-    let stack = ConfigLayerStack::new(
-        vec![user_layer(
-            user_config_path(&temp_dir, "config.toml"),
-            "[plugins.\"a-b@c\"]\nenabled = true\n",
-        )],
-        ConfigRequirements::default(),
-        ConfigRequirementsToml::default(),
-    )
+    let stack = ConfigLayerStack::new(vec![user_layer(
+        user_config_path(&temp_dir, "config.toml"),
+        "[plugins.\"a-b@c\"]\nenabled = true\n",
+    )])
     .expect("valid config layer stack");
     let store = PluginStore::new(temp_dir.path().to_path_buf());
 
@@ -322,8 +316,7 @@ async fn installed_agent_plugin_uses_isolated_data_root_for_stdio_mcp() {
 #[test]
 fn configured_plugins_from_stack_merges_enabled_effective_layers() {
     let temp_dir = TempDir::new().expect("tempdir");
-    let stack = ConfigLayerStack::new(
-        vec![
+    let stack = ConfigLayerStack::new(vec![
             ConfigLayerEntry::new(
                 ConfigLayerSource::System {
                     file: user_config_path(&temp_dir, "system.toml"),
@@ -355,10 +348,7 @@ fn configured_plugins_from_stack_merges_enabled_effective_layers() {
                     .expect("untrusted project config toml"),
                 "project is untrusted",
             ),
-        ],
-        ConfigRequirements::default(),
-        ConfigRequirementsToml::default(),
-    )
+        ])
     .expect("valid config layer stack");
 
     let project_mcp_servers = HashMap::from([(
@@ -416,16 +406,12 @@ async fn legacy_ema_policy_disables_installed_and_selected_plugin_servers() {
         r#"{"mcpServers":{"example":{"url":"https://resource.example/mcp"}}}"#,
     );
     for endpoint in ["https://resource.example/mcp", "https://other.example/mcp"] {
-        let stack = ConfigLayerStack::new(
-            vec![user_layer(
-                user_config_path(&temp_dir, "config.toml"),
-                &format!(
-                    "[plugins.\"plugin@market\".mcp_servers.example.ema_auth]\nurl = '{endpoint}'"
-                ),
-            )],
-            ConfigRequirements::default(),
-            ConfigRequirementsToml::default(),
-        )
+        let stack = ConfigLayerStack::new(vec![user_layer(
+            user_config_path(&temp_dir, "config.toml"),
+            &format!(
+                "[plugins.\"plugin@market\".mcp_servers.example.ema_auth]\nurl = '{endpoint}'"
+            ),
+        )])
         .expect("legacy policy stack");
         let config: ConfigToml = stack.effective_config().try_into().expect("plugin config");
         let policy = &config.plugins.plugins["plugin@market"].mcp_servers;
@@ -512,10 +498,9 @@ async fn hooks_only_scope_shares_plugin_resolution_without_loading_other_capabil
     );
     write_file(&warning_root.join("hooks/hooks.json"), "not valid json");
 
-    let stack = ConfigLayerStack::new(
-        vec![user_layer(
-            user_config_path(&temp_dir, "config.toml"),
-            r#"
+    let stack = ConfigLayerStack::new(vec![user_layer(
+        user_config_path(&temp_dir, "config.toml"),
+        r#"
 [plugins."valid@test"]
 enabled = true
 
@@ -534,10 +519,7 @@ enabled = true
 [plugins."warning@test"]
 enabled = true
 "#,
-        )],
-        ConfigRequirements::default(),
-        ConfigRequirementsToml::default(),
-    )
+    )])
     .expect("valid config layer stack");
     let store = PluginStore::new(temp_dir.path().to_path_buf());
 

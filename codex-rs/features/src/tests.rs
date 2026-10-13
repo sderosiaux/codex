@@ -15,16 +15,6 @@ use toml::Table;
 use toml::Value as TomlValue;
 
 #[test]
-fn guardian_transcript_mode_rejects_invalid_values() {
-    for input in [
-        "[guardianv2]\ntranscript_mode = 'xml'",
-        "[guardianv2]\ntranscript_mode = true",
-    ] {
-        assert!(toml::from_str::<FeaturesToml>(input).is_err());
-    }
-}
-
-#[test]
 fn sleep_tool_config_rejects_unknown_mode() {
     assert!(toml::from_str::<FeaturesToml>("[sleep_tool]\nmode = 'off'").is_err());
 }
@@ -156,253 +146,6 @@ path = "/custom/mcp"
 }
 
 #[test]
-fn code_mode_only_requires_code_mode() {
-    let mut features = Features::with_defaults();
-    features.enable(Feature::CodeModeOnly);
-    features.normalize_dependencies();
-
-    assert_eq!(features.enabled(Feature::CodeModeOnly), true);
-    assert_eq!(features.enabled(Feature::CodeMode), true);
-}
-
-#[test]
-fn code_mode_host_feature_config_preserves_boolean_toggle() {
-    let features: FeaturesToml =
-        toml::from_str("code_mode_host = false").expect("features table should deserialize");
-
-    assert_eq!(features.code_mode_host, Some(FeatureToml::Enabled(false)));
-    assert_eq!(
-        features.entries(),
-        BTreeMap::from([("code_mode_host".to_string(), false)])
-    );
-}
-
-#[test]
-fn guardian_v2_feature_config_preserves_boolean_toggle() {
-    let features: FeaturesToml =
-        toml::from_str("guardianv2 = true").expect("Guardian v2 boolean should deserialize");
-
-    assert_eq!(features.guardianv2, Some(FeatureToml::Enabled(true)));
-    assert_eq!(
-        features.entries(),
-        BTreeMap::from([("guardianv2".to_owned(), true)])
-    );
-}
-
-#[test]
-fn guardian_thread_context_is_ignored_with_a_migration_notice() {
-    let enabled_context = "[guardianv2]\nthread_context = true";
-    let disabled_context = "[guardianv2]\nthread_context = false";
-    for (base, profile, deprecated) in [
-        ("", "", false),
-        ("guardianv2 = false", "", false),
-        (disabled_context, "", true),
-        (enabled_context, "", true),
-        (enabled_context, disabled_context, true),
-        (disabled_context, enabled_context, true),
-        (
-            "[guardianv2]\nenabled = false\nthread_context = true",
-            "",
-            true,
-        ),
-    ] {
-        let base = toml::from_str::<FeaturesToml>(base).expect("base features");
-        let profile = toml::from_str::<FeaturesToml>(profile).expect("profile features");
-        let features = Features::from_sources(
-            FeatureConfigSource {
-                features: Some(&base),
-                ..Default::default()
-            },
-            FeatureConfigSource {
-                features: Some(&profile),
-                ..Default::default()
-            },
-            FeatureOverrides::default(),
-        );
-        assert_eq!(
-            features
-                .legacy_feature_usages()
-                .map(|usage| usage.alias.as_str())
-                .collect::<Vec<_>>(),
-            if deprecated {
-                vec!["features.guardianv2.thread_context"]
-            } else {
-                Vec::new()
-            },
-        );
-    }
-}
-
-#[test]
-fn guardian_v2_feature_config_deserializes_classifier_and_transcript_settings() {
-    let features: FeaturesToml = toml::from_str(
-        r#"
-[guardianv2]
-enabled = true
-free_guardian = true
-persist_scores = true
-classifier_instructions = "Review this action"
-review_threshold = 0.65
-max_tool_call_lag = 2
-async_classifier_conversation_token_limit = 120000
-reasoning_effort = "minimal"
-max_action_tokens = 512
-max_classifier_instruction_tokens = 256
-reuse_parent_compaction = false
-max_parent_compaction_tokens = 384
-
-[guardianv2.review_scope]
-computer_use_only = true
-sandboxed_exec_commands = true
-
-[guardianv2.transcript]
-sources = ["tool_outputs", "reasoning"]
-include_images = true
-max_message_entry_tokens = 128
-max_tool_entry_tokens = 128
-max_message_transcript_tokens = 512
-max_tool_transcript_tokens = 256
-max_recent_non_user_entries = 12
-"#,
-    )
-    .expect("Guardian v2 settings should deserialize");
-
-    assert_eq!(
-        features.guardianv2,
-        Some(FeatureToml::Config(crate::GuardianV2ConfigToml {
-            transcript_mode: None,
-            async_classifier_mode: None,
-            async_classifier_conversation_token_limit: Some(120_000),
-            enabled: Some(true),
-            free_guardian: Some(true),
-            thread_context: None,
-            persist_scores: Some(true),
-            classifier_instructions: Some("Review this action".to_owned()),
-            review_threshold: Some(0.65),
-            max_tool_call_lag: Some(2),
-            reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::Minimal),
-            max_action_tokens: Some(512),
-            max_classifier_instruction_tokens: Some(256),
-            reuse_parent_compaction: Some(false),
-            max_parent_compaction_tokens: Some(384),
-            review_scope: Some(crate::GuardianV2ReviewScopeConfigToml {
-                computer_use_only: Some(true),
-                sandboxed_exec_commands: Some(true),
-            }),
-            transcript: Some(crate::GuardianV2TranscriptConfigToml {
-                sources: Some(vec![
-                    crate::GuardianV2TranscriptSource::ToolOutputs,
-                    crate::GuardianV2TranscriptSource::Reasoning,
-                ]),
-                include_images: Some(true),
-                max_message_entry_tokens: Some(128),
-                max_tool_entry_tokens: Some(128),
-                max_message_transcript_tokens: Some(512),
-                max_tool_transcript_tokens: Some(256),
-                max_recent_non_user_entries: Some(12),
-            }),
-        }))
-    );
-    assert_eq!(
-        features.entries(),
-        BTreeMap::from([("guardianv2".to_owned(), true)])
-    );
-}
-
-#[test]
-fn guardian_v2_feature_config_rejects_invalid_settings() {
-    for setting in [
-        "max_action_tokens",
-        "max_classifier_instruction_tokens",
-        "max_parent_compaction_tokens",
-        "transcript.max_message_entry_tokens",
-        "transcript.max_tool_entry_tokens",
-        "transcript.max_message_transcript_tokens",
-        "transcript.max_tool_transcript_tokens",
-    ] {
-        for value in [99, 100_001] {
-            let settings = format!("[guardianv2]\n{setting} = {value}");
-            assert!(
-                toml::from_str::<FeaturesToml>(&settings).is_err(),
-                "out-of-range Guardian v2 setting should fail: {setting} = {value}"
-            );
-        }
-    }
-
-    for settings in [
-        "review_threshold = -0.1",
-        "review_threshold = 1.1",
-        "review_threshold = nan",
-        "async_classifier_conversation_token_limit = 0",
-        "transcript.max_recent_non_user_entries = 0",
-        "transcript.max_message_entry_tokens = 200\ntranscript.max_message_transcript_tokens = 100",
-        "transcript.max_tool_entry_tokens = 200\ntranscript.max_tool_transcript_tokens = 100",
-    ] {
-        assert!(
-            toml::from_str::<FeaturesToml>(&format!("[guardianv2]\n{settings}")).is_err(),
-            "invalid Guardian v2 settings should fail: {settings}"
-        );
-    }
-}
-
-#[test]
-fn guardian_v2_feature_config_accepts_boundary_values() {
-    for (threshold, tokens) in [(0.0, 100), (1.0, 100_000)] {
-        let features: FeaturesToml = toml::from_str(&format!(
-            "[guardianv2]\n\
-             review_threshold = {threshold:.1}\n\
-             max_action_tokens = {tokens}\n\
-             max_classifier_instruction_tokens = {tokens}\n\
-             max_parent_compaction_tokens = {tokens}\n\
-             [guardianv2.transcript]\n\
-             max_message_entry_tokens = {tokens}\n\
-             max_tool_entry_tokens = {tokens}\n\
-             max_message_transcript_tokens = {tokens}\n\
-             max_tool_transcript_tokens = {tokens}\n\
-             max_recent_non_user_entries = 1"
-        ))
-        .expect("Guardian v2 boundary settings should deserialize");
-
-        assert!(matches!(features.guardianv2, Some(FeatureToml::Config(_))));
-    }
-
-    for setting in [
-        "max_message_transcript_tokens",
-        "max_tool_transcript_tokens",
-    ] {
-        let features: FeaturesToml =
-            toml::from_str(&format!("[guardianv2.transcript]\n{setting} = 100"))
-                .expect("partial Guardian v2 transcript settings should deserialize");
-
-        assert!(matches!(features.guardianv2, Some(FeatureToml::Config(_))));
-    }
-}
-
-#[test]
-fn code_mode_host_feature_config_deserializes_fallback_setting() {
-    let features: FeaturesToml = toml::from_str(
-        r#"
-[code_mode_host]
-enabled = true
-disable_in_process_fallback = true
-"#,
-    )
-    .expect("features table should deserialize");
-
-    assert_eq!(
-        features.code_mode_host,
-        Some(FeatureToml::Config(crate::CodeModeHostConfigToml {
-            enabled: Some(true),
-            disable_in_process_fallback: Some(true),
-        }))
-    );
-    assert_eq!(
-        features.entries(),
-        BTreeMap::from([("code_mode_host".to_string(), true)])
-    );
-}
-
-#[test]
 fn from_sources_ignores_removed_terminal_resize_reflow_feature_key() {
     let features_toml = FeaturesToml::from(BTreeMap::from([(
         "terminal_resize_reflow".to_string(),
@@ -419,7 +162,6 @@ fn from_sources_ignores_removed_terminal_resize_reflow_feature_key() {
     );
 
     assert_eq!(features, Features::with_defaults());
-    assert_eq!(features.enabled(Feature::TerminalResizeReflow), true);
 }
 
 #[test]
@@ -458,28 +200,6 @@ fn canonical_image_generation_toggle_wins_over_extension_alias() {
 }
 
 #[test]
-fn use_legacy_landlock_config_records_deprecation_notice() {
-    let mut entries = BTreeMap::new();
-    entries.insert("use_legacy_landlock".to_string(), true);
-
-    let mut features = Features::with_defaults();
-    features.apply_map(&entries);
-
-    let usages = features.legacy_feature_usages().collect::<Vec<_>>();
-    assert_eq!(usages.len(), 1);
-    assert_eq!(usages[0].alias, "features.use_legacy_landlock");
-    assert_eq!(usages[0].feature, Feature::UseLegacyLandlock);
-    assert_eq!(
-        usages[0].summary,
-        "`[features].use_legacy_landlock` is deprecated and will be removed soon."
-    );
-    assert_eq!(
-        usages[0].details.as_deref(),
-        Some("Remove this setting to stop opting into the legacy Linux sandbox behavior.")
-    );
-}
-
-#[test]
 fn remote_control_config_is_ignored() {
     let mut entries = BTreeMap::new();
     entries.insert("remote_control".to_string(), true);
@@ -487,13 +207,7 @@ fn remote_control_config_is_ignored() {
     let mut features = Features::with_defaults();
     features.apply_map(&entries);
 
-    assert_eq!(features.enabled(Feature::RemoteControl), false);
-}
-
-#[test]
-fn telepathy_is_legacy_alias_for_chronicle() {
-    assert_eq!(feature_for_key("chronicle"), Some(Feature::Chronicle));
-    assert_eq!(feature_for_key("telepathy"), Some(Feature::Chronicle));
+    assert_eq!(features, Features::with_defaults());
 }
 
 #[test]
@@ -516,43 +230,6 @@ fn apps_require_feature_flag_and_chatgpt_auth() {
     features.enable(Feature::Apps);
     assert!(!features.apps_enabled_for_auth(/*has_chatgpt_auth*/ false));
     assert!(features.apps_enabled_for_auth(/*has_chatgpt_auth*/ true));
-}
-
-#[test]
-fn from_sources_applies_base_profile_and_overrides() {
-    let mut base_entries = BTreeMap::new();
-    base_entries.insert("plugins".to_string(), true);
-    let base_features = FeaturesToml {
-        entries: base_entries,
-        ..Default::default()
-    };
-
-    let mut profile_entries = BTreeMap::new();
-    profile_entries.insert("code_mode_only".to_string(), true);
-    let profile_features = FeaturesToml {
-        entries: profile_entries,
-        ..Default::default()
-    };
-
-    let features = Features::from_sources(
-        FeatureConfigSource {
-            features: Some(&base_features),
-            ..Default::default()
-        },
-        FeatureConfigSource {
-            features: Some(&profile_features),
-            ..Default::default()
-        },
-        FeatureOverrides {
-            web_search_request: Some(false),
-        },
-    );
-
-    assert_eq!(features.enabled(Feature::Plugins), true);
-    assert_eq!(features.enabled(Feature::CodeModeOnly), true);
-    assert_eq!(features.enabled(Feature::CodeMode), true);
-    assert_eq!(features.enabled(Feature::ApplyPatchFreeform), false);
-    assert_eq!(features.enabled(Feature::WebSearchRequest), false);
 }
 
 #[test]
@@ -605,7 +282,6 @@ fn from_sources_ignores_removed_item_ids_feature_key() {
     );
 
     assert_eq!(features, Features::with_defaults());
-    assert_eq!(features.enabled(Feature::ItemIds), true);
 }
 
 #[test]
@@ -763,7 +439,6 @@ expose_spawn_agent_model_overrides = true
 wait_agent_enabled = false
 disable_direct_message = true
 message_board_in_memory = true
-non_code_mode_only = true
 "#,
     )
     .expect("features table should deserialize");
@@ -794,7 +469,6 @@ non_code_mode_only = true
             disable_direct_message: Some(true),
             message_board_in_memory: Some(true),
             message_board_remote: None,
-            non_code_mode_only: Some(true),
         }))
     );
 }
@@ -870,18 +544,53 @@ fn unstable_warning_event_only_mentions_enabled_under_development_features() {
 }
 
 #[test]
+fn from_sources_applies_base_profile_and_overrides() {
+    let mut base_entries = BTreeMap::new();
+    base_entries.insert("plugins".to_string(), true);
+    let base_features = FeaturesToml {
+        entries: base_entries,
+        ..Default::default()
+    };
+
+    let mut profile_entries = BTreeMap::new();
+    profile_entries.insert("multi_agent_v2".to_string(), true);
+    let profile_features = FeaturesToml {
+        entries: profile_entries,
+        ..Default::default()
+    };
+
+    let features = Features::from_sources(
+        FeatureConfigSource {
+            features: Some(&base_features),
+            ..Default::default()
+        },
+        FeatureConfigSource {
+            features: Some(&profile_features),
+            ..Default::default()
+        },
+        FeatureOverrides {
+            web_search_request: Some(false),
+        },
+    );
+
+    assert_eq!(features.enabled(Feature::Plugins), true);
+    assert_eq!(features.enabled(Feature::MultiAgentV2), true);
+    assert_eq!(features.enabled(Feature::WebSearchRequest), false);
+}
+
+#[test]
 fn unstable_warning_event_ignores_enabled_structured_stable_feature() {
     let configured_features: Table = toml::from_str(
         r#"
 multi_agent_v2 = { enabled = true, tool_namespace = "agents" }
-code_mode = true
+deferred_executor = true
 "#,
     )
     .expect("features table should deserialize");
 
     let mut features = Features::with_defaults();
     features.enable(Feature::MultiAgentV2);
-    features.enable(Feature::CodeMode);
+    features.enable(Feature::DeferredExecutor);
 
     let warning = unstable_features_warning_event(
         Some(&configured_features),
@@ -895,7 +604,7 @@ code_mode = true
         panic!("expected warning event");
     };
     assert_eq!(
-        "Under-development features enabled: code_mode. Under-development features are incomplete and may behave unpredictably. To suppress this warning, set `suppress_unstable_features_warning = true` in /tmp/config.toml.".to_string(),
+        "Under-development features enabled: deferred_executor. Under-development features are incomplete and may behave unpredictably. To suppress this warning, set `suppress_unstable_features_warning = true` in /tmp/config.toml.".to_string(),
         message
     );
 }

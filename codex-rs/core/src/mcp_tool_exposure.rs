@@ -183,16 +183,13 @@ fn filter_codex_apps_mcp_tools<'a>(
             return false;
         };
         let annotations = tool.tool.annotations.as_ref();
-        app_tool_policy
-            .policy(AppToolPolicyInput {
-                connector_id: Some(connector_id),
-                link_id: None,
-                tool_name: &tool.tool.name,
-                tool_title: tool.tool.title.as_deref(),
-                destructive_hint: annotations.and_then(|annotations| annotations.destructive_hint),
-                open_world_hint: annotations.and_then(|annotations| annotations.open_world_hint),
-            })
-            .enabled
+        app_tool_policy.tool_enabled(AppToolPolicyInput {
+            connector_id: Some(connector_id),
+            tool_name: &tool.tool.name,
+            tool_title: tool.tool.title.as_deref(),
+            destructive_hint: annotations.and_then(|annotations| annotations.destructive_hint),
+            open_world_hint: annotations.and_then(|annotations| annotations.open_world_hint),
+        })
     })
 }
 

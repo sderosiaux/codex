@@ -1,9 +1,6 @@
-mod approvals;
 pub(crate) mod call_trace;
 mod catalog_parameters;
-pub(crate) mod code_mode;
 pub(crate) mod context;
-mod control_tool_analytics;
 pub(crate) mod events;
 mod executed_tool_calls;
 pub(crate) mod handlers;
@@ -12,27 +9,18 @@ pub(crate) mod hosted_spec;
 pub(crate) mod lifecycle;
 pub(crate) mod metadata_metrics;
 mod multi_agent_tool;
-pub(crate) mod network_approval;
-pub(crate) mod orchestrator;
 pub(crate) mod parallel;
 pub(crate) mod registry;
 pub(crate) mod router;
+pub(crate) mod runtime;
 pub(crate) mod runtimes;
-pub(crate) mod sandboxing;
 pub(crate) mod spec_plan;
-pub(crate) mod tool_dispatch_trace;
 mod tool_namespaces_info;
 mod user_messaging;
-pub(crate) use user_messaging::record_confirmed_code_mode_send;
 
 use std::borrow::Cow;
 
-use crate::session::turn_context::TurnContext;
-pub(crate) use approvals::ApprovalContext;
-use codex_features::Feature;
 use codex_protocol::exec_output::ExecToolCallOutput;
-use codex_protocol::openai_models::ModelInfo;
-use codex_protocol::openai_models::ToolMode;
 use codex_tools::ToolName;
 use codex_utils_output_truncation::TruncationPolicy;
 use codex_utils_output_truncation::formatted_truncate_text;
@@ -57,30 +45,6 @@ pub(crate) fn flat_tool_name(tool_name: &ToolName) -> Cow<'_, str> {
             Cow::Owned(name)
         }
         None => Cow::Borrowed(tool_name.name.as_str()),
-    }
-}
-
-pub(crate) fn requested_tool_mode(turn_context: &TurnContext, model_info: &ModelInfo) -> ToolMode {
-    model_info.tool_mode.unwrap_or_else(|| {
-        if turn_context.config.features.enabled(Feature::CodeModeOnly) {
-            ToolMode::CodeModeOnly
-        } else if turn_context.config.features.enabled(Feature::CodeMode) {
-            ToolMode::CodeMode
-        } else {
-            ToolMode::Direct
-        }
-    })
-}
-
-pub(crate) fn effective_tool_mode(turn_context: &TurnContext, model_info: &ModelInfo) -> ToolMode {
-    let requested_tool_mode = requested_tool_mode(turn_context, model_info);
-    if !turn_context.code_mode_available
-        && requested_tool_mode == ToolMode::CodeMode
-        && !turn_context.config.code_mode.disable_in_process_fallback
-    {
-        ToolMode::Direct
-    } else {
-        requested_tool_mode
     }
 }
 

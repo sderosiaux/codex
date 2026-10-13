@@ -4,15 +4,11 @@ use anyhow::Context;
 use codex_config::CONFIG_TOML_FILE;
 use codex_config::is_structured_feature_path;
 use codex_config::types::McpServerConfig;
-use codex_config::types::ResumeCwdMode;
-use codex_config::types::SessionPickerViewMode;
 use codex_config::types::ToolSuggestDisabledTool;
 use codex_features::FEATURES;
 use codex_protocol::config_types::ServiceTier;
-use codex_protocol::config_types::TrustLevel;
 use codex_protocol::openai_models::ReasoningEffort;
 use std::collections::BTreeMap;
-use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
@@ -22,8 +18,6 @@ use toml_edit::DocumentMut;
 use toml_edit::Item as TomlItem;
 use toml_edit::Table as TomlTable;
 use toml_edit::value;
-
-const NOTICE_TABLE_KEY: &str = "notice";
 
 mod bedrock;
 mod document_helpers;
@@ -38,22 +32,6 @@ pub enum ConfigEdit {
     },
     /// Update the service tier preference for future turns.
     SetServiceTier { service_tier: Option<String> },
-    /// Toggle the acknowledgement flag under `[notice]`.
-    SetNoticeHideFullAccessWarning(bool),
-    /// Toggle the rate limit model nudge acknowledgement flag.
-    SetNoticeHideRateLimitModelNudge(bool),
-    /// Toggle the model migration prompt acknowledgement flag.
-    SetNoticeHideModelMigrationPrompt(String, bool),
-    /// Toggle the home external config migration prompt acknowledgement flag.
-    SetNoticeHideExternalConfigMigrationPromptHome(bool),
-    /// Record when the home external config migration prompt was last shown.
-    SetNoticeExternalConfigMigrationPromptHomeLastPromptedAt(i64),
-    /// Toggle the project external config migration prompt acknowledgement flag.
-    SetNoticeHideExternalConfigMigrationPromptProject(String, bool),
-    /// Record when the project external config migration prompt was last shown.
-    SetNoticeExternalConfigMigrationPromptProjectLastPromptedAt(String, i64),
-    /// Record that a migration prompt was shown for an old->new model mapping.
-    RecordModelMigrationSeen { from: String, to: String },
     /// Replace the entire `[mcp_servers]` table.
     ReplaceMcpServers(BTreeMap<String, McpServerConfig>),
     /// Add a disabled tool suggestion under `[tool_suggest].disabled_tools`.
@@ -62,11 +40,6 @@ pub enum ConfigEdit {
     SetSkillConfig { path: PathBuf, enabled: bool },
     /// Set or clear a skill config entry under `[[skills.config]]` by name.
     SetSkillConfigByName { name: String, enabled: bool },
-    /// Enable or disable TUI notifications without replacing custom event filters.
-    SetTuiNotificationsEnabled { enabled: bool },
-    /// Set trust_level under `[projects."<path>"]`,
-    /// migrating inline tables to explicit tables.
-    SetProjectTrustLevel { path: PathBuf, level: TrustLevel },
     /// Set the value stored at the exact dotted path.
     SetPath {
         segments: Vec<String>,
@@ -80,124 +53,6 @@ pub enum ConfigEdit {
 enum SkillConfigSelector {
     Name(String),
     Path(PathBuf),
-}
-
-/// Produces a config edit that sets `[tui].theme = "<name>"`.
-pub fn syntax_theme_edit(name: &str) -> ConfigEdit {
-    ConfigEdit::SetPath {
-        segments: vec!["tui".to_string(), "theme".to_string()],
-        value: value(name.to_string()),
-    }
-}
-
-/// Produces a config edit that sets [tui].pet = "<name>".
-pub fn tui_pet_edit(name: &str) -> ConfigEdit {
-    ConfigEdit::SetPath {
-        segments: vec!["tui".to_string(), "pet".to_string()],
-        value: value(name.to_string()),
-    }
-}
-
-/// Produces a config edit that sets `[tui].session_picker_view = "<mode>"`.
-pub fn session_picker_view_edit(mode: SessionPickerViewMode) -> ConfigEdit {
-    ConfigEdit::SetPath {
-        segments: vec!["tui".to_string(), "session_picker_view".to_string()],
-        value: value(mode.to_string()),
-    }
-}
-
-/// Produces a config edit that sets `[tui].status_line` to an explicit ordered list.
-///
-/// The array is written even when it is empty so "hide the status line" stays
-/// distinct from "unset, so use defaults".
-pub fn status_line_items_edit(items: &[String]) -> ConfigEdit {
-    let array = items.iter().cloned().collect::<toml_edit::Array>();
-
-    ConfigEdit::SetPath {
-        segments: vec!["tui".to_string(), "status_line".to_string()],
-        value: TomlItem::Value(array.into()),
-    }
-}
-
-/// Produces a config edit that sets `[tui].status_line_use_colors`.
-pub fn status_line_use_colors_edit(enabled: bool) -> ConfigEdit {
-    ConfigEdit::SetPath {
-        segments: vec!["tui".to_string(), "status_line_use_colors".to_string()],
-        value: value(enabled),
-    }
-}
-
-/// Produces a config edit that sets `[tui].terminal_title` to an explicit ordered list.
-///
-/// The array is written even when it is empty so "disabled title updates" stays
-/// distinct from "unset, so use defaults".
-pub fn terminal_title_items_edit(items: &[String]) -> ConfigEdit {
-    let array = items.iter().cloned().collect::<toml_edit::Array>();
-
-    ConfigEdit::SetPath {
-        segments: vec!["tui".to_string(), "terminal_title".to_string()],
-        value: TomlItem::Value(array.into()),
-    }
-}
-
-fn keymap_binding_value(keys: &[String]) -> TomlItem {
-    if let [key] = keys {
-        value(key.to_string())
-    } else {
-        let array = keys.iter().cloned().collect::<toml_edit::Array>();
-        TomlItem::Value(array.into())
-    }
-}
-
-/// Produces a config edit that replaces one root-level TUI keymap binding list.
-pub fn keymap_bindings_edit(context: &str, action: &str, keys: &[String]) -> ConfigEdit {
-    ConfigEdit::SetPath {
-        segments: vec![
-            "tui".to_string(),
-            "keymap".to_string(),
-            context.to_string(),
-            action.to_string(),
-        ],
-        value: keymap_binding_value(keys),
-    }
-}
-
-/// Produces a config edit that replaces one root-level TUI keymap binding.
-pub fn keymap_binding_edit(context: &str, action: &str, key: &str) -> ConfigEdit {
-    keymap_bindings_edit(context, action, &[key.to_string()])
-}
-
-/// Produces a config edit that removes one root-level TUI keymap binding.
-pub fn keymap_binding_clear_edit(context: &str, action: &str) -> ConfigEdit {
-    ConfigEdit::ClearPath {
-        segments: vec![
-            "tui".to_string(),
-            "keymap".to_string(),
-            context.to_string(),
-            action.to_string(),
-        ],
-    }
-}
-
-pub fn model_availability_nux_count_edits(shown_count: &HashMap<String, u32>) -> Vec<ConfigEdit> {
-    let mut shown_count_entries: Vec<_> = shown_count.iter().collect();
-    shown_count_entries.sort_unstable_by_key(|(left, _)| *left);
-
-    let mut edits = vec![ConfigEdit::ClearPath {
-        segments: vec!["tui".to_string(), "model_availability_nux".to_string()],
-    }];
-    for (model_slug, count) in shown_count_entries {
-        edits.push(ConfigEdit::SetPath {
-            segments: vec![
-                "tui".to_string(),
-                "model_availability_nux".to_string(),
-                model_slug.clone(),
-            ],
-            value: value(i64::from(*count)),
-        });
-    }
-
-    edits
 }
 
 struct ConfigDocument {
@@ -242,67 +97,6 @@ impl ConfigDocument {
                     value(config_value)
                 }),
             )),
-            ConfigEdit::SetNoticeHideFullAccessWarning(acknowledged) => Ok(self.write_value(
-                &[NOTICE_TABLE_KEY, "hide_full_access_warning"],
-                value(*acknowledged),
-            )),
-            ConfigEdit::SetNoticeHideRateLimitModelNudge(acknowledged) => Ok(self.write_value(
-                &[NOTICE_TABLE_KEY, "hide_rate_limit_model_nudge"],
-                value(*acknowledged),
-            )),
-            ConfigEdit::SetNoticeHideModelMigrationPrompt(migration_config, acknowledged) => {
-                Ok(self.write_value(
-                    &[NOTICE_TABLE_KEY, migration_config.as_str()],
-                    value(*acknowledged),
-                ))
-            }
-            ConfigEdit::SetNoticeHideExternalConfigMigrationPromptHome(acknowledged) => Ok(self
-                .write_value(
-                    &[
-                        NOTICE_TABLE_KEY,
-                        "external_config_migration_prompts",
-                        "home",
-                    ],
-                    value(*acknowledged),
-                )),
-            ConfigEdit::SetNoticeExternalConfigMigrationPromptHomeLastPromptedAt(timestamp) => {
-                Ok(self.write_value(
-                    &[
-                        NOTICE_TABLE_KEY,
-                        "external_config_migration_prompts",
-                        "home_last_prompted_at",
-                    ],
-                    value(*timestamp),
-                ))
-            }
-            ConfigEdit::SetNoticeHideExternalConfigMigrationPromptProject(
-                project,
-                acknowledged,
-            ) => Ok(self.write_value(
-                &[
-                    NOTICE_TABLE_KEY,
-                    "external_config_migration_prompts",
-                    "projects",
-                    project.as_str(),
-                ],
-                value(*acknowledged),
-            )),
-            ConfigEdit::SetNoticeExternalConfigMigrationPromptProjectLastPromptedAt(
-                project,
-                timestamp,
-            ) => Ok(self.write_value(
-                &[
-                    NOTICE_TABLE_KEY,
-                    "external_config_migration_prompts",
-                    "project_last_prompted_at",
-                    project.as_str(),
-                ],
-                value(*timestamp),
-            )),
-            ConfigEdit::RecordModelMigrationSeen { from, to } => Ok(self.write_value(
-                &[NOTICE_TABLE_KEY, "model_migrations", from.as_str()],
-                value(to.clone()),
-            )),
             ConfigEdit::ReplaceMcpServers(servers) => self.replace_mcp_servers(servers),
             ConfigEdit::AddToolSuggestDisabledTool(disabled_tool) => {
                 Ok(self.add_tool_suggest_disabled_tool(disabled_tool))
@@ -312,22 +106,6 @@ impl ConfigDocument {
             }
             ConfigEdit::SetSkillConfigByName { name, enabled } => {
                 Ok(self.set_skill_config(SkillConfigSelector::Name(name.clone()), *enabled))
-            }
-            ConfigEdit::SetTuiNotificationsEnabled { enabled } => {
-                let segments = ["tui", "notifications"];
-                let custom_filters = segments
-                    .iter()
-                    .try_fold(self.doc.as_item(), |item, segment| {
-                        item.as_table_like()?.get(segment)
-                    })
-                    .and_then(TomlItem::as_array)
-                    .is_some();
-                if custom_filters {
-                    anyhow::bail!(
-                        "Event-specific notifications are configured. Edit those filters in the config file."
-                    );
-                }
-                Ok(self.write_value(&segments, value(*enabled)))
             }
             ConfigEdit::SetPath { segments, value } => {
                 if is_structured_feature_path(segments) && value.as_bool().is_some() {
@@ -343,39 +121,7 @@ impl ConfigDocument {
                 }
                 Ok(self.insert(segments, value.clone()))
             }
-            ConfigEdit::ClearPath { segments } => {
-                let preserves_broker_settings = is_structured_feature_path(segments)
-                    && segments
-                        .last()
-                        .is_some_and(|feature| feature == "network_proxy")
-                    && segments
-                        .iter()
-                        .try_fold(self.doc.as_item(), |item, segment| {
-                            item.as_table_like()?.get(segment)
-                        })
-                        .and_then(TomlItem::as_table_like)
-                        .is_some_and(|feature| {
-                            feature.contains_key("credential_broker")
-                                || feature.contains_key("credentials")
-                        });
-                if preserves_broker_settings {
-                    let mut enabled_segments = segments.clone();
-                    enabled_segments.push("enabled".to_string());
-                    Ok(self.insert(&enabled_segments, value(false)))
-                } else {
-                    Ok(self.clear_owned(segments))
-                }
-            }
-            ConfigEdit::SetProjectTrustLevel { path, level } => {
-                // Delegate to the existing, tested logic in config.rs to
-                // ensure tables are explicit and migration is preserved.
-                crate::config::set_project_trust_level_inner(
-                    &mut self.doc,
-                    path.as_path(),
-                    *level,
-                )?;
-                Ok(true)
-            }
+            ConfigEdit::ClearPath { segments } => Ok(self.clear_owned(segments)),
         }
     }
 
@@ -832,47 +578,9 @@ impl ConfigEditsBuilder {
         self
     }
 
-    pub fn set_hide_full_access_warning(mut self, acknowledged: bool) -> Self {
-        self.edits
-            .push(ConfigEdit::SetNoticeHideFullAccessWarning(acknowledged));
-        self
-    }
-
-    pub fn set_hide_rate_limit_model_nudge(mut self, acknowledged: bool) -> Self {
-        self.edits
-            .push(ConfigEdit::SetNoticeHideRateLimitModelNudge(acknowledged));
-        self
-    }
-
-    pub fn record_model_migration_seen(mut self, from: &str, to: &str) -> Self {
-        self.edits.push(ConfigEdit::RecordModelMigrationSeen {
-            from: from.to_string(),
-            to: to.to_string(),
-        });
-        self
-    }
-
-    pub fn set_model_availability_nux_count(mut self, shown_count: &HashMap<String, u32>) -> Self {
-        self.edits
-            .extend(model_availability_nux_count_edits(shown_count));
-        self
-    }
-
     pub fn replace_mcp_servers(mut self, servers: &BTreeMap<String, McpServerConfig>) -> Self {
         self.edits
             .push(ConfigEdit::ReplaceMcpServers(servers.clone()));
-        self
-    }
-
-    pub fn set_project_trust_level<P: Into<PathBuf>>(
-        mut self,
-        project_path: P,
-        trust_level: TrustLevel,
-    ) -> Self {
-        self.edits.push(ConfigEdit::SetProjectTrustLevel {
-            path: project_path.into(),
-            level: trust_level,
-        });
         self
     }
 
@@ -904,78 +612,6 @@ impl ConfigEditsBuilder {
         } else {
             self.edits.push(ConfigEdit::ClearPath { segments });
         }
-        self
-    }
-
-    pub fn set_windows_sandbox_mode(mut self, mode: &str) -> Self {
-        self.edits.push(ConfigEdit::SetPath {
-            segments: vec!["windows".to_string(), "sandbox".to_string()],
-            value: value(mode),
-        });
-        self
-    }
-
-    pub fn set_realtime_microphone(mut self, microphone: Option<&str>) -> Self {
-        let segments = vec!["audio".to_string(), "microphone".to_string()];
-        match microphone {
-            Some(microphone) => self.edits.push(ConfigEdit::SetPath {
-                segments,
-                value: value(microphone),
-            }),
-            None => self.edits.push(ConfigEdit::ClearPath { segments }),
-        }
-        self
-    }
-
-    pub fn set_realtime_speaker(mut self, speaker: Option<&str>) -> Self {
-        let segments = vec!["audio".to_string(), "speaker".to_string()];
-        match speaker {
-            Some(speaker) => self.edits.push(ConfigEdit::SetPath {
-                segments,
-                value: value(speaker),
-            }),
-            None => self.edits.push(ConfigEdit::ClearPath { segments }),
-        }
-        self
-    }
-
-    pub fn set_realtime_voice(mut self, voice: Option<&str>) -> Self {
-        let segments = vec!["realtime".to_string(), "voice".to_string()];
-        match voice {
-            Some(voice) => self.edits.push(ConfigEdit::SetPath {
-                segments,
-                value: value(voice),
-            }),
-            None => self.edits.push(ConfigEdit::ClearPath { segments }),
-        }
-        self
-    }
-
-    pub fn clear_legacy_windows_sandbox_keys(mut self) -> Self {
-        for key in [
-            "experimental_windows_sandbox",
-            "elevated_windows_sandbox",
-            "enable_experimental_windows_sandbox",
-        ] {
-            let segments = vec!["features".to_string(), key.to_string()];
-            self.edits.push(ConfigEdit::ClearPath { segments });
-        }
-        self
-    }
-
-    pub fn set_session_picker_view(mut self, mode: SessionPickerViewMode) -> Self {
-        self.edits.push(ConfigEdit::SetPath {
-            segments: vec!["tui".to_string(), "session_picker_view".to_string()],
-            value: value(mode.to_string()),
-        });
-        self
-    }
-
-    pub fn set_resume_cwd(mut self, mode: ResumeCwdMode) -> Self {
-        self.edits.push(ConfigEdit::SetPath {
-            segments: vec!["tui".to_string(), "resume_cwd".to_string()],
-            value: value(mode.as_str()),
-        });
         self
     }
 

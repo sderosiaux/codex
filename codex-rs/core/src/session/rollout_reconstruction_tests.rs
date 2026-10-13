@@ -19,14 +19,11 @@ use codex_protocol::protocol::SessionMeta;
 use codex_protocol::protocol::SessionMetaLine;
 use codex_protocol::protocol::ThreadRolledBackEvent;
 use codex_protocol::protocol::WorldStateItem;
-use codex_protocol::security_risk::SecurityRiskScore;
 use codex_protocol::turn_input::CyberAccessProgram;
 use codex_rollout::ModelContextScan;
 use codex_rollout::ModelContextScanProgress;
-use core_test_support::responses::strip_metadata_from_items;
 use pretty_assertions::assert_eq;
 use serde_json::json;
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 use test_case::test_case;
 use uuid::Uuid;
@@ -119,81 +116,6 @@ async fn recorded_questions_share_queued_input_order_across_resume() {
         vec![Some(0), Some(2), Some(1), None]
     );
     assert_eq!(session.reserve_user_input_order().await, 3);
-}
-
-#[tokio::test]
-async fn sender_context_follows_its_delivery_through_checkpoint_and_rollback() {
-    let (session, turn_context) = make_session_and_context().await;
-
-    let mut live = ContextManager::for_session(
-        &SessionSource::default(),
-        &crate::config::ManagedFeatures::from(codex_features::Features::with_defaults()),
-    );
-    let mut items = Vec::new();
-    let mut snapshots = Vec::new();
-    for index in 0..2 {
-        // A and then B are accepted before either is consumed.
-        let acceptance_order = Some(live.reserve_input_order());
-        let steer_order = Some(live.reserve_input_order());
-        let snapshot = codex_history::SenderUserMessages {
-            receiver_turn_id: format!("turn-{index}"),
-            receiver_message_id: format!("delivery-{index}"),
-            text: format!("Sender context {index}"),
-        };
-        let mut input = [
-            ResponseItemEnvelope {
-                item: serde_json::from_value::<ResponseItem>(json!({
-                    "type": "function_call_output", "id": snapshot.receiver_message_id,
-                    "name": "send_message_to_thread", "namespace": "codex_app", "output": "Inspect."
-                }))
-                .unwrap(),
-                metadata: Some(codex_history::CodexHarnessMetadata {
-                    user_input_order: acceptance_order,
-                    sender_user_messages: Some(Box::new(snapshot.clone())),
-                    ..Default::default()
-                }),
-            },
-            ResponseItemEnvelope {
-                item: user_message("Later user steer B."),
-                metadata: Some(codex_history::CodexHarnessMetadata {
-                    user_input_order: steer_order,
-                    ..Default::default()
-                }),
-            },
-        ];
-        live.record_annotated_items(
-            &mut input,
-            turn_context.model_info().truncation_policy.into(),
-        );
-        items.extend(input.into_iter().map(RolloutItem::ResponseItem));
-        snapshots.push(snapshot);
-    }
-    let mut checkpoint: CompactedItem =
-        serde_json::from_value(json!({"message": "compacted"})).unwrap();
-    checkpoint.replacement_history = Some(live.annotated_items().to_vec());
-    checkpoint.retained_context = Some(live.retained_context().clone());
-    let mut checkpointed = items.clone();
-    checkpointed.push(RolloutItem::Compacted(checkpoint));
-    for (num_turns, expected) in [(1, &snapshots[1]), (2, &snapshots[0])] {
-        let mut rolled_back = live.clone();
-        rolled_back.drop_last_n_user_turns(num_turns);
-        assert_eq!(
-            rolled_back.retained_context().sender_user_messages(),
-            Some(expected)
-        );
-        for history in [items.clone(), checkpointed.clone()] {
-            let mut history: Vec<RolloutItem> =
-                serde_json::from_value(serde_json::to_value(history).unwrap()).unwrap();
-            history.push(RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
-                ThreadRolledBackEvent { num_turns },
-            )));
-            let replayed = session
-                .reconstruct_history_from_rollout(&turn_context, &history)
-                .await;
-            assert_eq!(replayed.retained_context, *rolled_back.retained_context());
-            assert_eq!(replayed.history, rolled_back.annotated_items());
-        }
-    }
 }
 
 macro_rules! object {
@@ -335,37 +257,6 @@ async fn record_initial_history_reconstructs_typed_inter_agent_message() {
     );
 }
 
-#[tokio::test]
-async fn record_initial_history_ignores_security_risk_scores() {
-    let (session, _turn_context) = make_session_and_context().await;
-    let user_item = user_message("visible user input");
-    let security_risk = SecurityRiskScore {
-        scores: BTreeMap::from([("credential_access".to_string(), 0.92)]),
-        call_id: None,
-        action: None,
-        sampled_at: None,
-    };
-
-    session
-        .record_initial_history(InitialHistory::Resumed(ResumedHistory {
-            history_revision: None,
-            conversation_id: ThreadId::default(),
-            history: Arc::new(vec![
-                RolloutItem::ResponseItem(ResponseItemEnvelope::new(user_item.clone())),
-                RolloutItem::SecurityRiskScore(security_risk),
-            ]),
-            rollout_path: Some(PathBuf::from("/tmp/resume.jsonl")),
-        }))
-        .await;
-
-    assert_eq!(
-        strip_metadata_from_items(&raw_history_items(
-            &session.state.lock().await.clone_history()
-        )),
-        vec![user_item]
-    );
-}
-
 #[derive(Clone, Copy)]
 enum BaselineTurnInput {
     UserMessage,
@@ -426,7 +317,6 @@ async fn record_initial_history_restores_world_state_baseline(input: BaselineTur
                 model: context_item.model.clone(),
                 comp_hash: context_item.comp_hash.clone(),
                 cyber_access_program: None,
-                realtime_active: context_item.realtime_active,
             }),
             serde_json::to_value(Some(context_item)).unwrap(),
         )
@@ -454,17 +344,10 @@ async fn record_initial_history_resumed_bare_turn_context_does_not_hydrate_previ
         disabled_plugin_ids: None,
         #[allow(deprecated)]
         cwd: turn_context.cwd.clone(),
-        approval_policy: turn_context.approval_policy(),
-        approvals_reviewer: None,
-        sandbox_policy: turn_context.sandbox_policy(),
-        permission_profile: None,
-        active_permission_profile: None,
-        file_system_sandbox_policy: None,
         model: previous_model.to_string(),
         comp_hash: None,
         collaboration_mode: Some(turn_context.collaboration_mode()),
         multi_agent_version: None,
-        realtime_active: Some(turn_context.realtime_active),
         cyber_access_program: None,
         effort: turn_context.reasoning_effort().cloned(),
         summary: Some(codex_protocol::config_types::ReasoningSummary::Auto),
@@ -500,17 +383,10 @@ async fn record_initial_history_resumed_hydrates_previous_turn_settings_from_lif
         disabled_plugin_ids: None,
         #[allow(deprecated)]
         cwd: turn_context.cwd.clone(),
-        approval_policy: turn_context.approval_policy(),
-        approvals_reviewer: None,
-        sandbox_policy: turn_context.sandbox_policy(),
-        permission_profile: None,
-        active_permission_profile: None,
-        file_system_sandbox_policy: None,
         model: previous_model.to_string(),
         comp_hash: Some("comp-hash-a".to_string()),
         collaboration_mode: Some(turn_context.collaboration_mode()),
         multi_agent_version: None,
-        realtime_active: Some(turn_context.realtime_active),
         cyber_access_program: None,
         effort: turn_context.reasoning_effort().cloned(),
         summary: Some(codex_protocol::config_types::ReasoningSummary::Auto),
@@ -573,7 +449,6 @@ async fn record_initial_history_resumed_hydrates_previous_turn_settings_from_lif
             model: previous_model.to_string(),
             comp_hash: Some("comp-hash-a".to_string()),
             cyber_access_program: None,
-            realtime_active: Some(turn_context.realtime_active),
         })
     );
 }
@@ -711,7 +586,6 @@ async fn reconstruct_history_rollback_keeps_history_and_metadata_in_sync_for_com
         json!({
             "model": turn_context.model_info().slug,
             "comp_hash": null,
-            "realtime_active": turn_context.realtime_active,
             "cyber_access_program": "daybreak_blue",
         })
     );
@@ -821,7 +695,6 @@ async fn reconstruct_history_rollback_keeps_history_and_metadata_in_sync_for_inc
         json!({
             "model": turn_context.model_info().slug,
             "comp_hash": null,
-            "realtime_active": turn_context.realtime_active,
             "cyber_access_program": "daybreak_blue",
         })
     );
@@ -969,7 +842,6 @@ async fn reconstruct_history_rollback_skips_non_user_turns_for_history_and_metad
             model: turn_context.model_info().slug.clone(),
             comp_hash: None,
             cyber_access_program: None,
-            realtime_active: Some(turn_context.realtime_active),
         })
     );
     assert_eq!(
@@ -1081,7 +953,6 @@ async fn reconstruct_history_rollback_counts_inter_agent_assistant_turns() {
             model: turn_context.model_info().slug.clone(),
             comp_hash: None,
             cyber_access_program: None,
-            realtime_active: Some(turn_context.realtime_active),
         })
     );
     assert_eq!(
@@ -1308,7 +1179,6 @@ async fn record_initial_history_resumed_rollback_drops_incomplete_user_turn_comp
             message: String::new(),
             replacement_history: Some(Vec::new()),
             retained_context: None,
-            guardian_history: None,
             mcp_resource_origins: None,
             window_number: None,
             first_window_id: None,
@@ -1338,7 +1208,6 @@ async fn record_initial_history_resumed_rollback_drops_incomplete_user_turn_comp
             model: turn_context.model_info().slug.clone(),
             comp_hash: None,
             cyber_access_program: None,
-            realtime_active: Some(turn_context.realtime_active),
         })
     );
     assert_eq!(
@@ -1375,7 +1244,6 @@ async fn record_initial_history_requires_surviving_full_snapshot_without_user_tu
                 message: String::new(),
                 replacement_history: Some(Vec::new()),
                 retained_context: None,
-                guardian_history: None,
                 mcp_resource_origins: None,
                 window_number: None,
                 first_window_id: None,
@@ -1413,7 +1281,6 @@ async fn record_initial_history_resumed_does_not_seed_reference_context_item_aft
             message: String::new(),
             replacement_history: Some(Vec::new()),
             retained_context: None,
-            guardian_history: None,
             mcp_resource_origins: None,
             window_number: None,
             first_window_id: None,
@@ -1489,7 +1356,6 @@ async fn reconstruct_history_prefers_compacted_window_over_session_meta() {
             message: String::new(),
             replacement_history: Some(Vec::new()),
             retained_context: None,
-            guardian_history: None,
             mcp_resource_origins: None,
             window_number: Some(2),
             first_window_id: Some(compacted_first_window_id.to_string()),
@@ -1530,7 +1396,6 @@ async fn reconstruct_history_replays_world_state_from_latest_compaction_window()
                 message: String::new(),
                 replacement_history: Some(Vec::new()),
                 retained_context: None,
-                guardian_history: None,
                 mcp_resource_origins: None,
                 window_number: Some(1),
                 first_window_id: None,
@@ -1599,7 +1464,6 @@ async fn bounded_replay_matches_full_replay_after_empty_turn_compactions(
         context.turn_id = Some(format!("wake-{window_number}"));
         context.model = format!("model-{window_number}");
         context.comp_hash = Some(format!("hash-{window_number}"));
-        context.realtime_active = Some(window_number == 2);
         let mut wake_items = completed_user_turn_rollout(
             context.clone(),
             vec![
@@ -1611,9 +1475,6 @@ async fn bounded_replay_matches_full_replay_after_empty_turn_compactions(
                         "encrypted_content": format!("summary-{window_number}"),
                     })])),
                     retained_context: None,
-                    guardian_history: Some(codex_history::GuardianHistoryCheckpoint(vec![
-                        user_message("original task").into(),
-                    ])),
                     mcp_resource_origins: None,
                     window_number: Some(window_number as u64),
                     first_window_id: Some(window_ids[0].to_string()),
@@ -1629,7 +1490,6 @@ async fn bounded_replay_matches_full_replay_after_empty_turn_compactions(
                             model: format!("metadata-model-{window_number}"),
                             comp_hash: Some(format!("metadata-hash-{window_number}")),
                             cyber_access_program: None,
-                            realtime_active: Some(false),
                         }),
                     }),
                 }),
@@ -1686,13 +1546,6 @@ async fn bounded_replay_matches_full_replay_after_empty_turn_compactions(
     let bounded = session
         .reconstruct_history_from_rollout(&turn_context, &bounded_items)
         .await;
-    assert_eq!(
-        bounded.guardian_history.as_ref(),
-        Some(&codex_history::GuardianHistoryCheckpoint(vec![
-            user_message("original task").into(),
-            assistant_message("continued working").into()
-        ])),
-    );
     if current {
         assert_eq!(bounded.last_started_turn_id.as_deref(), Some("wake-2"));
         assert_eq!(
@@ -1877,7 +1730,6 @@ async fn completed_turn_suffix_after_compaction_overrides_resume_metadata(
         model: newer_context.model.clone(),
         comp_hash: newer_context.comp_hash.clone(),
         cyber_access_program: None,
-        realtime_active: newer_context.realtime_active,
     };
     let mut rollout_items = vec![
         RolloutItem::Compacted(object!({
@@ -1974,7 +1826,6 @@ async fn reconstruct_history_preserves_legacy_compaction_count_with_session_meta
             message: "legacy summary".to_string(),
             replacement_history: None,
             retained_context: None,
-            guardian_history: None,
             mcp_resource_origins: None,
             window_number: None,
             first_window_id: None,
@@ -2032,7 +1883,6 @@ async fn reconstruct_history_legacy_compaction_without_replacement_history_does_
             message: "legacy summary".to_string(),
             replacement_history: None,
             retained_context: None,
-            guardian_history: None,
             mcp_resource_origins: None,
             window_number: None,
             first_window_id: None,
@@ -2074,7 +1924,6 @@ async fn reconstruct_history_legacy_compaction_without_replacement_history_clear
             message: "legacy summary".to_string(),
             replacement_history: None,
             retained_context: None,
-            guardian_history: None,
             mcp_resource_origins: None,
             window_number: None,
             first_window_id: None,
@@ -2138,17 +1987,10 @@ async fn record_initial_history_resumed_turn_context_after_compaction_reestablis
         disabled_plugin_ids: None,
         #[allow(deprecated)]
         cwd: turn_context.cwd.clone(),
-        approval_policy: turn_context.approval_policy(),
-        approvals_reviewer: None,
-        sandbox_policy: turn_context.sandbox_policy(),
-        permission_profile: None,
-        active_permission_profile: None,
-        file_system_sandbox_policy: None,
         model: previous_model.to_string(),
         comp_hash: None,
         collaboration_mode: Some(turn_context.collaboration_mode()),
         multi_agent_version: None,
-        realtime_active: Some(turn_context.realtime_active),
         cyber_access_program: None,
         effort: turn_context.reasoning_effort().cloned(),
         summary: Some(codex_protocol::config_types::ReasoningSummary::Auto),
@@ -2184,7 +2026,6 @@ async fn record_initial_history_resumed_turn_context_after_compaction_reestablis
             message: String::new(),
             replacement_history: Some(Vec::new()),
             retained_context: None,
-            guardian_history: None,
             mcp_resource_origins: None,
             window_number: None,
             first_window_id: None,
@@ -2224,7 +2065,6 @@ async fn record_initial_history_resumed_turn_context_after_compaction_reestablis
             model: previous_model.to_string(),
             comp_hash: None,
             cyber_access_program: None,
-            realtime_active: Some(turn_context.realtime_active),
         })
     );
     assert_eq!(
@@ -2236,17 +2076,10 @@ async fn record_initial_history_resumed_turn_context_after_compaction_reestablis
             disabled_plugin_ids: None,
             #[allow(deprecated)]
             cwd: turn_context.cwd.clone(),
-            approval_policy: turn_context.approval_policy(),
-            approvals_reviewer: None,
-            sandbox_policy: turn_context.sandbox_policy(),
-            permission_profile: None,
-            active_permission_profile: None,
-            file_system_sandbox_policy: None,
             model: previous_model.to_string(),
             comp_hash: None,
             collaboration_mode: Some(turn_context.collaboration_mode()),
             multi_agent_version: None,
-            realtime_active: Some(turn_context.realtime_active),
             cyber_access_program: None,
             effort: turn_context.reasoning_effort().cloned(),
             summary: Some(codex_protocol::config_types::ReasoningSummary::Auto),
@@ -2266,17 +2099,10 @@ async fn record_initial_history_resumed_aborted_turn_without_id_clears_active_tu
         disabled_plugin_ids: None,
         #[allow(deprecated)]
         cwd: turn_context.cwd.clone(),
-        approval_policy: turn_context.approval_policy(),
-        approvals_reviewer: None,
-        sandbox_policy: turn_context.sandbox_policy(),
-        permission_profile: None,
-        active_permission_profile: None,
-        file_system_sandbox_policy: None,
         model: previous_model.to_string(),
         comp_hash: None,
         collaboration_mode: Some(turn_context.collaboration_mode()),
         multi_agent_version: None,
-        realtime_active: Some(turn_context.realtime_active),
         cyber_access_program: None,
         effort: turn_context.reasoning_effort().cloned(),
         summary: Some(codex_protocol::config_types::ReasoningSummary::Auto),
@@ -2358,7 +2184,6 @@ async fn record_initial_history_resumed_aborted_turn_without_id_clears_active_tu
             message: String::new(),
             replacement_history: Some(Vec::new()),
             retained_context: None,
-            guardian_history: None,
             mcp_resource_origins: None,
             window_number: None,
             first_window_id: None,
@@ -2385,7 +2210,6 @@ async fn record_initial_history_resumed_aborted_turn_without_id_clears_active_tu
             model: previous_model.to_string(),
             comp_hash: None,
             cyber_access_program: None,
-            realtime_active: Some(turn_context.realtime_active),
         })
     );
     assert!(session.reference_context_item().await.is_none());
@@ -2409,17 +2233,10 @@ async fn record_initial_history_resumed_unmatched_abort_preserves_active_turn_fo
         disabled_plugin_ids: None,
         #[allow(deprecated)]
         cwd: turn_context.cwd.clone(),
-        approval_policy: turn_context.approval_policy(),
-        approvals_reviewer: None,
-        sandbox_policy: turn_context.sandbox_policy(),
-        permission_profile: None,
-        active_permission_profile: None,
-        file_system_sandbox_policy: None,
         model: current_model.to_string(),
         comp_hash: None,
         collaboration_mode: Some(turn_context.collaboration_mode()),
         multi_agent_version: None,
-        realtime_active: Some(turn_context.realtime_active),
         cyber_access_program: None,
         effort: turn_context.reasoning_effort().cloned(),
         summary: Some(codex_protocol::config_types::ReasoningSummary::Auto),
@@ -2522,7 +2339,6 @@ async fn record_initial_history_resumed_unmatched_abort_preserves_active_turn_fo
             model: current_model.to_string(),
             comp_hash: None,
             cyber_access_program: None,
-            realtime_active: Some(turn_context.realtime_active),
         })
     );
     assert_eq!(
@@ -2544,17 +2360,10 @@ async fn record_initial_history_resumed_trailing_incomplete_turn_compaction_clea
         disabled_plugin_ids: None,
         #[allow(deprecated)]
         cwd: turn_context.cwd.clone(),
-        approval_policy: turn_context.approval_policy(),
-        approvals_reviewer: None,
-        sandbox_policy: turn_context.sandbox_policy(),
-        permission_profile: None,
-        active_permission_profile: None,
-        file_system_sandbox_policy: None,
         model: previous_model.to_string(),
         comp_hash: None,
         collaboration_mode: Some(turn_context.collaboration_mode()),
         multi_agent_version: None,
-        realtime_active: Some(turn_context.realtime_active),
         cyber_access_program: None,
         effort: turn_context.reasoning_effort().cloned(),
         summary: Some(codex_protocol::config_types::ReasoningSummary::Auto),
@@ -2625,7 +2434,6 @@ async fn record_initial_history_resumed_trailing_incomplete_turn_compaction_clea
             message: String::new(),
             replacement_history: Some(Vec::new()),
             retained_context: None,
-            guardian_history: None,
             mcp_resource_origins: None,
             window_number: None,
             first_window_id: None,
@@ -2652,7 +2460,6 @@ async fn record_initial_history_resumed_trailing_incomplete_turn_compaction_clea
             model: previous_model.to_string(),
             comp_hash: None,
             cyber_access_program: None,
-            realtime_active: Some(turn_context.realtime_active),
         })
     );
     assert!(session.reference_context_item().await.is_none());
@@ -2707,7 +2514,6 @@ async fn record_initial_history_resumed_trailing_incomplete_turn_preserves_turn_
             model: turn_context.model_info().slug.clone(),
             comp_hash: None,
             cyber_access_program: None,
-            realtime_active: Some(turn_context.realtime_active),
         })
     );
     assert_eq!(
@@ -2729,17 +2535,10 @@ async fn record_initial_history_resumed_replaced_incomplete_compacted_turn_clear
         disabled_plugin_ids: None,
         #[allow(deprecated)]
         cwd: turn_context.cwd.clone(),
-        approval_policy: turn_context.approval_policy(),
-        approvals_reviewer: None,
-        sandbox_policy: turn_context.sandbox_policy(),
-        permission_profile: None,
-        active_permission_profile: None,
-        file_system_sandbox_policy: None,
         model: previous_model.to_string(),
         comp_hash: None,
         collaboration_mode: Some(turn_context.collaboration_mode()),
         multi_agent_version: None,
-        realtime_active: Some(turn_context.realtime_active),
         cyber_access_program: None,
         effort: turn_context.reasoning_effort().cloned(),
         summary: Some(codex_protocol::config_types::ReasoningSummary::Auto),
@@ -2811,7 +2610,6 @@ async fn record_initial_history_resumed_replaced_incomplete_compacted_turn_clear
             message: String::new(),
             replacement_history: Some(Vec::new()),
             retained_context: None,
-            guardian_history: None,
             mcp_resource_origins: None,
             window_number: None,
             first_window_id: None,
@@ -2851,7 +2649,6 @@ async fn record_initial_history_resumed_replaced_incomplete_compacted_turn_clear
             model: previous_model.to_string(),
             comp_hash: None,
             cyber_access_program: None,
-            realtime_active: Some(turn_context.realtime_active),
         })
     );
     assert!(session.reference_context_item().await.is_none());

@@ -3,7 +3,6 @@
 use anyhow::Result;
 use codex_features::Feature;
 use codex_login::CodexAuth;
-use codex_protocol::openai_models::ToolMode;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use core_test_support::context_snapshot;
@@ -21,30 +20,19 @@ fn builder(incremental_tools: bool, token_budget: bool) -> TestCodexBuilder {
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
         .with_model_info_override("gpt-5.4", |model| {
             model.use_responses_lite = true;
-            model.tool_mode = Some(ToolMode::CodeMode);
         })
         .with_config(move |config| {
             if incremental_tools {
-                config
-                    .features
-                    .enable(Feature::IncrementalTools)
-                    .expect("enable incremental tools");
+                config.features.enable(Feature::IncrementalTools);
             } else {
-                config
-                    .features
-                    .disable(Feature::IncrementalTools)
-                    .expect("disable incremental tools");
+                config.features.disable(Feature::IncrementalTools);
             }
             if token_budget {
-                config
-                    .features
-                    .enable(Feature::TokenBudget)
-                    .expect("enable token budget");
+                config.features.enable(Feature::TokenBudget);
             }
             config.base_instructions =
                 Some("Use the available tools to help the user.".to_string());
             config.model_auto_compact_token_limit = Some(100_000);
-            config.code_mode.disable_in_process_fallback = true;
         })
 }
 
@@ -107,10 +95,7 @@ async fn legacy_resume_switches_only_after_window_replacement(token_budget: bool
     let changed = builder(/*incremental_tools*/ true, token_budget)
         .with_config(|config| {
             config.update_plan_enabled = true;
-            config
-                .features
-                .disable(Feature::ShellTool)
-                .expect("disable shell");
+            config.features.disable(Feature::ShellTool);
         })
         .restart_with_auto_env(&server, &migrated)
         .await?;
@@ -121,10 +106,7 @@ async fn legacy_resume_switches_only_after_window_replacement(token_budget: bool
     let resumed_update = builder(/*incremental_tools*/ true, token_budget)
         .with_config(|config| {
             config.update_plan_enabled = true;
-            config
-                .features
-                .disable(Feature::ShellTool)
-                .expect("disable shell");
+            config.features.disable(Feature::ShellTool);
         })
         .restart_with_auto_env(&server, &changed)
         .await?;
@@ -170,7 +152,6 @@ async fn disable_incremental_tools_at_next_window() -> Result<()> {
     let session_builder = |enabled| {
         builder(enabled, /*token_budget*/ false).with_model_info_override("gpt-5.4", |model| {
             model.use_responses_lite = true;
-            model.tool_mode = Some(ToolMode::Direct);
         })
     };
     let initial = session_builder(/*enabled*/ true)
@@ -180,10 +161,7 @@ async fn disable_incremental_tools_at_next_window() -> Result<()> {
     let disabled_builder = || {
         session_builder(/*enabled*/ false).with_config(|config| {
             config.update_plan_enabled = true;
-            config
-                .features
-                .disable(Feature::ShellTool)
-                .expect("disable shell");
+            config.features.disable(Feature::ShellTool);
         })
     };
     let disabled = disabled_builder()

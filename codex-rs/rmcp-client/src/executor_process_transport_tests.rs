@@ -143,7 +143,6 @@ fn retained_read_response(chunks: Vec<ProcessOutputChunk>, next_seq: u64) -> Rea
         exit_code: None,
         closed: false,
         failure: None,
-        sandbox_denied: false,
     }
 }
 

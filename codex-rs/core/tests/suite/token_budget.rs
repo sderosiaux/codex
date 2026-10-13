@@ -29,7 +29,7 @@ use core_test_support::PathBufExt;
 use core_test_support::assert_regex_match;
 use core_test_support::context_snapshot;
 use core_test_support::context_snapshot::ContextSnapshotOptions;
-use core_test_support::hooks::trust_discovered_hooks;
+use core_test_support::hooks::enable_discovered_hooks;
 use core_test_support::responses::ResponsesRequest;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
@@ -202,10 +202,7 @@ async fn token_budget_context_is_only_emitted_with_full_context() -> Result<()> 
     let test = test_codex()
         .with_config(|config| {
             config.model_context_window = Some(CONFIGURED_CONTEXT_WINDOW);
-            config
-                .features
-                .enable(Feature::TokenBudget)
-                .expect("test config should allow token budget");
+            config.features.enable(Feature::TokenBudget);
         })
         .build(&server)
         .await?;
@@ -338,10 +335,7 @@ async fn experimental_context_requires_capable_model_and_codex_backend(
             config.model_provider.base_url = Some(base_url);
             config.model_provider.experimental_bearer_token = bearer_token.map(Into::into);
             config.model_context_window = Some(CONFIGURED_CONTEXT_WINDOW);
-            config
-                .features
-                .enable(Feature::ContextManagement)
-                .expect("test config should allow experimental context");
+            config.features.enable(Feature::ContextManagement);
         })
         .build_with_auto_env(&server)
         .await?;
@@ -590,10 +584,7 @@ async fn token_budget_defaults_follow_the_active_model(activation: Feature) -> R
         .with_config(move |config| {
             config.model_provider.base_url = Some(backend_url);
             config.model_context_window = Some(CONFIGURED_CONTEXT_WINDOW);
-            config
-                .features
-                .enable(activation)
-                .expect("test config should allow token budget");
+            config.features.enable(activation);
         })
         .build_with_auto_env(&server)
         .await?;
@@ -682,10 +673,7 @@ async fn token_budget_ignores_invalid_model_message_defaults() -> Result<()> {
             })
             .with_config(|config| {
                 config.model_context_window = Some(CONFIGURED_CONTEXT_WINDOW);
-                config
-                    .features
-                    .enable(Feature::TokenBudget)
-                    .expect("test config should allow token budget");
+                config.features.enable(Feature::TokenBudget);
             })
             .build_with_auto_env(&server)
             .await?;
@@ -721,10 +709,7 @@ async fn model_token_budget_defaults_do_not_enable_disabled_feature() -> Result<
                 .token_budget = Some(model_token_budget_config());
         })
         .with_config(|config| {
-            config
-                .features
-                .disable(Feature::TokenBudget)
-                .expect("test config should allow token budget to be disabled");
+            config.features.disable(Feature::TokenBudget);
         })
         .build_with_auto_env(&server)
         .await?;
@@ -753,11 +738,8 @@ async fn token_budget_context_injects_plain_thread_hint_text() -> Result<()> {
     let test = test_codex()
         .with_config(move |config| {
             config.model_context_window = Some(CONFIGURED_CONTEXT_WINDOW);
-            config
-                .features
-                .enable(Feature::TokenBudget)
-                .expect("test config should allow token budget");
-            let mut servers = config.mcp_servers.get().clone();
+            config.features.enable(Feature::TokenBudget);
+            let mut servers = config.mcp_servers.clone();
             servers.insert(
                 "notes".to_string(),
                 McpServerConfig {
@@ -779,7 +761,6 @@ async fn token_budget_context_injects_plain_thread_hint_text() -> Result<()> {
                     disabled_reason: None,
                     startup_timeout_sec: Some(Duration::from_secs(10)),
                     tool_timeout_sec: None,
-                    default_tools_approval_mode: None,
                     enabled_tools: None,
                     disabled_tools: None,
                     scopes: None,
@@ -788,10 +769,7 @@ async fn token_budget_context_injects_plain_thread_hint_text() -> Result<()> {
                     tools: HashMap::new(),
                 },
             );
-            config
-                .mcp_servers
-                .set(servers)
-                .expect("test mcp servers should accept any configuration");
+            config.mcp_servers = servers;
         })
         .build(&server)
         .await?;
@@ -854,10 +832,7 @@ async fn token_budget_reminder_emits_after_crossing_compaction_threshold() -> Re
                 reminder_threshold_tokens: Some(2_000),
                 ..TokenBudgetConfig::default()
             });
-            config
-                .features
-                .enable(Feature::TokenBudget)
-                .expect("test config should allow token budget");
+            config.features.enable(Feature::TokenBudget);
         })
         .build(&server)
         .await?;
@@ -913,10 +888,7 @@ async fn token_budget_reminder_uses_body_after_prefix_window() -> Result<()> {
                 reminder_threshold_tokens: Some(600),
                 ..TokenBudgetConfig::default()
             });
-            config
-                .features
-                .enable(Feature::TokenBudget)
-                .expect("test config should allow token budget");
+            config.features.enable(Feature::TokenBudget);
         })
         .build(&server)
         .await?;
@@ -977,10 +949,7 @@ async fn get_context_remaining_returns_token_budget_remaining_fragment() -> Resu
     let test = test_codex()
         .with_config(|config| {
             config.model_context_window = Some(10_000);
-            config
-                .features
-                .enable(Feature::TokenBudget)
-                .expect("test config should allow token budget");
+            config.features.enable(Feature::TokenBudget);
         })
         .build(&server)
         .await?;
@@ -1044,10 +1013,7 @@ async fn get_context_remaining_uses_body_after_prefix_window() -> Result<()> {
             config.model_auto_compact_token_limit = Some(7_000);
             config.model_auto_compact_token_limit_scope =
                 AutoCompactTokenLimitScope::BodyAfterPrefix;
-            config
-                .features
-                .enable(Feature::TokenBudget)
-                .expect("test config should allow token budget");
+            config.features.enable(Feature::TokenBudget);
         })
         .build(&server)
         .await?;
@@ -1102,10 +1068,7 @@ async fn get_context_remaining_returns_unknown_when_threshold_is_unbounded() -> 
         })
         .with_config(|config| {
             config.model_context_window = None;
-            config
-                .features
-                .enable(Feature::TokenBudget)
-                .expect("test config should allow token budget");
+            config.features.enable(Feature::TokenBudget);
         })
         .build(&server)
         .await?;
@@ -1162,15 +1125,11 @@ async fn token_budget_context_uses_new_window_after_compaction(
         .with_config(move |config| {
             config.model_provider = model_provider;
             config.model_context_window = Some(CONFIGURED_CONTEXT_WINDOW);
-            config
-                .features
-                .enable(Feature::TokenBudget)
-                .expect("test config should allow token budget");
+            config.features.enable(Feature::TokenBudget);
             if retain_client_developer_messages {
                 config
                     .features
-                    .enable(Feature::RetainClientDeveloperMessages)
-                    .expect("test config should allow client developer retention");
+                    .enable(Feature::RetainClientDeveloperMessages);
             }
         })
         .build(&server)
@@ -1260,11 +1219,8 @@ async fn token_budget_compaction_runs_compact_hooks() -> Result<()> {
         .with_pre_build_hook(write_token_budget_compact_hooks)
         .with_config(|config| {
             config.model_context_window = Some(CONFIGURED_CONTEXT_WINDOW);
-            config
-                .features
-                .enable(Feature::TokenBudget)
-                .expect("test config should allow token budget");
-            trust_discovered_hooks(config);
+            config.features.enable(Feature::TokenBudget);
+            enable_discovered_hooks(config);
         })
         .build(&server)
         .await?;
@@ -1347,15 +1303,11 @@ async fn token_budget_mid_turn_auto_compaction_resets_before_active_follow_up(
                     .to_string(),
                 ..TokenBudgetConfig::default()
             });
-            config
-                .features
-                .enable(Feature::TokenBudget)
-                .expect("test config should allow token budget");
+            config.features.enable(Feature::TokenBudget);
             if retain_client_developer_messages {
                 config
                     .features
-                    .enable(Feature::RetainClientDeveloperMessages)
-                    .expect("test config should allow client developer retention");
+                    .enable(Feature::RetainClientDeveloperMessages);
             }
         })
         .build(&server)
@@ -1473,10 +1425,7 @@ async fn token_budget_auto_compact_fallback_uses_buffer_until_new_context() -> R
                 auto_compact_fallback_buffer_tokens: Some(4_000),
                 ..TokenBudgetConfig::default()
             });
-            config
-                .features
-                .enable(Feature::TokenBudget)
-                .expect("test config should allow token budget");
+            config.features.enable(Feature::TokenBudget);
         })
         .build(&server)
         .await?;
@@ -1566,10 +1515,7 @@ async fn token_budget_auto_compact_fallback_rolls_over_after_buffer() -> Result<
                 auto_compact_fallback_buffer_tokens: Some(4_000),
                 ..TokenBudgetConfig::default()
             });
-            config
-                .features
-                .enable(Feature::TokenBudget)
-                .expect("test config should allow token budget");
+            config.features.enable(Feature::TokenBudget);
         })
         .build(&server)
         .await?;
@@ -1632,7 +1578,7 @@ async fn new_context_tool_skips_auto_compact_fallback() -> Result<()> {
         max_context_tokens: config.skill_max_context_tokens,
         bundled_skills_enabled: config.bundled_skills_enabled(),
         cloud_skill_enabled: config.cloud_skill_enabled,
-        shadow_selection_enabled: config.features.enabled(Feature::SkillSearch),
+        shadow_selection_enabled: false,
     });
     let test = test_codex()
         .with_extensions(Arc::new(extensions.build()))
@@ -1644,10 +1590,7 @@ async fn new_context_tool_skips_auto_compact_fallback() -> Result<()> {
                 auto_compact_fallback_buffer_tokens: Some(4_000),
                 ..TokenBudgetConfig::default()
             });
-            config
-                .features
-                .enable(Feature::TokenBudget)
-                .expect("test config should allow token budget");
+            config.features.enable(Feature::TokenBudget);
         })
         .build(&server)
         .await?;

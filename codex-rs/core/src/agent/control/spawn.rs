@@ -11,13 +11,11 @@ use crate::agent::types::SpawnAgentOptions;
 use crate::agents_md_manager::SessionInstructions;
 use crate::codex_thread::CodexThread;
 use crate::codex_thread::ThreadConfigSnapshot;
-use crate::config::PermissionProfileSnapshot;
 use crate::context::BaseInstructionsFragment;
 use crate::context::ContextualUserFragment;
 use crate::context::CurrentTimeReminder;
 use crate::context::CurrentTimeUnavailable;
 use crate::context::DeveloperInstructions;
-use crate::context::ManagedDeveloperInstructions;
 use crate::context::MultiAgentModeInstructions;
 use crate::context::MultiAgentRoleInstructions;
 use crate::context::MultiAgentUsageHint;
@@ -34,10 +32,8 @@ use codex_features::Feature;
 use codex_history::ResponseItemEnvelope;
 use codex_prompts::ResolvedModelMessages;
 use codex_protocol::error::AgentErrorContext;
-use codex_protocol::intersect_effective_permission_profiles;
 use codex_protocol::protocol::EnvironmentConfigState;
 use codex_thread_store::PersistContext;
-use codex_utils_path_uri::PathUri;
 use futures::StreamExt;
 use futures::stream;
 use std::time::Instant;
@@ -110,11 +106,9 @@ fn keep_forked_rollout_item(item: &RolloutItem, preserve_context_baselines: bool
             | ResponseItem::ContextCompaction { .. }
             | ResponseItem::Other => false,
         },
-        RolloutItem::RealtimeItem(_)
-        | RolloutItem::InterAgentCommunication(_)
+        RolloutItem::InterAgentCommunication(_)
         | RolloutItem::InterAgentCommunicationMetadata { .. }
-        | RolloutItem::RetainedContext(_)
-        | RolloutItem::SecurityRiskScore(_) => false,
+        | RolloutItem::RetainedContext(_) => false,
         // Full-history forks preserve the cached prompt prefix and can keep diffing
         // from the parent's durable baseline unless legacy compaction requires rebuilding it.
         RolloutItem::TurnContext(_) | RolloutItem::WorldState(_) => preserve_context_baselines,
@@ -145,8 +139,6 @@ fn retain_forked_developer_message(item: &mut ResponseItem, usage_hint_texts: &[
         };
 
         !(MultiAgentRoleInstructions::matches_text(text)
-            || text
-                .starts_with(crate::guardian::AUTO_REVIEW_DENIED_ACTION_APPROVAL_DEVELOPER_PREFIX)
             || MultiAgentModeInstructions::matches_text(text)
             || CurrentTimeReminder::matches_text(text)
             || CurrentTimeUnavailable::matches_text(text)
@@ -416,40 +408,11 @@ impl LocalAgentControl {
         };
         config.model_reasoning_effort = stored_reasoning_effort;
         if let Some(role_name) = session_source.get_agent_role() {
-            let runtime_approval_policy = config.permissions.approval_policy.value();
-            let runtime_approvals_reviewer = config.approvals_reviewer;
             let runtime_cwd = config.cwd.clone();
-            let runtime_permission_profile = match config.permissions.active_permission_profile() {
-                Some(active_permission_profile) => {
-                    PermissionProfileSnapshot::active_with_profile_workspace_roots(
-                        config.permissions.permission_profile().clone(),
-                        active_permission_profile,
-                        config.permissions.profile_workspace_roots().to_vec(),
-                    )
-                }
-                None => PermissionProfileSnapshot::legacy(
-                    config.permissions.permission_profile().clone(),
-                ),
-            };
-
             apply_role_to_config(&mut config, Some(&role_name))
                 .await
                 .map_err(CodexErr::InvalidRequest)?;
-            config
-                .permissions
-                .approval_policy
-                .set(runtime_approval_policy)
-                .map_err(|err| {
-                    CodexErr::InvalidRequest(format!("approval_policy is invalid: {err}"))
-                })?;
-            config.approvals_reviewer = runtime_approvals_reviewer;
             config.cwd = runtime_cwd;
-            config
-                .permissions
-                .set_permission_profile_from_session_snapshot(runtime_permission_profile)
-                .map_err(|err| {
-                    CodexErr::InvalidRequest(format!("permission_profile is invalid: {err}"))
-                })?;
         }
         config.service_tier = self.root_service_tier();
         if let Some(model) = stored_model {
@@ -470,17 +433,11 @@ impl LocalAgentControl {
         let parent_thread_id = owner_thread_id
             .or_else(|| initial_history.get_resumed_parent_thread_id())
             .or(stored_parent_thread_id);
-        let (inherited_environments, inherited_exec_policy, client_mcp_extensions) = if let Some(
-            (parent, parent_environments),
-        ) =
-            parent.as_ref()
+        let (inherited_environments, client_mcp_extensions) = if let Some((
+            parent,
+            parent_environments,
+        )) = parent.as_ref()
         {
-            let parent_config = parent.session.get_config().await;
-            if !crate::exec_policy::child_uses_parent_exec_policy(&parent_config, &config) {
-                return Err(CodexErr::InvalidRequest(format!(
-                    "cannot resume multi-agent v2 child {thread_id}: parent execution policy has changed; retry through the parent"
-                )));
-            }
             if let Some(selections) = environment_selections.as_mut() {
                 for selection in selections {
                     let environment_id = &selection.environment_id;
@@ -513,63 +470,20 @@ impl LocalAgentControl {
                             return Err(invalid_environment("configuration is not ready"));
                         }
                     };
-                    let mut bounded_config = child_config.clone();
-                    bounded_config.permission_profile = owner_config.permission_profile.clone();
-                    if bounded_config != *owner_config {
+                    if child_config != owner_config {
                         return Err(invalid_environment(
                             "configuration differs from the current parent",
                         ));
                     }
-                    if child_config.permission_profile == owner_config.permission_profile {
-                        continue;
-                    }
-                    if owner_environment.environment.is_remote() {
-                        return Err(invalid_environment(
-                            "permissions changed on a remote executor",
-                        ));
-                    }
-                    let cwd = selection.cwd.to_abs_path().map_err(|_| {
-                        invalid_environment("working directory is not a local absolute path")
-                    })?;
-                    let roots = owner_environment
-                        .workspace_roots()
-                        .iter()
-                        .map(PathUri::to_abs_path)
-                        .collect::<Result<Vec<_>, _>>()
-                        .map_err(|_| {
-                            invalid_environment("workspace roots are not local absolute paths")
-                        })?;
-                    let authority = owner_environment
-                        .permission_profile()
-                        .clone()
-                        .materialize_project_roots_with_workspace_roots(&roots);
-                    let requested = child_config
-                        .permission_profile
-                        .permission_profile()
-                        .clone()
-                        .materialize_project_roots_with_workspace_roots(&roots);
-                    let permissions =
-                        intersect_effective_permission_profiles(&authority, &requested, &cwd)
-                            .map_err(|err| {
-                                invalid_environment(&format!(
-                                    "permissions cannot be intersected safely: {err}"
-                                ))
-                            })?;
-                    bounded_config.permission_profile =
-                        PermissionProfileSnapshot::legacy(permissions);
-                    selection.config = EnvironmentConfigState::Ready(bounded_config);
                 }
             }
             (
                 Some(parent_environments.clone()),
-                Some(Arc::clone(&parent.session.services.exec_policy)),
                 Some(parent.client_mcp_extensions()),
             )
         } else {
             (
                 self.inherited_environments_for_source(&state, Some(&session_source))
-                    .await,
-                self.inherited_exec_policy_for_source(&state, Some(&session_source), &config)
                     .await,
                 None,
             )
@@ -589,21 +503,8 @@ impl LocalAgentControl {
                     ..Default::default()
                 })
         };
-        let subagent_analytics =
-            if let SessionSource::SubAgent(source @ SubAgentSource::ThreadSpawn { .. }) =
-                &session_source
-                && let Some(parent_thread_id) = parent_thread_id
-                && let Ok(parent) = state.get_thread(parent_thread_id).await
-            {
-                Some((
-                    parent.session.app_server_client_metadata().await,
-                    source.clone(),
-                ))
-            } else {
-                None
-            };
-        // Reserving a slot can evict an idle nested parent. Capture its instructions and
-        // analytics metadata alongside its authority before the live parent can disappear.
+        // Reserving a slot can evict an idle nested parent. Capture its instructions
+        // alongside its authority before the live parent can disappear.
         let residency_slot = self
             .reserve_v2_residency_slot(&state, &config, &membership, Some(thread_id))
             .await?;
@@ -618,7 +519,6 @@ impl LocalAgentControl {
                 environment_selections,
                 inherited_environments,
                 inherited_instructions,
-                inherited_exec_policy,
                 client_mcp_extensions,
             })
             .await
@@ -637,23 +537,6 @@ impl LocalAgentControl {
                     runtime.registry.clear_evicted_environments(thread_id);
                     residency_slot.commit(reloaded_thread.thread_id);
                     // Register before listeners can forward events from the resumed thread.
-                    if let Some((client_metadata, source)) = subagent_analytics {
-                        let thread_config = reloaded_thread.thread.config_snapshot().await;
-                        emit_subagent_session_started(
-                            &reloaded_thread
-                                .thread
-                                .session
-                                .services
-                                .analytics_events_client,
-                            client_metadata,
-                            reloaded_thread.thread.session.session_id(),
-                            reloaded_thread.thread_id,
-                            thread_config.parent_thread_id,
-                            thread_config,
-                            source,
-                            /*resumed_created_at*/ Some(stored_thread.created_at),
-                        );
-                    }
                     state.notify_thread_created(reloaded_thread.thread_id);
                     Ok(residency_pin)
                 })
@@ -754,9 +637,6 @@ impl LocalAgentControl {
                     .disabled_plugin_ids,
             );
         }
-        let inherited_exec_policy = self
-            .inherited_exec_policy_for_source(&state, session_source.as_ref(), &config)
-            .await;
         let (session_source, mut agent_metadata) = match session_source {
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id,
@@ -834,52 +714,13 @@ impl LocalAgentControl {
         };
         let child_create_started_at = Instant::now();
         let new_thread = state
-            .spawn_child_thread(
-                start_options,
-                self.clone(),
-                parent_thread_id,
-                inherited_exec_policy,
-            )
+            .spawn_child_thread(start_options, self.clone(), parent_thread_id)
             .await
             .map_err(|err| err.with_agent_context(AgentErrorContext::ChildStartup))?;
         let child_create = child_create_started_at.elapsed();
         agent_metadata.agent_id = Some(new_thread.thread_id);
         let mut pending_spawn =
             PendingSpawn::new(Arc::clone(&state), new_thread.thread_id, membership);
-
-        if let Some(SessionSource::SubAgent(
-            subagent_source @ SubAgentSource::ThreadSpawn {
-                parent_thread_id, ..
-            },
-        )) = notification_source.as_ref()
-        {
-            let client_metadata = match state.get_thread(*parent_thread_id).await {
-                Ok(parent_thread) => parent_thread.session.app_server_client_metadata().await,
-                Err(error) => {
-                    tracing::warn!(
-                        error = %error,
-                        parent_thread_id = %parent_thread_id,
-                        "skipping subagent thread analytics: failed to load parent thread metadata"
-                    );
-                    crate::session::session::AppServerClientMetadata {
-                        client_name: None,
-                        client_version: None,
-                    }
-                }
-            };
-            let thread_config = new_thread.thread.config_snapshot().await;
-            let parent_thread_id = thread_config.parent_thread_id;
-            emit_subagent_session_started(
-                &new_thread.thread.session.services.analytics_events_client,
-                client_metadata,
-                new_thread.thread.session.session_id(),
-                new_thread.thread_id,
-                parent_thread_id,
-                thread_config,
-                subagent_source.clone(),
-                /*resumed_created_at*/ None,
-            );
-        }
 
         let control = self.clone();
         let child = Arc::clone(&new_thread.thread);
@@ -1177,12 +1018,9 @@ impl LocalAgentControl {
                     let ContentItem::InputText { text } = content_item.content_mut() else {
                         return true;
                     };
-                    if ManagedDeveloperInstructions::matches_text(text)
-                        || PersistentModeState::matches_text(text)
-                    {
+                    if PersistentModeState::matches_text(text) {
                         // If the child will rebuild its initial context, drop the inherited
-                        // instructions; startup will add the current requirements and effort
-                        // instructions once.
+                        // instructions; startup will add the current effort instructions once.
                         return preserve_context_baselines;
                     }
                     let (
@@ -1248,9 +1086,6 @@ impl LocalAgentControl {
                             resume_metadata.previous_turn_settings = None;
                         }
                     }
-                    // Parent-local review evidence must not become the child's authorization.
-                    // Root user authorization is collected separately by the host.
-                    compacted.guardian_history = None;
                     // Only V2 fetches root authorization live. Its local scope starts known-empty;
                     // V1 must remain incomplete when inherited authorization has been stripped.
                     compacted.retained_context = (multi_agent_version == MultiAgentVersion::V2)
@@ -1273,15 +1108,12 @@ impl LocalAgentControl {
                     }
                     true
                 }
-                RolloutItem::RealtimeItem(_) => false,
                 RolloutItem::EventMsg(_)
                 | RolloutItem::SessionMeta(_)
                 | RolloutItem::TurnContext(_)
                 | RolloutItem::InterAgentCommunication(_)
                 | RolloutItem::InterAgentCommunicationMetadata { .. } => true,
-                RolloutItem::RetainedContext(_)
-                | RolloutItem::TokenUsageRecord(_)
-                | RolloutItem::SecurityRiskScore(_) => false,
+                RolloutItem::RetainedContext(_) | RolloutItem::TokenUsageRecord(_) => false,
             }
         });
         if preserve_fork_prefix {
@@ -1480,9 +1312,6 @@ impl LocalAgentControl {
         let inherited_environments = self
             .inherited_environments_for_source(&state, Some(&session_source))
             .await;
-        let inherited_exec_policy = self
-            .inherited_exec_policy_for_source(&state, Some(&session_source), &config)
-            .await;
 
         let resumed_thread = state
             .resume_thread_with_history_with_source(ResumeThreadWithHistoryOptions {
@@ -1494,7 +1323,6 @@ impl LocalAgentControl {
                 environment_selections: None,
                 inherited_environments,
                 inherited_instructions: None,
-                inherited_exec_policy,
                 client_mcp_extensions: None,
             })
             .await?;

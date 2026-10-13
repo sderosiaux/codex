@@ -103,7 +103,6 @@ async fn discover_cached_plugins(
                 follow_directory_symlinks: true,
                 prune_hidden_directories: false,
             },
-            /*sandbox*/ None,
         )
         .await
     {

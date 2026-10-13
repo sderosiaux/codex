@@ -17,7 +17,6 @@ use crate::agent::types::LiveAgent;
 use crate::agent::types::MessageDeliveryMode;
 use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
-use crate::codex_thread::GuardianRootSnapshot;
 use crate::codex_thread::ThreadConfigSnapshot;
 use crate::rollout_budget::RolloutBudgetReminder;
 use codex_protocol::AgentPath;
@@ -28,7 +27,6 @@ use codex_protocol::error::Result;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::TokenUsage;
-use codex_rollout_trace::ThreadTraceContext;
 use futures::future::BoxFuture;
 use std::collections::HashSet;
 
@@ -289,12 +287,8 @@ impl AgentControl for LocalAgentControl {
         Box::pin(async move { self.record_rollout_budget_usage(&usage) })
     }
 
-    fn turn_finished<'a>(
-        &'a self,
-        outcome: AgentTurnOutcome,
-        trace: &'a ThreadTraceContext,
-    ) -> BoxFuture<'a, ()> {
-        Box::pin(self.notify_parent_of_terminal_turn(outcome, trace))
+    fn turn_finished(&self, outcome: AgentTurnOutcome) -> BoxFuture<'_, ()> {
+        Box::pin(self.notify_parent_of_terminal_turn(outcome))
     }
 
     fn service_tier(&self) -> Option<String> {
@@ -305,10 +299,6 @@ impl AgentControl for LocalAgentControl {
         match update {
             AgentConfigUpdate::ServiceTier(tier) => self.set_root_service_tier(tier),
         }
-    }
-
-    fn get_guardian_package(&self, agent: ThreadId) -> BoxFuture<'_, Option<GuardianRootSnapshot>> {
-        Box::pin(self.root_user_authorization(agent))
     }
 
     fn pending_budget_reminder<'a>(

@@ -4,7 +4,6 @@ use codex_protocol::models::BaseInstructionsProvenance;
 #[cfg(test)]
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
-use std::collections::HashSet;
 use std::collections::VecDeque;
 
 use super::AdditionalContextStore;
@@ -27,7 +26,6 @@ use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TokenUsageInfo;
 use codex_protocol::protocol::TokenUsageRecord;
 use codex_protocol::protocol::TurnContextItem;
-use tokio_util::sync::CancellationToken;
 use tokio_util::task::AbortOnDropHandle;
 
 /// Runtime request effort, inherited from a parent or established by prewarm or sampling.
@@ -73,15 +71,12 @@ pub(crate) struct SessionState {
     /// Persisted origin of the session base instructions, when known.
     pub(crate) base_instructions_provenance: Option<BaseInstructionsProvenance>,
     pub(crate) history: ContextManager,
-    /// Cancels work bound to discarded history or a superseded Guardian evidence policy.
-    pub(crate) history_reset: CancellationToken,
     pub(crate) latest_rate_limits: Option<RateLimitSnapshot>,
     pub(crate) latest_token_usage_record: Option<TokenUsageRecord>,
     pub(crate) server_reasoning_included: bool,
-    pub(crate) mcp_dependency_prompted: HashSet<String>,
     pub(crate) additional_context: AdditionalContextStore,
     /// Settings used by the latest regular user turn, used for turn-to-turn
-    /// model/realtime handling on subsequent regular turns (including full-context
+    /// model handling on subsequent regular turns (including full-context
     /// reinjection after resume or `/compact`).
     previous_turn_settings: Option<PreviousTurnSettings>,
     /// Latest task admitted in this runtime, retained across completion and history edits.
@@ -100,9 +95,7 @@ pub(crate) struct SessionState {
     /// Retained after completion so later turns do not repeat speculative captures.
     pub(crate) shell_snapshot_prewarm: Option<AbortOnDropHandle<()>>,
     pub(crate) current_time_reminder: CurrentTimeReminderState,
-    pub(crate) active_connector_selection: HashSet<String>,
     pub(crate) pending_session_start_sources: VecDeque<codex_hooks::SessionStartSource>,
-    next_turn_is_first: bool,
 }
 
 impl SessionState {
@@ -126,11 +119,9 @@ impl SessionState {
             session_configuration,
             base_instructions_provenance: None,
             history,
-            history_reset: CancellationToken::new(),
             latest_rate_limits: None,
             latest_token_usage_record: None,
             server_reasoning_included: false,
-            mcp_dependency_prompted: HashSet::new(),
             additional_context: AdditionalContextStore::default(),
             previous_turn_settings: None,
             last_started_turn_id: None,
@@ -141,9 +132,7 @@ impl SessionState {
             startup_prewarm: None,
             shell_snapshot_prewarm: None,
             current_time_reminder: CurrentTimeReminderState::default(),
-            active_connector_selection: HashSet::new(),
             pending_session_start_sources: VecDeque::new(),
-            next_turn_is_first: true,
         }
     }
 
@@ -155,16 +144,6 @@ impl SessionState {
         previous_turn_settings: Option<PreviousTurnSettings>,
     ) {
         self.previous_turn_settings = previous_turn_settings;
-    }
-
-    pub(crate) fn set_next_turn_is_first(&mut self, value: bool) {
-        self.next_turn_is_first = value;
-    }
-
-    pub(crate) fn take_next_turn_is_first(&mut self) -> bool {
-        let is_first_turn = self.next_turn_is_first;
-        self.next_turn_is_first = false;
-        is_first_turn
     }
 
     pub(crate) fn clone_history(&self) -> ContextManager {
@@ -190,20 +169,12 @@ impl SessionState {
         reference_context_item: Option<TurnContextItem>,
         replacement: HistoryReplacement,
     ) {
-        let invalidate_reviews = match replacement {
-            HistoryReplacement::Compaction {
-                reviewer_compaction_hash,
-            } => self
-                .history
-                .replace_compacted(items, reviewer_compaction_hash.as_deref()),
+        match replacement {
+            HistoryReplacement::Compaction => self.history.replace_compacted(items),
             HistoryReplacement::Reset => {
                 self.turn_attribution = None;
                 self.history.replace_annotated(items);
-                true
             }
-        };
-        if invalidate_reviews {
-            std::mem::take(&mut self.history_reset).cancel();
         }
         self.history
             .set_reference_context_item(reference_context_item);
@@ -376,17 +347,6 @@ impl SessionState {
         self.server_reasoning_included
     }
 
-    pub(crate) fn record_mcp_dependency_prompted<I>(&mut self, names: I)
-    where
-        I: IntoIterator<Item = String>,
-    {
-        self.mcp_dependency_prompted.extend(names);
-    }
-
-    pub(crate) fn mcp_dependency_prompted(&self) -> HashSet<String> {
-        self.mcp_dependency_prompted.clone()
-    }
-
     pub(crate) fn set_session_startup_prewarm(
         &mut self,
         startup_prewarm: SessionStartupPrewarmHandle,
@@ -396,25 +356,6 @@ impl SessionState {
 
     pub(crate) fn take_session_startup_prewarm(&mut self) -> Option<SessionStartupPrewarmHandle> {
         self.startup_prewarm.take()
-    }
-
-    // Adds connector IDs to the active set and returns the merged selection.
-    pub(crate) fn merge_connector_selection<I>(&mut self, connector_ids: I) -> HashSet<String>
-    where
-        I: IntoIterator<Item = String>,
-    {
-        self.active_connector_selection.extend(connector_ids);
-        self.active_connector_selection.clone()
-    }
-
-    // Returns the current connector selection tracked on session state.
-    pub(crate) fn get_connector_selection(&self) -> HashSet<String> {
-        self.active_connector_selection.clone()
-    }
-
-    // Removes all currently tracked connector selections.
-    pub(crate) fn clear_connector_selection(&mut self) {
-        self.active_connector_selection.clear();
     }
 
     pub(crate) fn queue_pending_session_start_source(

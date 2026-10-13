@@ -14,7 +14,6 @@ use uuid::Uuid;
 pub(crate) struct RolloutReconstruction {
     pub(super) history: Vec<ResponseItemEnvelope>,
     pub(crate) retained_context: codex_history::RetainedContext,
-    pub(super) guardian_history: Option<codex_history::GuardianHistoryCheckpoint>,
     pub(super) last_started_turn_id: Option<String>,
     pub(super) previous_turn_settings: Option<PreviousTurnSettings>,
     pub(super) reference_context_item: Option<TurnContextItem>,
@@ -194,10 +193,7 @@ impl Session {
         ContextManager::reconstruct_rollout(
             rollout_items,
             turn_context.history_mode,
-            ContextManager::for_session(
-                &turn_context.session_source,
-                &turn_context.config.features,
-            ),
+            ContextManager::for_session(&turn_context.session_source),
             turn_context.model_info().truncation_policy.into(),
         )
     }
@@ -249,9 +245,7 @@ impl ContextManager {
                 | RolloutItem::TurnContext(_)
                 | RolloutItem::WorldState(_)
                 | RolloutItem::RetainedContext(_)
-                | RolloutItem::SecurityRiskScore(_)
                 | RolloutItem::TokenUsageRecord(_)
-                | RolloutItem::RealtimeItem(_)
                 | RolloutItem::Compacted(_)
                 | RolloutItem::EventMsg(_) => None,
             })
@@ -371,7 +365,6 @@ impl ContextManager {
                             model: ctx.model.clone(),
                             cyber_access_program: ctx.cyber_access_program,
                             comp_hash: ctx.comp_hash.clone(),
-                            realtime_active: ctx.realtime_active,
                         });
                         if matches!(
                             active_segment.reference_context_item,
@@ -440,9 +433,7 @@ impl ContextManager {
                 }
                 RolloutItem::EventMsg(_)
                 | RolloutItem::SessionMeta(_)
-                | RolloutItem::RealtimeItem(_)
                 | RolloutItem::RetainedContext(_)
-                | RolloutItem::SecurityRiskScore(_)
                 | RolloutItem::TokenUsageRecord(_)
                 | RolloutItem::InterAgentCommunicationMetadata { .. } => {}
             }
@@ -495,13 +486,7 @@ impl ContextManager {
             && let Some(items) = &checkpoint.compacted.replacement_history
         {
             history.replace_annotated(items.clone());
-            history.restore_review_context(
-                checkpoint.compacted.retained_context.as_ref(),
-                checkpoint.compacted.guardian_history.as_ref(),
-                // Keep the backup during replay; the installing session resolves its reviewer.
-                /*reviewer_compaction_hash*/
-                None,
-            );
+            history.restore_retained_context(checkpoint.compacted.retained_context.as_ref());
         }
         let rollout_suffix =
             history_checkpoint.map_or(rollout_items, |checkpoint| checkpoint.suffix);
@@ -549,9 +534,7 @@ impl ContextManager {
                 }
                 RolloutItem::EventMsg(_)
                 | RolloutItem::TurnContext(_)
-                | RolloutItem::RealtimeItem(_)
                 | RolloutItem::WorldState(_)
-                | RolloutItem::SecurityRiskScore(_)
                 | RolloutItem::TokenUsageRecord(_)
                 | RolloutItem::SessionMeta(_) => {}
             }
@@ -591,10 +574,8 @@ impl ContextManager {
                 | RolloutItem::InterAgentCommunication(_)
                 | RolloutItem::InterAgentCommunicationMetadata { .. }
                 | RolloutItem::TurnContext(_)
-                | RolloutItem::RealtimeItem(_)
                 | RolloutItem::TokenUsageRecord(_)
                 | RolloutItem::RetainedContext(_)
-                | RolloutItem::SecurityRiskScore(_)
                 | RolloutItem::EventMsg(_) => {
                     unreachable!("only world-state replay items are collected")
                 }
@@ -609,7 +590,6 @@ impl ContextManager {
         });
         RolloutReconstruction {
             retained_context: history.retained_context().clone(),
-            guardian_history: history.guardian_history_checkpoint(),
             last_started_turn_id,
             history: history.into_annotated_items(),
             previous_turn_settings,

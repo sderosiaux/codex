@@ -717,7 +717,7 @@ pub(crate) async fn exchange_code_for_tokens(
     auth_route_config: &AuthRouteConfig,
 ) -> io::Result<(ExchangedTokens, HttpClient)> {
     let token_endpoint = format!("{}/oauth/token", issuer.trim_end_matches('/'));
-    let factory = auth_route_config.authentication_factory(&token_endpoint);
+    let factory = auth_route_config.http_client_factory().clone();
     let allows_fallback = factory.allows_system_proxy_fallback();
     let redirect_observed = Arc::new(AtomicBool::new(false));
     let mut builder = HttpClientBuilder::new().without_request_logging();

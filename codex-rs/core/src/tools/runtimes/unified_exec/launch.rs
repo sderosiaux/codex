@@ -1,5 +1,4 @@
 //! Reports terminal process-creation failures as command attempts without a process handle.
-//! Approval rejections retain their own lifecycle, and sandbox denials remain retryable.
 //! Once started, failure event publication survives caller cancellation.
 
 use super::UnifiedExecRequest;
@@ -7,8 +6,8 @@ use crate::tools::events::ToolEmitter;
 use crate::tools::events::ToolEventCtx;
 use crate::tools::events::ToolEventFailure;
 use crate::tools::events::ToolEventStage;
-use crate::tools::sandboxing::ToolCtx;
-use crate::tools::sandboxing::ToolError;
+use crate::tools::runtime::ToolCtx;
+use crate::tools::runtime::ToolError;
 use crate::unified_exec::UnifiedExecProcess;
 use codex_protocol::protocol::ExecCommandSource;
 use std::sync::Arc;

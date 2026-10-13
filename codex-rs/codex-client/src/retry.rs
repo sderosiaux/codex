@@ -34,7 +34,6 @@ impl RetryOn {
             | TransportError::Network(_) => self.retry_transport,
             TransportError::Build(_)
             | TransportError::RetryLimit
-            | TransportError::Policy(_)
             | TransportError::ResponseTooLarge { .. } => false,
         }
     }

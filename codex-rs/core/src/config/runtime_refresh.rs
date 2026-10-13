@@ -1,10 +1,7 @@
 //! Resolves refreshable MCP inputs without rebuilding unrelated session configuration.
 //! Existing sessions refresh ordinary MCP state without gaining enterprise authority.
-//! Validate the retained backend after applying the refreshable requirements.
 
 use crate::config::Config;
-use crate::config::ManagedFeatures;
-use crate::config::constrain_mcp_servers;
 use crate::config::resolve_tool_suggest_config_from_layer_stack;
 use codex_config::McpServerAuth;
 use codex_config::McpServerConfig;
@@ -57,7 +54,6 @@ impl Config {
         let mut configured_features = Features::from_sources(
             FeatureConfigSource {
                 features: cfg.features.as_ref(),
-                ..Default::default()
             },
             FeatureConfigSource::default(),
             FeatureOverrides::default(),
@@ -85,10 +81,6 @@ impl Config {
                 configured_features.set_enabled(feature, incoming.features.enabled(feature));
             }
         }
-        let features = ManagedFeatures::from_configured(
-            configured_features,
-            layers.requirements().feature_requirements.clone(),
-        )?;
         let is_enterprise = |server: &McpServerConfig| {
             matches!(server.auth, McpServerAuth::EmaAuth) || server.ema_registration().is_some()
         };
@@ -96,17 +88,14 @@ impl Config {
         // initially admitted EMA configuration until a fresh session is constructed.
         let mut servers: HashMap<_, _> = incoming
             .mcp_servers
-            .get()
             .iter()
             .filter(|(name, server)| {
-                !is_enterprise(server)
-                    && !self.mcp_servers.get().get(*name).is_some_and(is_enterprise)
+                !is_enterprise(server) && !self.mcp_servers.get(*name).is_some_and(is_enterprise)
             })
             .map(|(name, server)| (name.clone(), server.clone()))
             .collect();
         servers.extend(
             self.mcp_servers
-                .get()
                 .iter()
                 .filter(|(_, server)| is_enterprise(server))
                 .map(|(name, server)| (name.clone(), server.clone())),
@@ -117,52 +106,47 @@ impl Config {
             config.mcp_optional_startup_grace = incoming.mcp_optional_startup_grace;
             config.mcp_oauth_credentials_store_mode = incoming.mcp_oauth_credentials_store_mode;
         }
-        config
-            .features
-            .refresh_mcp_features(&features)
-            .map_err(std::io::Error::other)?;
-        config.mcp_servers =
-            constrain_mcp_servers(servers, layers.requirements().mcp_servers.as_ref())
-                .map_err(std::io::Error::other)?;
+        // Refresh ordinary MCP feature values without changing session-static features.
+        for feature in [
+            Feature::EnableMcpApps,
+            Feature::SecretAuthStorage,
+            Feature::McpOAuthRefreshCoordination,
+        ] {
+            config
+                .features
+                .set_enabled(feature, configured_features.enabled(feature));
+        }
+        config.mcp_servers = servers;
         // A missing profile also carries the host's fail-closed load result.
         let enterprise_retired = incoming.mcp_enterprise_managed_auth.is_none()
             || !incoming.features.enabled(Feature::UseXaa)
             || (self
                 .mcp_servers
-                .get()
                 .values()
                 .any(|server| is_enterprise(server) && server.enabled)
                 && incoming.mcp_enterprise_managed_auth != self.mcp_enterprise_managed_auth)
-            || self.mcp_servers.get().iter().any(|(name, server)| {
+            || self.mcp_servers.iter().any(|(name, server)| {
                 is_enterprise(server)
                     && server.enabled
-                    && !incoming
-                        .mcp_servers
-                        .get()
-                        .get(name)
-                        .is_some_and(|incoming| {
-                            incoming.enabled
-                                && incoming.auth == server.auth
-                                && incoming.transport == server.transport
-                                && incoming.oauth_resource == server.oauth_resource
-                                && incoming.oauth == server.oauth
-                                && incoming.scopes == server.scopes
-                                && incoming.environment_id == server.environment_id
-                                && incoming.ema_registration() == server.ema_registration()
-                        })
+                    && !incoming.mcp_servers.get(name).is_some_and(|incoming| {
+                        incoming.enabled
+                            && incoming.auth == server.auth
+                            && incoming.transport == server.transport
+                            && incoming.oauth_resource == server.oauth_resource
+                            && incoming.oauth == server.oauth
+                            && incoming.scopes == server.scopes
+                            && incoming.environment_id == server.environment_id
+                            && incoming.ema_registration() == server.ema_registration()
+                    })
             })
-            || self.mcp_servers.get().iter().any(|(name, server)| {
+            || self.mcp_servers.iter().any(|(name, server)| {
                 is_enterprise(server)
                     && server.enabled
                     && !config
                         .mcp_servers
-                        .get()
                         .get(name)
                         .is_some_and(|server| server.enabled)
             });
-        if matches!(scope, RuntimeConfigRefresh::User) {
-            config.active_project = incoming.active_project.clone();
-        }
         if !matches!(scope, RuntimeConfigRefresh::Mcp) {
             config.tool_suggest = resolve_tool_suggest_config_from_layer_stack(&layers);
         }
@@ -171,15 +155,13 @@ impl Config {
         if enterprise_retired {
             config.disable_mcp_enterprise_auth();
         }
-        config.validate_windows_mxc_requirement()?;
         Ok(config)
     }
 
     /// Disables enterprise MCP authorization while preserving unrelated MCP servers.
     pub fn disable_mcp_enterprise_auth(&mut self) {
         self.mcp_enterprise_managed_auth = None;
-        let mut servers = self.mcp_servers.get().clone();
-        for server in servers.values_mut() {
+        for server in self.mcp_servers.values_mut() {
             if matches!(server.auth, McpServerAuth::EmaAuth) || server.ema_registration().is_some()
             {
                 server.enabled = false;
@@ -187,9 +169,6 @@ impl Config {
                     oauth.ema_registration = None;
                 }
             }
-        }
-        if self.mcp_servers.set(servers).is_err() {
-            tracing::warn!("failed to clear disabled enterprise registrations");
         }
     }
 }

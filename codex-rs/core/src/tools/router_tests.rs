@@ -326,7 +326,7 @@ async fn mcp_parallel_support_uses_handler_data() -> anyhow::Result<()> {
                 "query_with_delay",
             )),
             RegisteredTool {
-                exposure: ToolExposure::DirectModelOnly,
+                exposure: ToolExposure::Direct,
                 ..mcp_runtime(mcp_tool_info(
                     "hello_echo",
                     /*supports_parallel_tool_calls*/ false,
@@ -340,15 +340,6 @@ async fn mcp_parallel_support_uses_handler_data() -> anyhow::Result<()> {
                     "hidden_echo",
                     /*supports_parallel_tool_calls*/ true,
                     "mcp__hidden_echo__",
-                    "query_with_delay",
-                ))
-            },
-            RegisteredTool {
-                exposure: ToolExposure::CodeModeOnly,
-                ..mcp_runtime(mcp_tool_info(
-                    "nested_echo",
-                    /*supports_parallel_tool_calls*/ true,
-                    "mcp__nested_echo__",
                     "query_with_delay",
                 ))
             },
@@ -399,16 +390,6 @@ async fn mcp_parallel_support_uses_handler_data() -> anyhow::Result<()> {
     };
     assert!(!router.tool_supports_parallel(&hidden_call));
     assert!(router.registered_tool(&hidden_call.tool_name).is_some());
-
-    let nested_only_call = ToolCall {
-        tool_name: ToolName::namespaced("mcp__nested_echo__", "query_with_delay"),
-        call_id: "call-nested-only-server".to_string(),
-        payload: ToolPayload::Function {
-            arguments: "{}".to_string(),
-        },
-        encrypted_function_args: None,
-    };
-    assert!(router.tool_supports_parallel(&nested_only_call));
 
     Ok(())
 }
@@ -601,13 +582,14 @@ async fn extension_tool_executors_are_model_visible_and_dispatchable() -> anyhow
     })?
     .expect("function_call should produce a tool call");
     let result = router
-        .dispatch_tool_call_with_code_mode_result(
+        .dispatch_tool_call_with_state(
             Arc::new(session),
             step_context,
             CancellationToken::new(),
             Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new())),
             call,
             ToolCallSource::Direct,
+            Arc::new(crate::tools::context::ToolCallState::default()),
         )
         .await?;
 

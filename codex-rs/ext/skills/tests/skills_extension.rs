@@ -8,7 +8,6 @@ use assert_matches::assert_matches;
 use codex_config::ConfigLayerEntry;
 use codex_config::ConfigLayerSource;
 use codex_config::ConfigLayerStack;
-use codex_config::ConfigRequirementsToml;
 use codex_exec_server::CapabilityRootDiscovery;
 use codex_exec_server::ExecutorCapabilityDiscoverySnapshot;
 use codex_exec_server::FileSystemEnvironmentAccessor;
@@ -27,7 +26,6 @@ use codex_extension_api::SkillInvocationInput;
 use codex_extension_api::SkillInvocationKind;
 use codex_extension_api::ThreadStartInput;
 use codex_extension_api::ToolCall;
-use codex_extension_api::ToolCallSource;
 use codex_extension_api::ToolPayload;
 use codex_extension_api::TurnInputContext;
 use codex_extension_api::TurnStartInput;
@@ -1005,7 +1003,7 @@ async fn shadow_lru_selector_recovers_a_skill_invoked_on_an_earlier_turn() -> Te
                         )
                         .expect("absolute cwd"),
                         is_primary: true,
-                        fs: &FileSystemEnvironmentAccessor::unrestricted(&LOCAL_FS),
+                        fs: &FileSystemEnvironmentAccessor::new(&LOCAL_FS),
                     }],
                 },
                 /*extension_metrics*/ None,
@@ -1204,7 +1202,7 @@ async fn selected_executor_catalog_follows_step_availability_and_reuses_its_cach
                     environment_id: turn_environment.environment_id.clone(),
                     cwd: turn_environment.cwd.clone(),
                     is_primary: true,
-                    fs: &FileSystemEnvironmentAccessor::unrestricted(&LOCAL_FS),
+                    fs: &FileSystemEnvironmentAccessor::new(&LOCAL_FS),
                 }],
             },
             /*extension_metrics*/ None,
@@ -1307,7 +1305,6 @@ async fn selected_executor_catalog_follows_step_availability_and_reuses_its_cach
     let failed_discovery = ExecutorCapabilityDiscoverySnapshot::new(
         &selected_roots,
         vec![Err("exec-server transport disconnected".to_string())],
-        Default::default(),
     );
     let recovered_discovery = ExecutorCapabilityDiscoverySnapshot::new(
         &selected_roots,
@@ -1320,7 +1317,6 @@ async fn selected_executor_catalog_follows_step_availability_and_reuses_its_cach
             warnings: Vec::new(),
             error: None,
         }))],
-        Default::default(),
     );
     for (turn_id, discovery, expected_list_calls) in [
         ("failed-discovery", &failed_discovery, 2),
@@ -2065,7 +2061,6 @@ async fn skills_list_only_returns_model_visible_bounded_metadata() -> TestResult
         model: "gpt-test".to_string(),
         codex_turn_metadata: None,
         truncation_policy: TruncationPolicy::Bytes(10_000),
-        source: ToolCallSource::Direct,
         conversation_history: ConversationHistory::default(),
         turn_item_emitter: Arc::new(NoopTurnItemEmitter),
         environments: Vec::new(),
@@ -2225,7 +2220,6 @@ async fn skills_list_only_returns_model_visible_bounded_metadata() -> TestResult
             model: "gpt-test".to_string(),
             codex_turn_metadata: None,
             truncation_policy: TruncationPolicy::Bytes(2_000),
-            source: ToolCallSource::Direct,
             conversation_history: ConversationHistory::default(),
             turn_item_emitter: Arc::new(NoopTurnItemEmitter),
             environments: Vec::new(),
@@ -2413,7 +2407,7 @@ async fn root_qualified_locator_selects_only_the_matching_executor_skill() -> Te
                     environment_id: "env-1".to_string(),
                     cwd: PathUri::parse("file:///workspace")?,
                     is_primary: true,
-                    fs: &FileSystemEnvironmentAccessor::unrestricted(&LOCAL_FS),
+                    fs: &FileSystemEnvironmentAccessor::new(&LOCAL_FS),
                 }],
             },
             /*extension_metrics*/ None,
@@ -2703,14 +2697,10 @@ async fn host_catalog_compacts_shared_paths_under_budget_pressure() -> TestResul
     }
     let root = AbsolutePathBuf::try_from(std::fs::canonicalize(root)?)?;
     let rendered_root = root.to_string_lossy().replace('\\', "/");
-    let config_layer_stack = ConfigLayerStack::new(
-        vec![ConfigLayerEntry::new(
-            ConfigLayerSource::SessionFlags,
-            toml::from_str("[skills.bundled]\nenabled = false\n")?,
-        )],
-        Default::default(),
-        ConfigRequirementsToml::default(),
-    )?;
+    let config_layer_stack = ConfigLayerStack::new(vec![ConfigLayerEntry::new(
+        ConfigLayerSource::SessionFlags,
+        toml::from_str("[skills.bundled]\nenabled = false\n")?,
+    )])?;
     let codex_home = AbsolutePathBuf::try_from(test_root.clone())?;
     let service = HostSkillsService::new_with_restriction_product(
         codex_home.clone(),

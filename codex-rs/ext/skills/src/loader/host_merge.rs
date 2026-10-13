@@ -125,10 +125,7 @@ pub(crate) async fn load_and_merge_host_skill_roots_with_request_snapshots(
                         .get_or_init(|| async {
                             let migrated_root = migrated_command_skills_root(plugin_root);
                             file_system
-                                .canonicalize(
-                                    &PathUri::from_abs_path(&migrated_root),
-                                    /*sandbox*/ None,
-                                )
+                                .canonicalize(&PathUri::from_abs_path(&migrated_root))
                                 .await
                                 .and_then(|path| path.to_abs_path())
                                 .unwrap_or(migrated_root)

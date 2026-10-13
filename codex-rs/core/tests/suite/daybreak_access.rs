@@ -126,7 +126,6 @@ async fn daybreak_metadata_follows_the_actual_plugin_call(case: AccessCase) -> R
             "command":stdio_server_bin()?,
             "cwd":plugin_root,
             "environment_id": if remote_url.is_some() { "remote" } else { "local" },
-            "default_tools_approval_mode":"approve",
             "env":{"MCP_TEST_DAYBREAK_READ_ONLY":
                 if matches!(case, AccessCase::MutableStdio) { "false" } else { "true" }}
         })
@@ -347,7 +346,7 @@ async fn daybreak_discards_in_flight_account_changes_without_apps() -> Result<()
         plugin_root.join(".mcp.json"),
         serde_json::to_vec(&json!({
             "mcpServers":{"sample":{"command":stdio_server_bin()?,"cwd":plugin_root,
-                "environment_id":"local","default_tools_approval_mode":"approve",
+                "environment_id":"local",
                 "env":{"MCP_TEST_DAYBREAK_READ_ONLY":"true"}}}
         }))?,
     )?;
@@ -356,10 +355,7 @@ async fn daybreak_discards_in_flight_account_changes_without_apps() -> Result<()
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
         .with_config(move |config| {
             config.chatgpt_base_url = base_url;
-            config
-                .features
-                .disable(Feature::Apps)
-                .expect("disable Apps");
+            config.features.disable(Feature::Apps);
         })
         .build_with_remote_and_local_env(&server)
         .await?;

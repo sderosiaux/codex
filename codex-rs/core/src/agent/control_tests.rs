@@ -22,7 +22,6 @@ use crate::config::AgentRoleConfig;
 use crate::config::Config;
 use crate::config::ConfigBuilder;
 use crate::context::ContextualUserFragment;
-use crate::context::ManagedDeveloperInstructions;
 use crate::context::MultiAgentRoleInstructions;
 use crate::context::SubagentNotification;
 use crate::context::world_state::IncrementalToolsHint;
@@ -51,7 +50,6 @@ use codex_protocol::AgentPath;
 use codex_protocol::ResponseItemId;
 use codex_protocol::capabilities::CapabilityRootLocation;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
-use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::ReasoningSummary;
@@ -72,10 +70,8 @@ use codex_protocol::models::ContentItemKind;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::InternalChatMessageMetadataPassthrough;
 use codex_protocol::models::MessagePhase;
-use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EnvironmentConfigState;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::EventMsg;
@@ -1026,8 +1022,7 @@ async fn ensure_v2_child_loaded_preserves_evicted_parent_authority() {
 #[tokio::test]
 async fn cancelled_v2_send_finishes_reload_registration() {
     let (home, mut config) = test_config().await;
-    config.features.enable(Feature::MultiAgentV2).unwrap();
-    config.features.enable(Feature::Sqlite).unwrap();
+    config.features.enable(Feature::MultiAgentV2);
     // The root leaves exactly one resident child slot available.
     config.multi_agent_v2.max_concurrent_threads_per_session = 2;
     let harness = AgentControlHarness::new_with_config(home, config).await;
@@ -1182,14 +1177,9 @@ async fn spawn_v2_reload_test_child(
 async fn check_v2_agent_reload(route: V2ReloadRoute) {
     let (home, mut config) = test_config().await;
     let _ = config.features.enable(Feature::MultiAgentV2);
-    let _ = config.features.enable(Feature::Sqlite);
     config.model = Some("gpt-5.6-sol".to_string());
     config.multi_agent_v2.max_concurrent_threads_per_session = 3;
-    config.permissions.allow_login_shell = true;
-    config
-        .permissions
-        .set_permission_profile(PermissionProfile::read_only())
-        .expect("read-only parent profile");
+    config.allow_login_shell = true;
     let harness = AgentControlHarness::new_with_config(home, config).await;
     let client_mcp_extensions =
         ClientMcpExtensions::new([(OPENAI_FORM_EXTENSION_ID.to_string(), serde_json::json!({}))]);
@@ -1374,19 +1364,13 @@ async fn check_v2_agent_reload(route: V2ReloadRoute) {
         assert_eq!(
             (
                 reloaded_turn.initial_environments.to_selections(),
-                reloaded_turn.permission_profile(),
                 reloaded_child.client_mcp_extensions(),
             ),
             (
                 parent_turn.initial_environments.to_selections(),
-                parent_turn.permission_profile(),
                 client_mcp_extensions,
             ),
         );
-        assert!(Arc::ptr_eq(
-            &reloaded_child.session.services.exec_policy,
-            &parent_thread.session.services.exec_policy,
-        ));
     }
     assert_eq!(
         reloaded_child.config_snapshot().await.model,
@@ -1447,7 +1431,6 @@ async fn check_v2_agent_reload(route: V2ReloadRoute) {
 async fn resume_agent_from_rollout_does_not_reopen_v2_descendants() {
     let (home, mut config) = test_config().await;
     let _ = config.features.enable(Feature::MultiAgentV2);
-    let _ = config.features.enable(Feature::Sqlite);
     let harness = AgentControlHarness::new_with_config(home, config).await;
     let (parent_thread_id, parent_thread) = harness.start_thread().await;
     let worker_path = AgentPath::root().join("worker").expect("worker path");
@@ -1610,7 +1593,6 @@ async fn cold_resume_with_thread_instructions_preserves_lazy_v2_child_inheritanc
 ) {
     let (home, mut config) = test_config().await;
     let _ = config.features.enable(Feature::MultiAgentV2);
-    let _ = config.features.enable(Feature::Sqlite);
     let harness = AgentControlHarness::new_with_config(home, config).await;
     let parent = harness
         .manager
@@ -1788,14 +1770,7 @@ async fn v2_reload_preserves_shared_instructions_after_root_unloads(
     reload_target: InstructionsReloadTarget,
 ) {
     let (home, mut config) = test_config().await;
-    config
-        .features
-        .enable(Feature::MultiAgentV2)
-        .expect("enable multi-agent v2");
-    config
-        .features
-        .enable(Feature::Sqlite)
-        .expect("enable SQLite");
+    config.features.enable(Feature::MultiAgentV2);
     let harness = AgentControlHarness::new_with_config(home, config).await;
     let provider = Arc::new(TestThreadInstructionsProvider {
         text: "initial thread instructions".into(),
@@ -2029,10 +2004,7 @@ async fn v2_spawn_resolves_reported_effort_without_changing_child_selection(
     reported_effort: ReasoningEffort,
 ) {
     let (home, mut config) = test_config().await;
-    config
-        .features
-        .enable(Feature::MultiAgentV2)
-        .expect("enable v2");
+    config.features.enable(Feature::MultiAgentV2);
     config.model_reasoning_effort = selected_effort.clone();
     let harness = AgentControlHarness::new_with_config(home, config).await;
     let (parent_id, parent) = harness.start_thread().await;
@@ -2081,12 +2053,8 @@ async fn v2_spawn_resolves_reported_effort_without_changing_child_selection(
 #[tokio::test]
 async fn pending_environment_failure_reaches_child_and_grandchild() {
     let (home, mut config) = test_config().await;
-    for feature in [
-        Feature::DeferredExecutor,
-        Feature::MultiAgentV2,
-        Feature::Sqlite,
-    ] {
-        config.features.enable(feature).expect("enable feature");
+    for feature in [Feature::DeferredExecutor, Feature::MultiAgentV2] {
+        config.features.enable(feature);
     }
     config.model = Some("gpt-5.6-sol".to_string());
     config.agent_max_depth = 2;
@@ -2344,10 +2312,6 @@ async fn spawn_agent_fork_from_paginated_parent_uses_model_context_prefix(
                         model: "parent-only-model".to_string(),
                         model_provider_id: "parent-only-provider".to_string(),
                         service_tier: None,
-                        approval_policy: AskForApproval::Never,
-                        approvals_reviewer: ApprovalsReviewer::User,
-                        permission_profile: PermissionProfile::workspace_write(),
-                        active_permission_profile: None,
                         cwd: harness.config.cwd.clone(),
                         runtime_workspace_roots: None,
                         reasoning_effort: None,
@@ -2485,13 +2449,7 @@ async fn spawn_agent_without_fork_from_paginated_parent_stays_fresh_and_paginate
     let features = &mut harness.config.features;
     features
         .disable(Feature::MultiAgentV2)
-        .expect("disable raw v2 feature");
-    if dynamic_tools_enabled {
-        features.enable(Feature::MultiAgentV2DynamicTools)
-    } else {
-        features.disable(Feature::MultiAgentV2DynamicTools)
-    }
-    .expect("configure dynamic tool inheritance");
+        .set_enabled(Feature::MultiAgentV2DynamicTools, dynamic_tools_enabled);
     let dynamic_tools = vec![codex_protocol::dynamic_tools::DynamicToolSpec::Function(
         codex_protocol::dynamic_tools::DynamicToolFunctionSpec {
             name: "echo".to_string(),
@@ -2603,7 +2561,6 @@ async fn spawn_agent_fork_sanitizes_inherited_compaction_metadata() {
             model: "parent-model".into(),
             comp_hash: None,
             cyber_access_program: None,
-            realtime_active: None,
         }),
     };
     let parent_usage = TokenUsage {
@@ -2628,7 +2585,6 @@ async fn spawn_agent_fork_sanitizes_inherited_compaction_metadata() {
                 message: String::new(),
                 replacement_history: Some(vec![user_message("compacted parent context").into()]),
                 retained_context: None,
-                guardian_history: None,
                 mcp_resource_origins: None,
                 window_number: Some(1),
                 first_window_id: None,
@@ -2749,7 +2705,6 @@ async fn spawn_agent_fork_sanitizes_inherited_compaction_metadata() {
 
 #[tokio::test]
 async fn spawn_agent_can_fork_parent_thread_history_with_sanitized_items() {
-    let managed_fragment = "<managed_developer_instructions>\nParent developer instructions.\n</managed_developer_instructions>";
     let persistent_fragment =
         "<persistent_mode>\nParent developer instructions.\n</persistent_mode>";
     let harness = AgentControlHarness::new().await;
@@ -2865,9 +2820,6 @@ async fn spawn_agent_can_fork_parent_thread_history_with_sanitized_items() {
                             text: "Preserved developer context.".to_string(),
                         },
                         ContentItem::InputText {
-                            text: managed_fragment.to_string(),
-                        },
-                        ContentItem::InputText {
                             text: persistent_fragment.to_string(),
                         },
                     ],
@@ -2878,7 +2830,6 @@ async fn spawn_agent_can_fork_parent_thread_history_with_sanitized_items() {
                                 ContentItemKind("generic.developer_instructions".to_string()),
                                 ContentItemKind("multi_agent.mode_instructions".to_string()),
                                 ContentItemKind("generic.developer_policy".to_string()),
-                                ContentItemKind("managed_config.developer_instructions".to_string()),
                                 ContentItemKind("persistent_mode.instructions".to_string()),
                             ]),
                             ..Default::default()
@@ -3016,9 +2967,6 @@ async fn spawn_agent_can_fork_parent_thread_history_with_sanitized_items() {
                 text: "Preserved developer context.".to_string(),
             },
             ContentItem::InputText {
-                text: managed_fragment.to_string(),
-            },
-            ContentItem::InputText {
                 text: persistent_fragment.to_string(),
             },
         ],
@@ -3028,7 +2976,6 @@ async fn spawn_agent_can_fork_parent_thread_history_with_sanitized_items() {
                 content_item_kinds: Some(vec![
                     ContentItemKind("generic.developer_instructions".to_string()),
                     ContentItemKind("generic.developer_policy".to_string()),
-                    ContentItemKind("managed_config.developer_instructions".to_string()),
                     ContentItemKind("persistent_mode.instructions".to_string()),
                 ]),
                 ..Default::default()
@@ -3122,9 +3069,8 @@ async fn spawn_agent_can_fork_parent_thread_history_with_sanitized_items() {
         "empty child developer instructions should remove parent developer instructions"
     );
     assert!(
-        history_contains_text(no_hint_history.raw_items(), managed_fragment)
-            && history_contains_text(no_hint_history.raw_items(), persistent_fragment),
-        "clearing child instructions must preserve overlapping managed and persistent instructions"
+        history_contains_text(no_hint_history.raw_items(), persistent_fragment),
+        "clearing child instructions must preserve overlapping persistent instructions"
     );
     assert!(
         history_contains_text(
@@ -3212,7 +3158,6 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history(marke
     let replacement_history = vec![
         tools_update.clone(),
         tool_declarations.clone(),
-        ContextualUserFragment::into(crate::context::GuardianApprovedAction::new("parent-private-release".to_owned())),
         ResponseItem::Message {
             status: None,
             encrypted_content: None,
@@ -3300,9 +3245,6 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history(marke
                         .collect(),
                 ),
                 retained_context: Some(retained_context),
-                guardian_history: Some(codex_history::GuardianHistoryCheckpoint(vec![
-                    user_message("Parent-local approval must not be inherited.").into(),
-                ])),
                 mcp_resource_origins: None,
                 window_number: None,
                 first_window_id: None,
@@ -3377,17 +3319,6 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history(marke
         ),
         vec![tools_update, tool_declarations],
         "full-history forks must retain tool update notices with declarations embedded in compaction checkpoints"
-    );
-    assert!(
-        !history_contains_text(
-            history.conversation_history_snapshot().review_items(),
-            "Parent-local approval must not be inherited.",
-        ),
-        "a subagent must not inherit its parent review checkpoint",
-    );
-    assert!(
-        !history_contains_text(history.raw_items(), "parent-private-release"),
-        "a subagent must not inherit parent-local approval messages",
     );
     let mut inherited_context = codex_history::RetainedContext::default();
     inherited_context.reserve_order();
@@ -3527,7 +3458,6 @@ async fn spawn_agent_full_fork_restores_instructions_after_compaction_discards_p
                     replacement_history.into_iter().map(Into::into).collect(),
                 ),
                 retained_context: None,
-                guardian_history: None,
                 mcp_resource_origins: None,
                 window_number: None,
                 first_window_id: None,
@@ -3613,12 +3543,6 @@ async fn spawn_agent_full_fork_restores_instructions_after_compaction_discards_p
 async fn spawn_agent_full_fork_legacy_compaction_rebuilds_child_instructions_once(
     preserve_fork_prefix: bool,
 ) {
-    let managed_policy = "Managed policy for every agent.";
-    let current_managed_fragment = format!(
-        "<managed_developer_instructions>\n{managed_policy}\n</managed_developer_instructions>"
-    );
-    let stale_managed_fragment =
-        "<managed_developer_instructions>\nOld managed policy.\n</managed_developer_instructions>";
     for (case, parent_developer_instructions) in [
         ("without parent instructions", None),
         (
@@ -3630,23 +3554,6 @@ async fn spawn_agent_full_fork_legacy_compaction_rebuilds_child_instructions_onc
         let mut parent_config = harness.config.clone();
         let _ = parent_config.features.enable(Feature::MultiAgentV2);
         parent_config.developer_instructions = parent_developer_instructions.map(str::to_string);
-        let mut requirements = parent_config.config_layer_stack.requirements().clone();
-        requirements.additional_developer_instructions = Some(codex_config::Sourced::new(
-            managed_policy.to_string(),
-            codex_config::RequirementSource::Unknown,
-        ));
-        let mut requirements_toml = parent_config.config_layer_stack.requirements_toml().clone();
-        requirements_toml.additional_developer_instructions = Some(managed_policy.to_string());
-        parent_config.config_layer_stack = codex_config::ConfigLayerStack::new(
-            parent_config
-                .config_layer_stack
-                .all_layers_low_to_high()
-                .cloned()
-                .collect(),
-            requirements,
-            requirements_toml,
-        )
-        .expect("managed requirements stack");
         let mut child_config = parent_config.clone();
         child_config.multi_agent_v2.preserve_fork_prefix = preserve_fork_prefix;
         child_config.developer_instructions = Some("Child developer instructions.".to_string());
@@ -3692,7 +3599,6 @@ async fn spawn_agent_full_fork_legacy_compaction_rebuilds_child_instructions_onc
                 message: "legacy compacted summary".to_string(),
                 replacement_history: None,
                 retained_context: None,
-                guardian_history: None,
                 mcp_resource_origins: None,
                 window_number: None,
                 first_window_id: None,
@@ -3708,7 +3614,6 @@ async fn spawn_agent_full_fork_legacy_compaction_rebuilds_child_instructions_onc
                         model: "parent-model".into(),
                         comp_hash: None,
                         cyber_access_program: None,
-                        realtime_active: None,
                     }),
                 }),
             }),
@@ -3726,17 +3631,6 @@ async fn spawn_agent_full_fork_legacy_compaction_rebuilds_child_instructions_onc
                 internal_chat_message_metadata_passthrough: None,
             }));
         }
-        rollout_items.push(rollout_response_item(ResponseItem::Message {
-            status: None,
-            encrypted_content: None,
-            id: None,
-            role: "developer".to_string(),
-            content: vec![ContentItem::InputText {
-                text: stale_managed_fragment.to_string(),
-            }],
-            phase: None,
-            internal_chat_message_metadata_passthrough: None,
-        }));
         rollout_items.push(rollout_response_item(ContextualUserFragment::into(
             IncrementalToolsHint(
                 codex_prompts::ResolvedIncrementalToolMessages::default().tool_update_hint,
@@ -3842,7 +3736,6 @@ async fn spawn_agent_full_fork_legacy_compaction_rebuilds_child_instructions_onc
         }
         let history = child_thread.session.clone_history().await;
         let mut instruction_count = 0;
-        let mut managed_instructions = Vec::new();
         for item in history.raw_items() {
             let ResponseItem::Message { role, content, .. } = item else {
                 continue;
@@ -3853,16 +3746,12 @@ async fn spawn_agent_full_fork_legacy_compaction_rebuilds_child_instructions_onc
             for content_item in content {
                 if let ContentItem::InputText { text } = content_item {
                     instruction_count += usize::from(text == "Child developer instructions.");
-                    if ManagedDeveloperInstructions::matches_text(text) {
-                        managed_instructions.push(text.as_str());
-                    }
                 }
             }
         }
         assert_eq!(
-            (instruction_count, managed_instructions),
-            (1, vec![current_managed_fragment.as_str()]),
-            "{case}: canonical context reconstruction must keep only the current child and managed developer instructions"
+            instruction_count, 1,
+            "{case}: canonical context reconstruction must keep only the current child developer instructions"
         );
 
         let _ = harness
@@ -4771,7 +4660,6 @@ async fn resume_thread_subagent_restores_stored_metadata() {
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
         empty_extension_registry(),
         Arc::new(crate::test_support::EmptyUserInstructionsProvider),
-        /*analytics_events_client*/ None,
         crate::thread_manager::passthrough_image_store(),
         thread_store.clone(),
         /*agent_graph_store*/ None,

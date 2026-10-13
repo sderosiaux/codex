@@ -52,19 +52,18 @@ Unknown -> {"environments":{"devbox":{"cwd":"/workspace","shell":"bash","status"
   </environments>
 </environment_context>
 
-{"current_date":"2026-06-19","environments":{"local":{"cwd":"/repo","shell":"zsh","status":"available"}},"filesystem":"<filesystem><permission_profile type=\"disabled\"><file_system type=\"unrestricted\" /></permission_profile></filesystem>","network":"<network enabled=\"true\"><allowed>old.example.com</allowed></network>","timezone":"UTC"} -> {"current_date":"2026-06-20","environments":{"local":{"cwd":"/repo","shell":"zsh","status":"available"}},"filesystem":"<filesystem><permission_profile type=\"external\"><file_system type=\"external\" /></permission_profile></filesystem>","network":"<network enabled=\"true\"><allowed>new.example.com</allowed><denied>blocked.example.com</denied></network>","timezone":"America/Los_Angeles"} (role - user)
+{"current_date":"2026-06-19","environments":{"local":{"cwd":"/repo","shell":"zsh","status":"available"}},"filesystem":"<filesystem><workspace_roots><root>/repo</root></workspace_roots></filesystem>","timezone":"UTC"} -> {"current_date":"2026-06-20","environments":{"local":{"cwd":"/repo","shell":"zsh","status":"available"}},"filesystem":"<filesystem><workspace_roots><root>/repo</root><root>/other</root></workspace_roots></filesystem>","timezone":"America/Los_Angeles"} (role - user)
 <environment_context>
   <current_date>2026-06-20</current_date>
   <timezone>America/Los_Angeles</timezone>
-  <network enabled="true"><allowed>new.example.com</allowed><denied>blocked.example.com</denied></network>
-  <filesystem><permission_profile type="external"><file_system type="external" /></permission_profile></filesystem>
+  <filesystem><workspace_roots><root>/repo</root><root>/other</root></workspace_roots></filesystem>
 </environment_context>
 
-Absent -> {"environments":{"remote":{"cwd":"C:\\windows","shell":"powershell","status":"available"}},"filesystem":"<filesystem><permission_profile type=\"disabled\"><file_system type=\"unrestricted\" /></permission_profile></filesystem>"} (role - user)
+Absent -> {"environments":{"remote":{"cwd":"C:\\windows","shell":"powershell","status":"available"}},"filesystem":"<filesystem><workspace_roots><root>D:\\workspace</root></workspace_roots></filesystem>"} (role - user)
 <environment_context>
   <cwd>C:\windows</cwd>
   <shell>powershell</shell>
-  <filesystem><permission_profile type="disabled"><file_system type="unrestricted" /></permission_profile></filesystem>
+  <filesystem><workspace_roots><root>D:\workspace</root></workspace_roots></filesystem>
 </environment_context>
 
 {"environments":{"local":{"cwd":"/repo","status":"available"}}} -> {"environments":{"local":{"cwd":"/repo","shell":"zsh","status":"available"}}}

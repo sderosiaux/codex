@@ -22,8 +22,7 @@ async fn retained_tool_output_survives_compaction_and_resume() -> Result<()> {
             configure_scenario_catalog(config);
             config
                 .features
-                .set_enabled(Feature::RetainClientToolOutputs, enabled)
-                .unwrap();
+                .set_enabled(Feature::RetainClientToolOutputs, enabled);
             config.model_context_window = Some(1_000);
             config.model_auto_compact_token_limit = Some(i64::MAX);
             // Let this scenario exercise the compaction budget rather than ingestion truncation.

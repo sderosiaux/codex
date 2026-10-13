@@ -46,10 +46,7 @@ async fn compaction_preserves_updated_summary(mode: CompactionMode) -> Result<()
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
         .with_config(move |config| {
             config.model_auto_compact_token_limit = Some(200_000);
-            config
-                .features
-                .disable(Feature::TokenBudget)
-                .expect("disable token budget");
+            config.features.disable(Feature::TokenBudget);
             config.model_provider.name = match mode {
                 CompactionMode::Local => "Local compaction test",
                 CompactionMode::RemoteV2 => "OpenAI",

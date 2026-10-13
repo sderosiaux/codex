@@ -1,13 +1,11 @@
 use anyhow::Result;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-use codex_config::McpServerConfig;
 use codex_core::CodexThread;
 use codex_core::ForkSnapshot;
 use codex_core::StartThreadOptions;
 use codex_core::TurnInputRequest;
 use codex_core::config::Config;
-use codex_core::config::Constrained;
 use codex_core::config::TokenBudgetConfig;
 use codex_extension_api::ContentItemKind;
 use codex_extension_api::ContextContributor;
@@ -22,7 +20,6 @@ use codex_history::RolloutItem;
 use codex_login::CodexAuth;
 use codex_models_manager::bundled_models_response;
 use codex_models_manager::manager::RefreshStrategy;
-use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem;
@@ -31,14 +28,10 @@ use codex_protocol::dynamic_tools::DynamicToolResponse;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::models::ContentItem;
-use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ApplyPatchToolType;
-use codex_protocol::openai_models::ApprovalMessages;
-use codex_protocol::openai_models::CodeModeToolMessages;
 use codex_protocol::openai_models::CollaborationModeMessages;
 use codex_protocol::openai_models::ConfigShellToolType;
-use codex_protocol::openai_models::ConfirmationPolicies;
 use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::McpResourceToolMessages;
 use codex_protocol::openai_models::ModelInfo;
@@ -52,9 +45,7 @@ use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::openai_models::ToolMessage;
 use codex_protocol::openai_models::ToolMessages;
-use codex_protocol::openai_models::ToolMode;
 use codex_protocol::openai_models::TruncationPolicyConfig;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::CONTEXT_WINDOW_GUIDANCE_CLOSE_TAG;
 use codex_protocol::protocol::CONTEXT_WINDOW_GUIDANCE_OPEN_TAG;
 use codex_protocol::protocol::EventMsg;
@@ -80,11 +71,9 @@ use codex_utils_image::data_url_from_bytes;
 use codex_utils_output_truncation::TruncationPolicy;
 use codex_utils_output_truncation::truncate_text;
 use core_test_support::apps_test_server::AppsTestServer;
-use core_test_support::apps_test_server::recorded_apps_tool_calls;
 use core_test_support::responses::ResponsesRequest;
 use core_test_support::responses::ev_apply_patch_custom_tool_call;
 use core_test_support::responses::ev_completed;
-use core_test_support::responses::ev_custom_tool_call;
 use core_test_support::responses::ev_function_call;
 use core_test_support::responses::ev_function_call_with_namespace;
 use core_test_support::responses::ev_response_created;
@@ -119,7 +108,6 @@ use super::rmcp_client::remote_aware_stdio_server_bin;
 
 #[path = "step_settings/agent_spawn_tests.rs"]
 mod agent_spawn;
-mod code_mode_notifications;
 mod environment_selection;
 
 const MODEL_A: &str = "step-settings-a";
@@ -153,10 +141,7 @@ fn step_settings_test() -> TestCodexBuilder {
             Feature::DefaultModeRequestUserInput,
             Feature::FastMode,
         ] {
-            config
-                .features
-                .enable(feature)
-                .expect("test config should allow feature update");
+            config.features.enable(feature);
         }
         config.model_catalog = Some(ModelsResponse {
             models: step_settings_models(),
@@ -164,15 +149,12 @@ fn step_settings_test() -> TestCodexBuilder {
         config.model_reasoning_effort = Some(ReasoningEffort::Low);
         config.model_reasoning_summary = Some(ReasoningSummary::Concise);
         config.service_tier = None;
-        config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
-        config.approvals_reviewer = ApprovalsReviewer::User;
     })
 }
 
 fn direct_tool_settings_test() -> TestCodexBuilder {
     step_settings_test().with_config(|config| {
         for model in &mut config.model_catalog.as_mut().expect("test models").models {
-            model.tool_mode = Some(ToolMode::Direct);
             model.use_responses_lite = false;
             model.apply_patch_tool_type =
                 (model.slug != MODEL_A).then_some(ApplyPatchToolType::Freeform);
@@ -318,10 +300,7 @@ async fn tool_result_history_keeps_originating_model_across_switch_and_replay() 
                     vec![InputModality::Text, InputModality::Image]
                 };
             }
-            config
-                .features
-                .enable(Feature::UnifiedImageBudget)
-                .expect("enable unified image budget");
+            config.features.enable(Feature::UnifiedImageBudget);
         })
         .build_with_auto_env(&server)
         .await?;
@@ -632,119 +611,6 @@ async fn tool_result_history_keeps_originating_model_across_switch_and_replay() 
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn custom_tool_output_replay_preserves_originating_budget() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-
-    let server = start_mock_server().await;
-    let test = step_settings_test()
-        .with_model(MODEL_B)
-        .with_config(|config| {
-            config.features.enable(Feature::CodeMode).unwrap();
-            for model in &mut config.model_catalog.as_mut().expect("models").models {
-                model.truncation_policy =
-                    TruncationPolicyConfig::tokens(if model.slug == MODEL_B { 400 } else { 100 });
-                model.tool_mode = Some(ToolMode::CodeModeOnly);
-                model.use_responses_lite = false;
-            }
-        })
-        .build_with_auto_env(&server)
-        .await?;
-    let responses = mount_sse_sequence(
-        &server,
-        vec![
-            sse(vec![
-                ev_response_created("resp-custom"),
-                ev_custom_tool_call(
-                    "call-custom",
-                    "exec",
-                    "text('diagnostic line\\n'.repeat(500));",
-                ),
-                ev_completed("resp-custom"),
-            ]),
-            sse_completed("resp-done"),
-        ],
-    )
-    .await;
-    test.submit_text_turn("collect diagnostics").await?;
-    let live_output = responses.requests()[1].custom_tool_call_output("call-custom");
-    let text = "diagnostic line\n".repeat(500);
-    let live_text = live_output["output"][1]["text"]
-        .as_str()
-        .expect("bounded custom output");
-    assert!(live_text.len() < text.len());
-    // A's smaller history budget would truncate this result again without the saved budget.
-    assert_ne!(
-        truncate_text(live_text, TruncationPolicy::Tokens(120)),
-        live_text
-    );
-
-    test.codex.shutdown_and_wait().await?;
-    let rollout_path = test.codex.rollout_path().expect("rollout path");
-    let history = codex_rollout::RolloutRecorder::get_rollout_history(&rollout_path).await?;
-    let saved = history
-        .get_rollout_items()
-        .iter()
-        .find_map(|item| match item {
-            RolloutItem::ResponseItem(envelope)
-                if matches!(&envelope.item, ResponseItem::CustomToolCallOutput { call_id, .. } if call_id == "call-custom") =>
-            {
-                Some(envelope)
-            }
-            _ => None,
-        })
-        .expect("saved custom output");
-    assert_eq!(
-        saved
-            .metadata
-            .as_ref()
-            .and_then(|metadata| metadata.history_truncation_token_limit),
-        Some(480)
-    );
-    assert_eq!(
-        serde_json::to_value(&saved.item)?["output"][1]["text"],
-        text
-    );
-
-    let mut replay_config = test.config.clone();
-    replay_config.model = Some(MODEL_A.to_string());
-    let resumed = test
-        .thread_manager
-        .resume_legacy_thread_from_rollout(
-            replay_config.clone(),
-            rollout_path.clone(),
-            codex_core::test_support::auth_manager_from_auth(CodexAuth::from_api_key("dummy")),
-            /*parent_trace*/ None,
-            ClientMcpExtensions::default(),
-        )
-        .await?
-        .thread;
-    let forked = test
-        .thread_manager
-        .fork_legacy_thread(
-            ForkSnapshot::Interrupted,
-            StartThreadOptions::new(replay_config),
-            rollout_path,
-        )
-        .await?
-        .thread;
-    for thread in [resumed, forked] {
-        let replay = mount_sse_once(&server, sse_completed("resp-replay")).await;
-        thread
-            .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
-                text: "review saved diagnostics".to_string(),
-                text_elements: Vec::new(),
-            }]))
-            .await?;
-        wait_for_event(&thread, |event| matches!(event, EventMsg::TurnComplete(_))).await;
-        let request = replay.single_request();
-        assert_eq!(request.body_json()["model"], MODEL_A);
-        assert_eq!(request.custom_tool_call_output("call-custom"), live_output);
-        thread.shutdown_and_wait().await?;
-    }
-    Ok(())
-}
-
 #[derive(Clone, Copy)]
 enum SettingsTarget {
     Thread,
@@ -951,7 +817,7 @@ async fn new_context_after_model_switch_uses_captured_extension_window() -> Resu
     let test = step_settings_test()
         .with_extensions(Arc::new(extensions.build()))
         .with_config(|config| {
-            config.features.enable(Feature::TokenBudget).unwrap();
+            config.features.enable(Feature::TokenBudget);
             config.model_context_window = None;
             for model in &mut config.model_catalog.as_mut().unwrap().models {
                 model.context_window = None;
@@ -1060,12 +926,10 @@ async fn active_model_switch_updates_core_context_from_captured_settings(
         .with_config(move |config| {
             config
                 .features
-                .enable(Feature::TokenBudget)
-                .expect("enable token-budget feature");
+                .enable(Feature::TokenBudget);
             config
                 .features
-                .enable(Feature::MultiAgentV2)
-                .expect("enable multi-agent V2");
+                .enable(Feature::MultiAgentV2);
             if context_window_model.is_some() {
                 config.model_context_window = None;
             }
@@ -1097,12 +961,6 @@ async fn active_model_switch_updates_core_context_from_captured_settings(
                         proactive: None,
                         hint_text: None,
                     }),
-                });
-                messages.approvals = Some(ApprovalMessages {
-                    on_request: Some(format!("Approval instructions for {slug}.")),
-                    on_request_auto_review: None,
-                    never: None,
-                    unless_trusted: None,
                 });
                 messages.token_budget =
                     (initial_model || destination_has_guidance).then(|| ModelTokenBudgetConfig {
@@ -1279,10 +1137,7 @@ async fn active_model_switch_updates_multi_agent_policy_from_captured_effort(
     .await;
     let test = step_settings_test()
         .with_config(move |config| {
-            config
-                .features
-                .enable(Feature::MultiAgentV2)
-                .expect("enable multi-agent V2");
+            config.features.enable(Feature::MultiAgentV2);
             for model in &mut config
                 .model_catalog
                 .as_mut()
@@ -1343,208 +1198,6 @@ async fn active_model_switch_updates_multi_agent_policy_from_captured_effort(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn mcp_confirmation_policy_follows_step_model_changes() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-
-    const BROWSER_POLICY_A: &str = "  # Browser policy A\r\n{literal}\n";
-    const BROWSER_POLICY_B: &str = "\t# Browser policy B\n<raw> & café\r\n ";
-    const COMPUTER_POLICY_A: &str = "\t# Native policy A\n{{literal}}\r\n";
-    const COMPUTER_POLICY_B: &str = "  # Native policy B\r\n<computer> ${native}\n ";
-    const BROWSER_ONLY_MODEL: &str = "policy-browser-only";
-    const COMPUTER_ONLY_MODEL: &str = "policy-computer-only";
-    let server = start_mock_server().await;
-    AppsTestServer::mount(&server).await?;
-    let policy_call = |response_id: &str, call_id: &str| {
-        sse(vec![
-            ev_response_created(response_id),
-            ev_function_call_with_namespace(
-                call_id,
-                "mcp__node_repl",
-                "calendar_list_events",
-                "{}",
-            ),
-            ev_completed(response_id),
-        ])
-    };
-    mount_sse_sequence(
-        &server,
-        vec![
-            policy_call("resp-1", "policy-a"),
-            sse_completed("resp-2"),
-            sse(vec![
-                ev_response_created("resp-3"),
-                ev_function_call_with_namespace(
-                    "policy-a-pending",
-                    "mcp__node_repl",
-                    "calendar_create_event",
-                    &json!({
-                        "title": "Policy snapshot test",
-                        "starts_at": "2026-08-26T12:00:00Z",
-                    })
-                    .to_string(),
-                ),
-                ev_completed("resp-3"),
-            ]),
-            policy_call("resp-4", "policy-b"),
-            sse_completed("resp-5"),
-            policy_call("resp-6", "browser-only"),
-            sse_completed("resp-7"),
-            policy_call("resp-8", "computer-only"),
-            sse_completed("resp-9"),
-            policy_call("resp-10", "no-policy"),
-            sse_completed("resp-11"),
-        ],
-    )
-    .await;
-    let mcp_url = format!("{}/api/codex/ps/mcp", server.uri());
-    let test = step_settings_test()
-        .with_config(move |config| {
-            config
-                .features
-                .disable(Feature::ToolCallMcpElicitation)
-                .expect("disable MCP elicitation for the approval barrier");
-            let models = &mut config.model_catalog.as_mut().expect("test models").models;
-            for slug in [BROWSER_ONLY_MODEL, COMPUTER_ONLY_MODEL] {
-                let mut model = models[0].clone();
-                model.slug = slug.to_string();
-                models.push(model);
-            }
-            for model in models {
-                let messages = model
-                    .model_messages
-                    .as_mut()
-                    .expect("bundled model messages");
-                messages.confirmation_policies = match model.slug.as_str() {
-                    MODEL_A => Some(ConfirmationPolicies {
-                        browser_use: Some(BROWSER_POLICY_A.to_string()),
-                        computer_use: Some(COMPUTER_POLICY_A.to_string()),
-                    }),
-                    MODEL_B => Some(ConfirmationPolicies {
-                        browser_use: Some(BROWSER_POLICY_B.to_string()),
-                        computer_use: Some(COMPUTER_POLICY_B.to_string()),
-                    }),
-                    BROWSER_ONLY_MODEL => Some(ConfirmationPolicies {
-                        browser_use: Some(BROWSER_POLICY_B.to_string()),
-                        computer_use: None,
-                    }),
-                    COMPUTER_ONLY_MODEL => Some(ConfirmationPolicies {
-                        browser_use: None,
-                        computer_use: Some(COMPUTER_POLICY_B.to_string()),
-                    }),
-                    MODEL_C => None,
-                    _ => unreachable!("unexpected test model"),
-                };
-            }
-            let node_repl: McpServerConfig = serde_json::from_value(json!({
-                "url": mcp_url,
-                "tools": {
-                    "calendar_create_event": {
-                        "approval_mode": "prompt",
-                    },
-                },
-            }))
-            .expect("valid test MCP server");
-            config
-                .mcp_servers
-                .set(HashMap::from([("node_repl".to_string(), node_repl)]))
-                .expect("configure test MCP server");
-        })
-        .build_with_auto_env(&server)
-        .await?;
-    wait_for_mcp_server(&test.codex, "node_repl").await?;
-    test.submit_text_turn("call the tool with model A").await?;
-
-    let request = start_paused_turn(&test.codex).await?;
-    assert_eq!(request.call_id, "policy-a-pending");
-    // The pending call must retain model A's policies after this settings update.
-    apply_turn_settings(
-        &test.codex,
-        &request.turn_id,
-        TurnSettingsUpdate {
-            model: Some(MODEL_B.to_string()),
-            ..Default::default()
-        },
-    )
-    .await?;
-    test.codex
-        .submit(Op::UserInputAnswer {
-            id: request.turn_id.clone(),
-            response: RequestUserInputResponse {
-                answers: HashMap::from([(
-                    request.questions[0].id.clone(),
-                    RequestUserInputAnswer {
-                        answers: vec!["Allow".to_string()],
-                    },
-                )]),
-            },
-        })
-        .await?;
-    wait_for_event(&test.codex, |event| {
-        matches!(event, EventMsg::TurnComplete(_))
-    })
-    .await;
-
-    for model in [BROWSER_ONLY_MODEL, COMPUTER_ONLY_MODEL, MODEL_C] {
-        core_test_support::submit_thread_settings(
-            &test.codex,
-            ThreadSettingsOverrides {
-                model: Some(model.to_string()),
-                ..Default::default()
-            },
-        )
-        .await?;
-        test.submit_text_turn("call the tool").await?;
-    }
-
-    assert_eq!(
-        recorded_apps_tool_calls(&server)
-            .await
-            .into_iter()
-            .map(|call| {
-                let meta = &call["params"]["_meta"];
-                (
-                    meta["callId"].clone(),
-                    meta["openai/confirmation_policies"].clone(),
-                )
-            })
-            .collect::<Vec<_>>(),
-        vec![
-            (
-                json!("policy-a"),
-                json!({
-                    "browser_use": BROWSER_POLICY_A,
-                    "computer_use": COMPUTER_POLICY_A,
-                })
-            ),
-            (
-                json!("policy-a-pending"),
-                json!({
-                    "browser_use": BROWSER_POLICY_A,
-                    "computer_use": COMPUTER_POLICY_A,
-                })
-            ),
-            (
-                json!("policy-b"),
-                json!({
-                    "browser_use": BROWSER_POLICY_B,
-                    "computer_use": COMPUTER_POLICY_B,
-                })
-            ),
-            (
-                json!("browser-only"),
-                json!({"browser_use": BROWSER_POLICY_B})
-            ),
-            (
-                json!("computer-only"),
-                json!({"computer_use": COMPUTER_POLICY_B})
-            ),
-            (json!("no-policy"), json!({})),
-        ],
-    );
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn captured_model_replans_tools_and_retains_the_issuing_request_router() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -1581,9 +1234,7 @@ async fn captured_model_replans_tools_and_retains_the_issuing_request_router() -
     let model_api_url = format!("{}/v1", streaming_server.uri());
     let test = direct_tool_settings_test()
         .with_config(move |config| {
-            for feature in [Feature::ShellTool, Feature::UnifiedExec] {
-                config.features.enable(feature).expect("enable shell tools");
-            }
+            config.features.enable(Feature::ShellTool);
             config.tool_registry.turn_metadata_includes_tool_info = true;
             for model in &mut config.model_catalog.as_mut().expect("models").models {
                 model.use_responses_lite = true;
@@ -1595,10 +1246,6 @@ async fn captured_model_replans_tools_and_retains_the_issuing_request_router() -
             }
             // Use the gated model response with the automatically selected executor.
             config.model_provider.base_url = Some(model_api_url);
-            config
-                .permissions
-                .set_permission_profile(PermissionProfile::Disabled)
-                .expect("test permissions");
         })
         .build_with_auto_env(&server)
         .await?;
@@ -1718,112 +1365,11 @@ async fn captured_model_replans_tools_and_retains_the_issuing_request_router() -
     );
     assert_eq!(
         test.fs()
-            .read_file_text(
-                &test.workspace_path_uri(file_name)?,
-                Default::default(),
-                /*sandbox*/ None,
-            )
+            .read_file_text(&test.workspace_path_uri(file_name)?, Default::default())
             .await?,
         "written by B\n",
     );
     streaming_server.shutdown().await;
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn captured_model_enables_and_executes_code_mode() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-
-    let server = start_mock_server().await;
-    let responses = mount_sse_sequence(
-        &server,
-        vec![
-            paused_response("resp-a", "pause-a"),
-            sse(vec![
-                ev_response_created("resp-b"),
-                ev_custom_tool_call("code-b", "exec", "const result = await tools.view_image({path: 'step.png', detail: 'original'}); image(result)"),
-                ev_completed("resp-b"),
-            ]),
-            sse_completed("resp-b-result"),
-        ],
-    )
-    .await;
-    let test = direct_tool_settings_test()
-        .with_config(|config| {
-            config
-                .permissions
-                .set_permission_profile(PermissionProfile::Disabled)
-                .expect("test permissions");
-            for model in &mut config.model_catalog.as_mut().expect("models").models {
-                model.input_modalities = vec![codex_protocol::openai_models::InputModality::Text];
-                model.supports_image_detail_original = false;
-                if model.slug == MODEL_B {
-                    model
-                        .input_modalities
-                        .push(codex_protocol::openai_models::InputModality::Image);
-                    model.supports_image_detail_original = true;
-                    model.tool_mode = Some(ToolMode::CodeModeOnly);
-                }
-            }
-        })
-        .build_with_auto_env(&server)
-        .await?;
-    use base64::Engine;
-    let png = base64::engine::general_purpose::STANDARD.decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==")?;
-    test.fs()
-        .write_file(
-            &test.workspace_path_uri("step.png")?,
-            png,
-            Default::default(),
-            /*sandbox*/ None,
-        )
-        .await?;
-    let paused = start_paused_turn(&test.codex).await?;
-    apply_turn_settings(
-        &test.codex,
-        &paused.turn_id,
-        TurnSettingsUpdate {
-            model: Some(MODEL_B.to_string()),
-            ..Default::default()
-        },
-    )
-    .await?;
-    answer_paused_turn(&test.codex, &paused.turn_id).await?;
-    wait_for_event(&test.codex, |event| {
-        matches!(event, EventMsg::TurnComplete(_))
-    })
-    .await;
-
-    let requests = responses.requests();
-    assert_eq!(
-        requests
-            .iter()
-            .map(|request| request.body_json()["model"].clone())
-            .collect::<Vec<_>>(),
-        vec![json!(MODEL_A), json!(MODEL_B), json!(MODEL_B)],
-    );
-    assert_eq!(
-        requests
-            .iter()
-            .map(|request| {
-                request.body_json()["tools"]
-                    .as_array()
-                    .expect("provider tools")
-                    .iter()
-                    .any(|tool| tool["type"] == "custom" && tool["name"] == "exec")
-            })
-            .collect::<Vec<_>>(),
-        vec![false, true, true],
-    );
-    let output = requests[2].custom_tool_call_output("code-b");
-    assert_eq!(
-        output["output"]
-            .as_array()
-            .expect("Code Mode output items")
-            .last()
-            .expect("Code Mode image output")["detail"],
-        json!("original"),
-    );
     Ok(())
 }
 
@@ -2270,16 +1816,6 @@ async fn tool_messages_follow_mid_turn_model_changes() -> Result<()> {
             "additionalProperties": false,
         })
     };
-    let wait_parameters = |model: &str| {
-        json!({
-            "type": "object",
-            "properties": {
-                "cell_id": {"type": "string", "description": format!("Cell on {model}.")},
-            },
-            "required": ["cell_id"],
-            "additionalProperties": false,
-        })
-    };
     let async_parameters = |model: &str| {
         json!({
             "type": "object",
@@ -2307,25 +1843,16 @@ async fn tool_messages_follow_mid_turn_model_changes() -> Result<()> {
     .await;
     let test = step_settings_test()
         .with_config(move |config| {
-            config
-                .features
-                .enable(Feature::MultiAgentV2)
-                .expect("test config should allow feature update");
-            config
-                .features
-                .enable(Feature::AgentMessageBoard)
-                .expect("test config should allow channel tools");
+            config.features.enable(Feature::MultiAgentV2);
+            config.features.enable(Feature::AgentMessageBoard);
             config.ephemeral = false;
             config.multi_agent_v2.expose_spawn_agent_model_overrides = false;
-            config.multi_agent_v2.non_code_mode_only = true;
-            config.code_mode.disable_in_process_fallback = true;
             for model in &mut config
                 .model_catalog
                 .as_mut()
                 .expect("controlled model catalog")
                 .models
             {
-                model.tool_mode = Some(ToolMode::CodeMode);
                 model.use_responses_lite = false;
                 model
                     .experimental_supported_tools
@@ -2353,17 +1880,6 @@ async fn tool_messages_follow_mid_turn_model_changes() -> Result<()> {
                         interrupt_agent: tool_message("interrupt_agent"),
                         list_agents: tool_message("list_agents"),
                         post: tool_message("post"),
-                        ..Default::default()
-                    }),
-                    code_mode: Some(CodeModeToolMessages {
-                        exec: Some(ToolMessage {
-                            description: Some(format!("Exec description for {}.", model.slug)),
-                            ..Default::default()
-                        }),
-                        wait: Some(ToolMessage {
-                            description: Some(format!("Wait description for {}.", model.slug)),
-                            parameters: Some(wait_parameters(&model.slug).to_string()),
-                        }),
                         ..Default::default()
                     }),
                     ..Default::default()
@@ -2415,9 +1931,6 @@ async fn tool_messages_follow_mid_turn_model_changes() -> Result<()> {
                     "multi_agent_messages": multi_agent_messages,
                     "channel_post_description": channel_post["description"].as_str().expect("post description").lines().next(),
                     "channel_post_required": channel_post["parameters"]["required"],
-                    "exec_description": tool("exec")["description"],
-                    "wait_description": tool("wait")["description"],
-                    "wait_parameters": tool("wait")["parameters"],
                 })
             })
             .collect::<Vec<_>>(),
@@ -2435,9 +1948,6 @@ async fn tool_messages_follow_mid_turn_model_changes() -> Result<()> {
                     .collect::<serde_json::Map<String, Value>>(),
                 "channel_post_description": format!("post description for {model}."),
                 "channel_post_required": ["text"],
-                "exec_description": format!("Exec description for {model}.\n\nSome deferred nested tools may be omitted from this description. They are still available on the global `tools` object and listed in `ALL_TOOLS`.\nTo find one, filter `ALL_TOOLS` by `name` and `description`.\n\nTool availability can change between calls."),
-                "wait_description": format!("Wait description for {model}."),
-                "wait_parameters": wait_parameters(model),
             }))
             .to_vec(),
     );
@@ -2746,18 +2256,7 @@ async fn captured_step_controls_exec_completion_and_write_stdin_output() -> Resu
     .await;
     let test = direct_tool_settings_test()
         .with_config(|config| {
-            config
-                .features
-                .enable(Feature::ShellTool)
-                .expect("shell tools");
-            config
-                .features
-                .enable(Feature::UnifiedExec)
-                .expect("unified exec");
-            config
-                .permissions
-                .set_permission_profile(PermissionProfile::Disabled)
-                .expect("test permissions");
+            config.features.enable(Feature::ShellTool);
             for model in &mut config.model_catalog.as_mut().expect("models").models {
                 model.shell_type = ConfigShellToolType::UnifiedExec;
                 model.truncation_policy = codex_protocol::openai_models::TruncationPolicyConfig {
@@ -2899,21 +2398,18 @@ async fn captured_step_controls_mcp_output_limit(supports_images: bool) -> Resul
                     limit: if model.slug == MODEL_B { 80 } else { 8_000 },
                 };
             }
-            config
-                .mcp_servers
-                .set(HashMap::from([(
-                    "calendar".to_string(),
-                    serde_json::from_value(json!({
-                        "url": mcp_url,
-                        "tools": {
-                            "calendar_create_event": {
-                                "approval_mode": "approve"
-                            }
-                        },
-                    }))
-                    .expect("test MCP config"),
-                )]))
-                .expect("configure MCP");
+            config.mcp_servers = HashMap::from([(
+                "calendar".to_string(),
+                serde_json::from_value(json!({
+                    "url": mcp_url,
+                    "tools": {
+                        "calendar_create_event": {
+                            "approval_mode": "approve"
+                        }
+                    },
+                }))
+                .expect("test MCP config"),
+            )]);
         })
         .build_with_auto_env(&server)
         .await?;
@@ -3166,18 +2662,15 @@ async fn captured_step_controls_mcp_resource_output() -> Result<()> {
                     ..Default::default()
                 });
             }
-            config
-                .mcp_servers
-                .set(HashMap::from([(
-                    "resources".to_string(),
-                    serde_json::from_value(json!({
-                        "command": command,
-                        "environment_id": remote_aware_environment_id(),
-                        "cwd": config.cwd,
-                    }))
-                    .expect("test MCP config"),
-                )]))
-                .expect("configure MCP");
+            config.mcp_servers = HashMap::from([(
+                "resources".to_string(),
+                serde_json::from_value(json!({
+                    "command": command,
+                    "environment_id": remote_aware_environment_id(),
+                    "cwd": config.cwd,
+                }))
+                .expect("test MCP config"),
+            )]);
         })
         .build_with_auto_env(&server)
         .await?;

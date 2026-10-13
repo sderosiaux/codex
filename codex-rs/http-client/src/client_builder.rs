@@ -176,14 +176,6 @@ impl HttpClientBuilder {
         request_url: &str,
         route_class: ClientRouteClass,
     ) -> Result<HttpClient, BuildRouteAwareHttpClientError> {
-        if http_client_factory.network_policy().is_managed() {
-            return Ok(crate::RouteAwareClientPool::with_builder(
-                http_client_factory.clone(),
-                route_class,
-                self,
-            )
-            .into_client());
-        }
         self.chatgpt_cookie_store = http_client_factory.chatgpt_cookie_store();
         let (builder, request_logging, default_headers) = self.into_reqwest_parts();
         let inner = http_client_factory.build_reqwest_client(builder, request_url, route_class)?;

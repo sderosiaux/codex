@@ -6,8 +6,6 @@ pub(crate) mod provider;
 pub(crate) mod trace_context;
 
 mod agent_response;
-mod guardian_assessment;
-mod network_policy;
 mod otlp;
 mod skill_invocation;
 mod targets;
@@ -15,7 +13,6 @@ mod tool_result;
 
 use crate::metrics::Result as MetricsResult;
 use codex_protocol::auth::AuthMode;
-use serde::Serialize;
 use strum_macros::Display;
 
 pub use crate::agent_response::AgentResponseContext;
@@ -48,14 +45,6 @@ pub use crate::trace_context::traceparent_context_from_env;
 pub use crate::trace_context::validate_tracestate_entries;
 pub use crate::trace_context::validate_tracestate_member;
 pub use codex_utils_string::sanitize_metric_tag_value;
-
-#[derive(Debug, Clone, Serialize, Display)]
-#[serde(rename_all = "snake_case")]
-pub enum ToolDecisionSource {
-    AutomatedReviewer,
-    Config,
-    User,
-}
 
 /// Coarsens the authentication domain into the dimensions used by telemetry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Display)]

@@ -11,9 +11,7 @@ use codex_protocol::items::AgentMessageContent;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::ImageDetail;
 use codex_protocol::models::ImageReference;
-use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::WebSearchAction;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::ItemStartedEvent;
@@ -41,7 +39,6 @@ use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::local_requests;
 use core_test_support::test_codex::test_codex;
-use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_match;
 use pretty_assertions::assert_eq;
@@ -52,17 +49,12 @@ fn disabled_plan_turn(
     collaboration_mode: CollaborationMode,
 ) -> anyhow::Result<TurnInputRequest> {
     let cwd = std::env::current_dir()?.abs();
-    let (sandbox_policy, permission_profile) =
-        turn_permission_fields(PermissionProfile::Disabled, cwd.as_path());
     Ok(TurnInputRequest::user_input(vec![UserInput::Text {
         text: text.into(),
         text_elements: Vec::new(),
     }])
     .with_thread_settings(ThreadSettingsOverrides {
         environments: Some(local_requests(cwd)),
-        approval_policy: Some(AskForApproval::Never),
-        sandbox_policy: Some(sandbox_policy),
-        permission_profile,
         collaboration_mode: Some(collaboration_mode),
         ..Default::default()
     }))
@@ -1030,8 +1022,7 @@ async fn sequential_cutoff_renders_done_summaries_for_active_reasoning_item() ->
         .with_config(|config| {
             config
                 .features
-                .enable(Feature::ConcurrentReasoningSummaries)
-                .expect("test config should allow feature update");
+                .enable(Feature::ConcurrentReasoningSummaries);
         })
         .build(&server)
         .await?;

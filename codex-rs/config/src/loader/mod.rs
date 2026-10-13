@@ -1,33 +1,15 @@
-mod application;
 mod layer_io;
 mod local;
-#[cfg(target_os = "macos")]
-mod macos;
-mod managed_requirements;
-mod project_discovery;
-#[cfg(test)]
-mod tests;
-
 #[cfg(test)]
 #[path = "projectless_directory_tests.rs"]
 mod projectless_directory_tests;
-#[cfg(windows)]
-mod windows;
+#[cfg(test)]
+mod tests;
 
-pub use application::LocalApplicationRequirements;
-pub use application::load_local_application_requirements;
-
-use self::layer_io::LoadedConfigLayers;
 use crate::CONFIG_TOML_FILE;
-use crate::CloudConfigBundleLayers;
 use crate::ConfigLayerSource;
 use crate::ProfileV2Name;
-use crate::RequirementsLayerEntry;
-use crate::config_requirements::RequirementSource;
-use crate::config_requirements::SandboxModeRequirement;
 use crate::config_toml::ConfigToml;
-use crate::config_toml::ProjectConfig;
-use crate::diagnostics::ConfigError;
 use crate::diagnostics::config_error_from_toml;
 use crate::diagnostics::first_layer_config_error_from_entries as typed_first_layer_config_error_from_entries;
 use crate::diagnostics::io_error_from_config_error;
@@ -45,21 +27,13 @@ use crate::strict_config::config_error_from_ignored_toml_value_fields;
 use crate::strict_config::ignored_config_warning;
 use crate::strict_config::ignored_toml_value_fields;
 use crate::strict_config::unknown_feature_toml_value_field;
-use crate::strict_config::unknown_tui_toml_value_path;
 use crate::thread_config::ThreadConfigContext;
 use crate::thread_config::ThreadConfigLoader;
 use codex_file_system::ExecutorFileSystem;
-use codex_git_utils::resolve_root_git_project_for_trust;
-use codex_network_proxy::is_credential_broker_provider_env_key;
-use codex_protocol::config_types::ApprovalsReviewer;
-use codex_protocol::config_types::SandboxMode;
-use codex_protocol::config_types::TrustLevel;
-use codex_protocol::protocol::AskForApproval;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_absolute_path::AbsolutePathBufGuard;
 use codex_utils_path_uri::PathUri;
 use dunce::canonicalize as normalize_path;
-use serde::Deserialize;
 use std::io;
 use std::path::Path;
 #[cfg(windows)]
@@ -70,11 +44,6 @@ pub use local::LocalConfigLayers;
 pub use local::LocalTomlLayer;
 pub use local::LocalTomlLayerStack;
 pub use local::load_local_config_layers;
-pub use managed_requirements::load_managed_requirements_state;
-#[cfg(windows)]
-pub use windows::WindowsSystemConfigNamespaceProbe;
-#[cfg(windows)]
-pub use windows::probe_windows_system_config_namespace;
 
 #[cfg(unix)]
 const SYSTEM_CONFIG_TOML_FILE_UNIX: &str = "/etc/codex/config.toml";
@@ -82,67 +51,25 @@ const SYSTEM_CONFIG_TOML_FILE_UNIX: &str = "/etc/codex/config.toml";
 #[cfg(windows)]
 const DEFAULT_PROGRAM_DATA_DIR_WINDOWS: &str = r"C:\ProgramData";
 
-// Project-local config comes from repository contents, so it should not get to
-// choose where a user's credentials are sent or which local commands are run.
-// These settings are still supported from user, system, managed, and runtime
-// config layers.
-const PROJECT_LOCAL_CONFIG_DENYLIST: &[&str] = &[
-    "openai_base_url",
-    "chatgpt_base_url",
-    "apps_mcp_product_sku",
-    "responses_api_metadata",
-    "model_provider",
-    "model_providers",
-    "notify",
-    "profile",
-    "profiles",
-    "experimental_realtime_webrtc_call_base_url",
-    "experimental_realtime_ws_base_url",
-    "otel",
-];
-
-async fn first_layer_config_error_from_entries(layers: &[ConfigLayerEntry]) -> Option<ConfigError> {
+async fn first_layer_config_error_from_entries(
+    layers: &[ConfigLayerEntry],
+) -> Option<crate::diagnostics::ConfigError> {
     typed_first_layer_config_error_from_entries::<ConfigToml>(layers, CONFIG_TOML_FILE).await
 }
 
-/// To build up the set of admin-enforced constraints, requirements layers are
-/// collected in ascending precedence order, matching config layers, and then
-/// composed with config-style TOML merging plus field-specific handling for
-/// hooks, rules, deny-read permissions, and remote sandbox config:
-///
-/// - system    `/etc/codex/requirements.toml` (Unix) or
-///   `%ProgramData%\OpenAI\Codex\requirements.toml` (Windows)
-/// - cloud:    enterprise-managed cloud config bundle requirements
-/// - legacy:   `/etc/codex/managed_config.toml` (Unix) reinterpreted as
-///   requirements.toml
-/// - admin:    managed preferences (*)
-///
-/// For backwards compatibility, Unix continues to load
-/// `/etc/codex/managed_config.toml` and map it to `requirements.toml`.
-///
 /// Configuration is built up from multiple layers in the following order:
 ///
 /// - package:  optional default configuration supplied with the Codex package
-/// - admin:    managed preferences (*)
 /// - system    `/etc/codex/config.toml` (Unix) or
 ///   `%ProgramData%\OpenAI\Codex\config.toml` (Windows)
-/// - cloud     enterprise-managed cloud config bundle fragments
 /// - user      `${CODEX_HOME}/config.toml`
 /// - profile   `${CODEX_HOME}/<name>.config.toml`, when selected
-/// - cwd       `${PWD}/config.toml` (loaded but disabled when the directory is untrusted)
-/// - tree      parent directories up to root looking for `./.codex/config.toml` (loaded but disabled when untrusted)
-/// - repo      `$(git rev-parse --show-toplevel)/.codex/config.toml` (loaded but disabled when untrusted)
+/// - tree      `./.codex/config.toml` in every directory from the project root down to `cwd`
 /// - runtime   e.g., --config flags, model selector in UI
-///
-/// (*) Only available on macOS via managed device profiles.
-///
-/// See https://developers.openai.com/codex/security for details.
 ///
 /// When loading the config stack for a thread, there should be a `cwd`
 /// associated with it such that `cwd` should be `Some(...)`. Only for
-/// thread-agnostic config loading (e.g., for the app server's `/config`
-/// endpoint) should `cwd` be `None`.
-#[allow(clippy::too_many_arguments)]
+/// thread-agnostic config loading should `cwd` be `None`.
 pub async fn load_config_layers_state(
     fs: &dyn ExecutorFileSystem,
     codex_home: &Path,
@@ -154,7 +81,6 @@ pub async fn load_config_layers_state(
     let ConfigLoadOptions {
         loader_overrides: overrides,
         strict_config,
-        cloud_config_bundle,
     } = options.into();
     let packaged_defaults_layer = if let Some(file) = &overrides.packaged_defaults_path {
         let config = layer_io::read_config_from_path(
@@ -202,41 +128,6 @@ pub async fn load_config_layers_state(
     let active_user_profile = overrides.user_config_profile.clone();
     let ignore_user_config = overrides.ignore_user_config;
     let ignore_project_config = overrides.ignore_project_config;
-    let ignore_user_and_project_exec_policy_rules =
-        overrides.ignore_user_and_project_exec_policy_rules;
-    let mut bundle_requirements_layers = Vec::new();
-    let mut cloud_config_layers = Vec::new();
-    let mut cloud_config_binding = None;
-
-    if !overrides.ignore_managed_requirements {
-        let snapshot = cloud_config_bundle.get_snapshot().await;
-        cloud_config_binding = snapshot.binding;
-        if let Some(bundle) = snapshot.bundle.map_err(io::Error::other)? {
-            let cloud_config_base_dir = AbsolutePathBuf::from_absolute_path(codex_home)?;
-            let bundle_layers = if strict_config {
-                CloudConfigBundleLayers::from_bundle_strict_config(bundle, &cloud_config_base_dir)?
-            } else {
-                CloudConfigBundleLayers::from_bundle(bundle, &cloud_config_base_dir)?
-            };
-            let CloudConfigBundleLayers {
-                enterprise_managed_config,
-                enterprise_managed_requirements,
-            } = bundle_layers;
-            bundle_requirements_layers = enterprise_managed_requirements;
-            cloud_config_layers = enterprise_managed_config;
-        }
-    }
-
-    let (config_requirements_toml, loaded_config_layers, requirements_layers) =
-        managed_requirements::load_requirements_from_sources(
-            fs,
-            codex_home,
-            &overrides,
-            strict_config,
-            bundle_requirements_layers,
-        )
-        .await?;
-    let mut startup_warnings = loaded_config_layers.startup_warnings.clone();
 
     let thread_config_context = ThreadConfigContext {
         thread_id: None,
@@ -267,8 +158,6 @@ pub async fn load_config_layers_state(
         )?)
     };
 
-    // Include an entry for the "system" config folder, loading its config.toml,
-    // if it exists.
     let system_config_toml_file = system_config_toml_file_with_overrides(&overrides)?;
     let system_layer = load_config_toml_for_required_layer(
         fs,
@@ -285,7 +174,6 @@ pub async fn load_config_layers_state(
     )
     .await?;
     layers.push(system_layer);
-    layers.extend(cloud_config_layers);
 
     // Add the base user config layer. When profile-v2 is selected, add the
     // profile config as a second user layer on top so the profile only needs to
@@ -346,18 +234,6 @@ pub async fn load_config_layers_state(
         if let Some(cli_overrides_layer) = cli_overrides_layer.as_ref() {
             merge_toml_values(&mut merged_so_far, cli_overrides_layer);
         }
-        let trusted_broker_config = credential_broker_trusted_config(
-            &merged_so_far,
-            &thread_config_layers,
-            &loaded_config_layers,
-        );
-        // Managed config wins over CLI config. Apply it before choosing the
-        // project root and trust, but keep its final layers above project config.
-        project_discovery::merge_managed_config_for_discovery(
-            &mut merged_so_far,
-            &loaded_config_layers,
-            codex_home,
-        )?;
 
         let project_root_markers = match project_root_markers_from_config(&merged_so_far) {
             Ok(markers) => markers.unwrap_or_else(default_project_root_markers),
@@ -372,52 +248,15 @@ pub async fn load_config_layers_state(
                 return Err(err);
             }
         };
-        let mut project_trust_context = match project_trust_context(
-            fs,
-            &merged_so_far,
-            &trusted_broker_config,
-            &cwd,
-            &project_root_markers,
-            codex_home,
-            &active_user_file,
-        )
-        .await
-        {
-            Ok(context) => context,
-            Err(err) => {
-                let source = err
-                    .get_ref()
-                    .and_then(|err| err.downcast_ref::<toml::de::Error>())
-                    .cloned();
-                if let Some(config_error) = first_layer_config_error_from_entries(&layers).await {
-                    return Err(io_error_from_config_error(
-                        io::ErrorKind::InvalidData,
-                        config_error,
-                        source,
-                    ));
-                }
-                return Err(err);
-            }
-        };
-        apply_credential_broker_requirements(
-            &mut project_trust_context,
-            &config_requirements_toml,
-            &trusted_broker_config,
-        );
-        let project_layers = load_project_layers(
-            fs,
-            &cwd,
-            &project_trust_context.project_root,
-            &project_trust_context,
-            codex_home,
-            strict_config,
-        )
-        .await?;
-        is_projectless = !project_trust_context.has_project_root_marker
-            && project_trust_context.checkout_root.is_none()
-            && project_layers.layers.is_empty();
-        layers.extend(project_layers.layers);
-        startup_warnings.extend(project_layers.startup_warnings);
+        let discovered_root = discover_project_root(fs, &cwd, &project_root_markers).await?;
+        let has_project_root_marker = discovered_root.is_some();
+        let project_root = discovered_root.unwrap_or_else(|| cwd.clone());
+        let checkout_root = find_git_checkout_root(fs, &cwd).await;
+        let project_layers =
+            load_project_layers(fs, &cwd, &project_root, codex_home, strict_config).await?;
+        is_projectless =
+            !has_project_root_marker && checkout_root.is_none() && project_layers.is_empty();
+        layers.extend(project_layers);
     }
 
     // Add a layer for runtime overrides from the CLI or UI, if any exist.
@@ -430,53 +269,6 @@ pub async fn load_config_layers_state(
 
     for thread_config_layer in thread_config_layers {
         insert_layer_by_precedence(&mut layers, thread_config_layer);
-    }
-
-    // Make a best-effort to support the legacy `managed_config.toml` as a
-    // config layer on top of everything else. For fields in
-    // `managed_config.toml` that do not have an equivalent in
-    // `ConfigRequirements`, note users can still override these values on a
-    // per-turn basis in the TUI and VS Code.
-    let LoadedConfigLayers {
-        managed_config,
-        managed_config_from_mdm,
-        ..
-    } = loaded_config_layers;
-    if let Some(config) = managed_config {
-        let managed_parent = config.file.as_path().parent().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "Managed config file {} has no parent directory",
-                    config.file.as_path().display()
-                ),
-            )
-        })?;
-        let managed_config =
-            resolve_relative_paths_in_config_toml(config.managed_config, managed_parent)?;
-        layers.push(ConfigLayerEntry::new(
-            ConfigLayerSource::LegacyManagedConfigTomlFromFile { file: config.file },
-            managed_config,
-        ));
-    }
-    if let Some(config) = managed_config_from_mdm {
-        // As a general rule, config from MDM should _not_ include relative
-        // paths, starting with `./`, but a path starting with `~/` _is_ a
-        // supported use case. Because resolve_relative_paths_in_config_toml()
-        // relies on AbsolutePathBufGuard to resolve `~/`, we must supply a
-        // value for base_dir. Preserve that same base on the layer so later
-        // raw-TOML diagnostics parse with the same path semantics.
-        let raw_toml_base_dir = AbsolutePathBuf::from_absolute_path(codex_home)?;
-        let managed_config = resolve_relative_paths_in_config_toml(
-            config.managed_config,
-            raw_toml_base_dir.as_path(),
-        )?;
-        layers.push(ConfigLayerEntry::new_with_raw_toml(
-            ConfigLayerSource::LegacyManagedConfigTomlFromMdm,
-            managed_config,
-            config.raw_toml,
-            raw_toml_base_dir,
-        ));
     }
 
     if let Err(err) = validate_enabled_config_layers(&layers) {
@@ -494,18 +286,11 @@ pub async fn load_config_layers_state(
         return Err(err);
     }
 
-    let mut config_layer_stack = ConfigLayerStack::new(
-        layers,
-        config_requirements_toml.clone().try_into()?,
-        config_requirements_toml.into_toml(),
-    )?
-    .with_cloud_config_binding(cloud_config_binding)
-    .with_user_and_project_exec_policy_rules_ignored(ignore_user_and_project_exec_policy_rules);
+    let mut config_layer_stack = ConfigLayerStack::new(layers)?;
     config_layer_stack.is_projectless = is_projectless;
-    startup_warnings.extend(ignored_config_warning(
-        &config_layer_stack,
-        &requirements_layers,
-    ));
+    let startup_warnings = ignored_config_warning(&config_layer_stack)
+        .into_iter()
+        .collect();
     Ok(config_layer_stack.with_startup_warnings(startup_warnings))
 }
 
@@ -590,10 +375,7 @@ async fn load_config_toml_for_required_layer_raw(
     })?;
     let base_dir = AbsolutePathBuf::from_absolute_path(config_parent)?;
     let toml_file_uri = PathUri::from_abs_path(toml_file);
-    let toml_value = match fs
-        .read_file_text(&toml_file_uri, Default::default(), /*sandbox*/ None)
-        .await
-    {
+    let toml_value = match fs.read_file_text(&toml_file_uri, Default::default()).await {
         Ok(contents) => {
             let config: TomlValue = toml::from_str(&contents).map_err(|err| {
                 let config_error =
@@ -660,7 +442,6 @@ fn validate_cli_overrides_strictly(
     let _guard = AbsolutePathBufGuard::new(base_dir);
     let ignored_path = ignored_toml_value_fields::<ConfigToml>(cli_overrides_layer.clone())
         .into_iter()
-        .chain(unknown_tui_toml_value_path(cli_overrides_layer))
         .next()
         .map(|path| path.join("."))
         .or_else(|| unknown_feature_toml_value_field(cli_overrides_layer));
@@ -672,113 +453,6 @@ fn validate_cli_overrides_strictly(
     }
 
     Ok(())
-}
-
-/// If available, load requirements from the platform's system `requirements.toml`
-/// location as a requirements layer.
-pub async fn load_requirements_toml(
-    fs: &dyn ExecutorFileSystem,
-    requirements_toml_file: &AbsolutePathBuf,
-) -> io::Result<Option<RequirementsLayerEntry>> {
-    let requirements_toml_file_uri = PathUri::from_abs_path(requirements_toml_file);
-    match fs
-        .read_file_text(
-            &requirements_toml_file_uri,
-            Default::default(),
-            /*sandbox*/ None,
-        )
-        .await
-    {
-        Ok(contents) => {
-            let requirements_parent = requirements_toml_file.parent().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "Requirements file {} has no parent directory",
-                        requirements_toml_file.as_ref().display()
-                    ),
-                )
-            })?;
-            let base_dir = AbsolutePathBuf::from_absolute_path(requirements_parent)?;
-            Ok(Some(
-                RequirementsLayerEntry::from_toml(
-                    RequirementSource::SystemRequirementsToml {
-                        file: requirements_toml_file.clone(),
-                    },
-                    contents,
-                )
-                .with_base_dir(base_dir),
-            ))
-        }
-        Err(e) => {
-            if e.kind() != io::ErrorKind::NotFound {
-                Err(io::Error::new(
-                    e.kind(),
-                    format!(
-                        "Failed to read requirements file {}: {e}",
-                        requirements_toml_file.as_path().display(),
-                    ),
-                ))
-            } else {
-                Ok(None)
-            }
-        }
-    }
-}
-
-#[cfg(unix)]
-fn system_requirements_toml_file() -> io::Result<AbsolutePathBuf> {
-    AbsolutePathBuf::from_absolute_path(Path::new("/etc/codex/requirements.toml"))
-}
-
-#[cfg(windows)]
-fn system_requirements_toml_file() -> io::Result<AbsolutePathBuf> {
-    windows_system_requirements_toml_file()
-}
-
-fn system_requirements_toml_file_with_overrides(
-    overrides: &LoaderOverrides,
-) -> io::Result<AbsolutePathBuf> {
-    match &overrides.system_requirements_path {
-        Some(path) => AbsolutePathBuf::from_absolute_path(path),
-        None => system_requirements_toml_file(),
-    }
-}
-
-/// Check local managed configuration sources without loading or parsing configuration.
-///
-/// Filesystem or managed-preference errors are returned so callers can conservatively avoid
-/// assuming that administrator-controlled configuration is absent.
-pub fn has_local_managed_configuration(codex_home: &Path) -> io::Result<bool> {
-    let system_requirements_file = system_requirements_toml_file()?;
-    has_local_managed_configuration_with_system_requirements_path(
-        codex_home,
-        system_requirements_file.as_path(),
-    )
-}
-
-fn has_local_managed_configuration_with_system_requirements_path(
-    codex_home: &Path,
-    system_requirements_path: &Path,
-) -> io::Result<bool> {
-    #[cfg(windows)]
-    let _ = codex_home;
-
-    #[cfg(not(windows))]
-    if layer_io::managed_config_default_path(codex_home).try_exists()? {
-        return Ok(true);
-    }
-
-    if system_requirements_path.try_exists()? {
-        return Ok(true);
-    }
-
-    #[cfg(target_os = "macos")]
-    if macos::has_managed_preferences()? {
-        return Ok(true);
-    }
-
-    Ok(false)
 }
 
 #[cfg(unix)]
@@ -810,12 +484,6 @@ fn windows_codex_system_dir() -> PathBuf {
         PathBuf::from(DEFAULT_PROGRAM_DATA_DIR_WINDOWS)
     });
     program_data.join("OpenAI").join("Codex")
-}
-
-#[cfg(windows)]
-fn windows_system_requirements_toml_file() -> io::Result<AbsolutePathBuf> {
-    let requirements_toml_file = windows_codex_system_dir().join("requirements.toml");
-    AbsolutePathBuf::try_from(requirements_toml_file)
 }
 
 #[cfg(windows)]
@@ -878,580 +546,18 @@ fn windows_program_data_dir_from_known_folder() -> io::Result<PathBuf> {
     Ok(path)
 }
 
-fn requirements_layers_from_legacy_scheme(
-    loaded_config_layers: LoadedConfigLayers,
-    codex_home: &Path,
-) -> io::Result<Vec<RequirementsLayerEntry>> {
-    // List the file-backed legacy layer first because requirements layers are
-    // composed lowest-precedence to highest-precedence, and MDM has higher
-    // precedence than the legacy managed_config.toml file.
-    let LoadedConfigLayers {
-        managed_config,
-        managed_config_from_mdm,
-        ..
-    } = loaded_config_layers;
-
-    let layer_count =
-        usize::from(managed_config.is_some()) + usize::from(managed_config_from_mdm.is_some());
-    let mut layers = Vec::with_capacity(layer_count);
-    let codex_home = AbsolutePathBuf::from_absolute_path(codex_home)?;
-    for (source, config, base_dir) in managed_config
-        .map(|c| {
-            let base_dir = c.file.parent().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "Managed config file {} has no parent directory",
-                        c.file.as_path().display()
-                    ),
-                )
-            })?;
-            Ok::<_, io::Error>((
-                RequirementSource::LegacyManagedConfigTomlFromFile { file: c.file },
-                c.managed_config,
-                base_dir,
-            ))
-        })
-        .transpose()?
-        .into_iter()
-        .chain(managed_config_from_mdm.map(|config| {
-            (
-                RequirementSource::LegacyManagedConfigTomlFromMdm,
-                config.managed_config,
-                codex_home.clone(),
-            )
-        }))
-    {
-        let legacy_config: LegacyManagedConfigToml =
-            config.try_into().map_err(|err: toml::de::Error| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("Failed to parse config requirements as TOML: {err}"),
-                )
-            })?;
-
-        layers.push(
-            RequirementsLayerEntry::from_toml_value(
-                source,
-                legacy_requirements_to_toml_value(legacy_config)?,
-            )
-            .with_base_dir(base_dir),
-        );
-    }
-
-    Ok(layers)
-}
-
-fn legacy_requirements_to_toml_value(legacy: LegacyManagedConfigToml) -> io::Result<TomlValue> {
-    let LegacyManagedConfigToml {
-        approval_policy,
-        approvals_reviewer,
-        sandbox_mode,
-    } = legacy;
-    let mut table = toml::map::Map::new();
-    if let Some(approval_policy) = approval_policy {
-        table.insert(
-            "allowed_approval_policies".to_string(),
-            toml_value_from_serializable(vec![approval_policy])?,
-        );
-    }
-    if let Some(approvals_reviewer) = approvals_reviewer {
-        let mut allowed_reviewers = vec![approvals_reviewer];
-        if approvals_reviewer == ApprovalsReviewer::AutoReview {
-            allowed_reviewers.push(ApprovalsReviewer::User);
-        }
-        table.insert(
-            "allowed_approvals_reviewers".to_string(),
-            toml_value_from_serializable(allowed_reviewers)?,
-        );
-    }
-    if let Some(sandbox_mode) = sandbox_mode {
-        let required_mode: SandboxModeRequirement = sandbox_mode.into();
-        // Allowing read-only is a requirement for Codex to function correctly.
-        // So in this backfill path, we append read-only if it's not already specified.
-        let mut allowed_modes = vec![SandboxModeRequirement::ReadOnly];
-        if required_mode != SandboxModeRequirement::ReadOnly {
-            allowed_modes.push(required_mode);
-        }
-        table.insert(
-            "allowed_sandbox_modes".to_string(),
-            toml_value_from_serializable(allowed_modes)?,
-        );
-    }
-    Ok(TomlValue::Table(table))
-}
-
-fn toml_value_from_serializable<T: serde::Serialize>(value: T) -> io::Result<TomlValue> {
-    TomlValue::try_from(value).map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum CredentialBrokerProjectState {
-    Unconfigured,
-    Disabled,
-    Enabled,
-}
-
-fn apply_credential_broker_requirements(
-    context: &mut ProjectTrustContext,
-    requirements: &crate::ConfigRequirementsWithSources,
-    trusted_broker_config: &TomlValue,
-) {
-    let credential_masking_enabled = requirements
-        .feature_requirements
-        .as_ref()
-        .and_then(|requirements| requirements.entries.get("credential_masking"))
-        .copied()
-        .or_else(|| {
-            trusted_broker_config
-                .get("features")
-                .and_then(|features| features.get("credential_masking"))
-                .and_then(TomlValue::as_bool)
-        })
-        .unwrap_or(false);
-    if !credential_masking_enabled
-        && context.credential_broker == CredentialBrokerProjectState::Unconfigured
-    {
-        return;
-    }
-    let enabled = credential_masking_enabled
-        || requirements
-            .feature_requirements
-            .as_ref()
-            .and_then(|requirements| requirements.entries.get("network_proxy"))
-            .copied()
-            .unwrap_or(context.credential_broker == CredentialBrokerProjectState::Enabled);
-    context.credential_broker = if enabled
-        && requirements
-            .network
-            .as_ref()
-            .is_none_or(|network| network.enabled != Some(false))
-    {
-        CredentialBrokerProjectState::Enabled
-    } else {
-        CredentialBrokerProjectState::Disabled
-    };
-}
-
-struct ProjectTrustContext {
-    project_root: AbsolutePathBuf,
-    has_project_root_marker: bool,
-    project_root_key: String,
-    project_root_lookup_keys: Vec<String>,
-    checkout_root: Option<AbsolutePathBuf>,
-    repo_root: Option<AbsolutePathBuf>,
-    repo_root_key: Option<String>,
-    repo_root_lookup_keys: Option<Vec<String>>,
-    projects_trust: std::collections::HashMap<String, TrustLevel>,
-    user_config_file: AbsolutePathBuf,
-    credential_broker: CredentialBrokerProjectState,
-    credential_broker_provider_env_keys: Vec<String>,
-}
-
-#[derive(Deserialize)]
-struct ProjectTrustConfigToml {
-    projects: Option<std::collections::HashMap<String, ProjectConfig>>,
-}
-
-struct ProjectTrustDecision {
-    trust_level: Option<TrustLevel>,
-    trust_key: String,
-}
-
-impl ProjectTrustDecision {
-    fn is_trusted(&self) -> bool {
-        matches!(self.trust_level, Some(TrustLevel::Trusted))
-    }
-}
-
-impl ProjectTrustContext {
-    fn decision_for_dir(&self, dir: &AbsolutePathBuf) -> ProjectTrustDecision {
-        for dir_key in normalized_project_trust_keys(dir.as_path()) {
-            if let Some((trust_key, trust_level)) =
-                project_trust_for_lookup_key(&self.projects_trust, &dir_key)
-            {
-                return ProjectTrustDecision {
-                    trust_level: Some(trust_level),
-                    trust_key,
-                };
-            }
-        }
-
-        for project_root_key in &self.project_root_lookup_keys {
-            if let Some((trust_key, trust_level)) =
-                project_trust_for_lookup_key(&self.projects_trust, project_root_key)
-            {
-                return ProjectTrustDecision {
-                    trust_level: Some(trust_level),
-                    trust_key,
-                };
-            }
-        }
-
-        if let Some(repo_root_lookup_keys) = self.repo_root_lookup_keys.as_ref() {
-            for repo_root_key in repo_root_lookup_keys {
-                if let Some((trust_key, trust_level)) =
-                    project_trust_for_lookup_key(&self.projects_trust, repo_root_key)
-                {
-                    return ProjectTrustDecision {
-                        trust_level: Some(trust_level),
-                        trust_key,
-                    };
-                }
-            }
-        }
-
-        ProjectTrustDecision {
-            trust_level: None,
-            trust_key: self
-                .repo_root_key
-                .clone()
-                .unwrap_or_else(|| self.project_root_key.clone()),
-        }
-    }
-
-    fn disabled_reason_for_decision(&self, decision: &ProjectTrustDecision) -> Option<String> {
-        if decision.is_trusted() {
-            return None;
-        }
-
-        let gated_features = "project-local config, hooks, and exec policies";
-        let trust_key = decision.trust_key.as_str();
-        let user_config_file = self.user_config_file.as_path().display();
-        // Trust may come from managed config. Keep the explicit-untrusted prefix
-        // stable because the remote TUI uses it to recognize existing decisions.
-        match decision.trust_level {
-            Some(TrustLevel::Untrusted) => Some(format!(
-                "{trust_key} is marked as untrusted in the effective configuration. To load {gated_features}, update its trust setting. If that setting is managed by your organization, contact your administrator."
-            )),
-            _ => Some(format!(
-                "To load {gated_features}, add {trust_key} as a trusted project in {user_config_file}."
-            )),
-        }
-    }
-
-    fn root_checkout_hooks_folder_for_dir(&self, dir: &AbsolutePathBuf) -> Option<AbsolutePathBuf> {
-        let checkout_root = self.checkout_root.as_ref()?;
-        let repo_root = self.repo_root.as_ref()?;
-        // Regular checkouts resolve both paths to the same root; linked worktrees do not.
-        if checkout_root == repo_root {
-            return None;
-        }
-
-        let relative_dir = dir.as_path().strip_prefix(checkout_root.as_path()).ok()?;
-        Some(repo_root.join(relative_dir).join(".codex"))
-    }
-}
-
 fn project_layer_entry(
     dot_codex_folder: &AbsolutePathBuf,
     config: TomlValue,
-    disabled_reason: Option<String>,
     hooks_config_folder_override: Option<AbsolutePathBuf>,
 ) -> ConfigLayerEntry {
     let source = ConfigLayerSource::Project {
         dot_codex_folder: dot_codex_folder.clone(),
     };
-
-    let entry = if let Some(reason) = disabled_reason {
-        ConfigLayerEntry::new_disabled(source, config, reason)
-    } else {
-        ConfigLayerEntry::new(source, config)
-    };
-    entry.with_hooks_config_folder_override(hooks_config_folder_override)
+    ConfigLayerEntry::new(source, config)
+        .with_hooks_config_folder_override(hooks_config_folder_override)
 }
 
-fn sanitize_project_config(
-    config: &mut TomlValue,
-    credential_broker: CredentialBrokerProjectState,
-    trusted_provider_env_keys: &[String],
-) -> Vec<String> {
-    let Some(table) = config.as_table_mut() else {
-        return Vec::new();
-    };
-
-    let credential_broker_configured =
-        credential_broker != CredentialBrokerProjectState::Unconfigured;
-    let mut ignored_keys = Vec::new();
-    for key in PROJECT_LOCAL_CONFIG_DENYLIST {
-        if table.remove(*key).is_some() {
-            ignored_keys.push((*key).to_string());
-        }
-    }
-    if let Some(features) = table.get_mut("features").and_then(TomlValue::as_table_mut) {
-        if credential_broker == CredentialBrokerProjectState::Enabled
-            && features.remove("shell_snapshot").is_some()
-        {
-            ignored_keys.push("features.shell_snapshot".to_string());
-        }
-        if let Some(multi_agent) = features
-            .get_mut("multi_agent_v2")
-            .and_then(TomlValue::as_table_mut)
-            && multi_agent.remove("message_board_remote").is_some()
-        {
-            ignored_keys.push("features.multi_agent_v2.message_board_remote".to_string());
-        }
-        for key in [
-            "respect_system_proxy",
-            "system_proxy_fallback",
-            "credential_masking",
-        ] {
-            if features.remove(key).is_some() {
-                ignored_keys.push(format!("features.{key}"));
-            }
-        }
-        if credential_broker_configured
-            && features
-                .get("network_proxy")
-                .is_some_and(|network_proxy| network_proxy.as_bool().is_some())
-        {
-            features.remove("network_proxy");
-            ignored_keys.push("features.network_proxy".to_string());
-        } else if let Some(network_proxy) = features
-            .get_mut("network_proxy")
-            .and_then(TomlValue::as_table_mut)
-        {
-            if network_proxy.remove("credential_broker").is_some() {
-                ignored_keys.push("features.network_proxy.credential_broker".to_string());
-            }
-            if network_proxy.remove("credentials").is_some() {
-                ignored_keys.push("features.network_proxy.credentials".to_string());
-            }
-            if credential_broker_configured && network_proxy.remove("enabled").is_some() {
-                ignored_keys.push("features.network_proxy.enabled".to_string());
-            }
-        }
-    }
-    if credential_broker == CredentialBrokerProjectState::Enabled
-        && let Some(policy) = table
-            .get_mut("shell_environment_policy")
-            .and_then(TomlValue::as_table_mut)
-    {
-        if policy.remove("experimental_use_profile").is_some() {
-            ignored_keys.push("shell_environment_policy.experimental_use_profile".to_string());
-        }
-        let environment_keys_match = |left: &str, right: &str| {
-            left == right || cfg!(windows) && left.eq_ignore_ascii_case(right)
-        };
-        if let Some(overrides) = policy.get_mut("set").and_then(TomlValue::as_table_mut) {
-            overrides.retain(|key, _| {
-                if key.eq_ignore_ascii_case("ZDOTDIR")
-                    || key.eq_ignore_ascii_case("BASH_ENV")
-                    || is_credential_broker_provider_env_key(key)
-                    || trusted_provider_env_keys
-                        .iter()
-                        .any(|provider_key| environment_keys_match(key, provider_key))
-                {
-                    ignored_keys.push(format!("shell_environment_policy.set.{key}"));
-                    false
-                } else {
-                    true
-                }
-            });
-        }
-    }
-    // Repository contents must not turn an ordinary key into a permission increase.
-    if let Some(chat) = table
-        .get_mut("tui")
-        .and_then(|tui| tui.get_mut("keymap"))
-        .and_then(|keymap| keymap.get_mut("chat"))
-        .and_then(TomlValue::as_table_mut)
-    {
-        for key in ["previous_permission_mode", "next_permission_mode"] {
-            if chat.remove(key).is_some() {
-                ignored_keys.push(format!("tui.keymap.chat.{key}"));
-            }
-        }
-    }
-
-    ignored_keys
-}
-
-fn project_ignored_config_keys_warning(
-    dot_codex_folder: &AbsolutePathBuf,
-    ignored_keys: &[String],
-) -> String {
-    let config_path = dot_codex_folder.join(CONFIG_TOML_FILE);
-    let ignored_keys = ignored_keys.join(", ");
-    format!(
-        concat!(
-            "Ignored unsupported project-local config keys in {config_path}: {ignored_keys}. ",
-            "If you want these settings to apply, manually set them in your ",
-            "user-level config.toml."
-        ),
-        config_path = config_path.display(),
-        ignored_keys = ignored_keys,
-    )
-}
-
-async fn project_trust_context(
-    fs: &dyn ExecutorFileSystem,
-    merged_config: &TomlValue,
-    trusted_broker_config: &TomlValue,
-    cwd: &AbsolutePathBuf,
-    project_root_markers: &[String],
-    config_base_dir: &Path,
-    user_config_file: &AbsolutePathBuf,
-) -> io::Result<ProjectTrustContext> {
-    let project_trust_config: ProjectTrustConfigToml = {
-        let _guard = AbsolutePathBufGuard::new(config_base_dir);
-        merged_config
-            .clone()
-            .try_into()
-            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?
-    };
-
-    let discovered_root = discover_project_root(fs, cwd, project_root_markers).await?;
-    let has_project_root_marker = discovered_root.is_some();
-    let project_root = discovered_root.unwrap_or_else(|| cwd.clone());
-    let projects = project_trust_config.projects.unwrap_or_default();
-
-    let project_root_lookup_keys = normalized_project_trust_keys(project_root.as_path());
-    let project_root_key = project_root_lookup_keys
-        .first()
-        .cloned()
-        .unwrap_or_else(|| project_trust_key(project_root.as_path()));
-    let checkout_root = find_git_checkout_root(fs, cwd).await;
-    let repo_root = resolve_root_git_project_for_trust(fs, cwd).await;
-    let repo_root_lookup_keys = repo_root
-        .as_ref()
-        .map(|root| normalized_project_trust_keys(root.as_path()));
-    let repo_root_key = repo_root_lookup_keys
-        .as_ref()
-        .and_then(|keys| keys.first().cloned());
-
-    let projects_trust = projects
-        .into_iter()
-        .filter_map(|(key, project)| project.trust_level.map(|trust_level| (key, trust_level)))
-        .collect();
-    let network_proxy = trusted_broker_config
-        .get("features")
-        .and_then(|features| features.get("network_proxy"))
-        .and_then(TomlValue::as_table);
-    let credential_broker_configured = network_proxy.is_some_and(|network_proxy| {
-        network_proxy.get("credential_broker") == Some(&TomlValue::Boolean(true))
-    });
-    let credential_broker = if credential_broker_configured {
-        if network_proxy
-            .and_then(|network_proxy| network_proxy.get("enabled"))
-            .and_then(TomlValue::as_bool)
-            .unwrap_or(false)
-        {
-            CredentialBrokerProjectState::Enabled
-        } else {
-            CredentialBrokerProjectState::Disabled
-        }
-    } else {
-        CredentialBrokerProjectState::Unconfigured
-    };
-    let configured_providers = network_proxy
-        .and_then(|network_proxy| network_proxy.get("credentials"))
-        .and_then(TomlValue::as_table);
-    let credential_broker_provider_env_keys = configured_providers
-        .into_iter()
-        .flat_map(|providers| providers.values())
-        .flat_map(|provider| {
-            provider
-                .get("env")
-                .and_then(TomlValue::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(TomlValue::as_str)
-                .chain(
-                    provider
-                        .get("url_prefix_from_env")
-                        .and_then(TomlValue::as_str),
-                )
-                .map(str::to_string)
-        })
-        .collect::<Vec<_>>();
-
-    Ok(ProjectTrustContext {
-        project_root,
-        has_project_root_marker,
-        project_root_key,
-        project_root_lookup_keys,
-        checkout_root,
-        repo_root,
-        repo_root_key,
-        repo_root_lookup_keys,
-        projects_trust,
-        user_config_file: user_config_file.clone(),
-        credential_broker,
-        credential_broker_provider_env_keys,
-    })
-}
-
-// Start before managed layers are merged: replaying credential source remaps
-// can discard provider fields needed to protect their environment bindings.
-fn credential_broker_trusted_config(
-    merged_config: &TomlValue,
-    thread_config_layers: &[ConfigLayerEntry],
-    loaded_config_layers: &LoadedConfigLayers,
-) -> TomlValue {
-    let mut trusted_config = merged_config.clone();
-    for layer in thread_config_layers {
-        merge_toml_values(&mut trusted_config, &layer.config);
-    }
-    if let Some(config) = loaded_config_layers.managed_config.as_ref() {
-        merge_toml_values(&mut trusted_config, &config.managed_config);
-    }
-    if let Some(config) = loaded_config_layers.managed_config_from_mdm.as_ref() {
-        merge_toml_values(&mut trusted_config, &config.managed_config);
-    }
-    trusted_config
-}
-
-/// Canonicalize the path and convert it to a string to be used as a key in the
-/// projects trust map. On Windows, strips UNC, when possible, to try to ensure
-/// that different paths that point to the same location have the same key.
-pub fn project_trust_key(path: &Path) -> String {
-    normalized_project_trust_keys(path)
-        .into_iter()
-        .next()
-        .unwrap_or_else(|| normalize_project_trust_lookup_key(path.to_string_lossy().to_string()))
-}
-
-/// Returns canonical and original path spellings in trust-lookup precedence order.
-pub fn normalized_project_trust_keys(path: &Path) -> Vec<String> {
-    let normalized_path = normalize_project_trust_lookup_key(path.to_string_lossy().to_string());
-    let normalized_canonical_path = normalize_project_trust_lookup_key(
-        normalize_path(path)
-            .unwrap_or_else(|_| path.to_path_buf())
-            .to_string_lossy()
-            .to_string(),
-    );
-    if normalized_path == normalized_canonical_path {
-        vec![normalized_canonical_path]
-    } else {
-        vec![normalized_canonical_path, normalized_path]
-    }
-}
-
-fn normalize_project_trust_lookup_key(key: String) -> String {
-    if cfg!(windows) {
-        key.to_ascii_lowercase()
-    } else {
-        key
-    }
-}
-fn project_trust_for_lookup_key(
-    projects_trust: &std::collections::HashMap<String, TrustLevel>,
-    lookup_key: &str,
-) -> Option<(String, TrustLevel)> {
-    if let Some(trust_level) = projects_trust.get(lookup_key).copied() {
-        return Some((lookup_key.to_string(), trust_level));
-    }
-
-    let mut normalized_matches: Vec<_> = projects_trust
-        .iter()
-        .filter(|(key, _)| normalize_project_trust_lookup_key((*key).clone()) == lookup_key)
-        .collect();
-    normalized_matches.sort_by_key(|(key, _)| *key);
-    normalized_matches
-        .first()
-        .map(|(key, trust_level)| ((**key).clone(), **trust_level))
-}
 /// Takes a `toml::Value` parsed from a config.toml file and walks through it,
 /// resolving any `AbsolutePathBuf` fields against `base_dir`, returning a new
 /// `toml::Value` with the same shape but with paths resolved.
@@ -1539,10 +645,7 @@ pub async fn discover_project_root(
         for marker in project_root_markers {
             let marker_path = ancestor.join(marker);
             let marker_path_uri = PathUri::from_abs_path(&marker_path);
-            let Ok(metadata) = fs
-                .get_metadata(&marker_path_uri, Default::default(), /*sandbox*/ None)
-                .await
-            else {
+            let Ok(metadata) = fs.get_metadata(&marker_path_uri, Default::default()).await else {
                 continue;
             };
             if marker == ".git"
@@ -1551,7 +654,6 @@ pub async fn discover_project_root(
                     .get_metadata(
                         &PathUri::from_abs_path(&marker_path.join("HEAD")),
                         Default::default(),
-                        /*sandbox*/ None,
                     )
                     .await
                     .is_err()
@@ -1569,10 +671,7 @@ async fn find_git_checkout_root(
     cwd: &AbsolutePathBuf,
 ) -> Option<AbsolutePathBuf> {
     let cwd_uri = PathUri::from_abs_path(cwd);
-    let base = match fs
-        .get_metadata(&cwd_uri, Default::default(), /*sandbox*/ None)
-        .await
-    {
+    let base = match fs.get_metadata(&cwd_uri, Default::default()).await {
         Ok(metadata) if metadata.is_directory => cwd.clone(),
         _ => cwd.parent()?,
     };
@@ -1580,10 +679,7 @@ async fn find_git_checkout_root(
     for dir in base.ancestors() {
         let dot_git = dir.join(".git");
         let dot_git_uri = PathUri::from_abs_path(&dot_git);
-        let Ok(metadata) = fs
-            .get_metadata(&dot_git_uri, Default::default(), /*sandbox*/ None)
-            .await
-        else {
+        let Ok(metadata) = fs.get_metadata(&dot_git_uri, Default::default()).await else {
             continue;
         };
         if metadata.is_directory
@@ -1591,7 +687,6 @@ async fn find_git_checkout_root(
                 .get_metadata(
                     &PathUri::from_abs_path(&dot_git.join("HEAD")),
                     Default::default(),
-                    /*sandbox*/ None,
                 )
                 .await
                 .is_err()
@@ -1603,85 +698,56 @@ async fn find_git_checkout_root(
     None
 }
 
-struct LoadedProjectLayers {
-    layers: Vec<ConfigLayerEntry>,
-    startup_warnings: Vec<String>,
+/// Return the appropriate list of layers (each with
+/// [ConfigLayerSource::Project] as the source) between `cwd` and
+/// `project_root`, inclusive. The list is ordered in _increasing_ precdence,
+/// starting from folders closest to `project_root` (which is the lowest
+/// precedence) to those closest to `cwd` (which is the highest precedence).
+async fn load_project_layers(
+    fs: &dyn ExecutorFileSystem,
+    cwd: &AbsolutePathBuf,
+    project_root: &AbsolutePathBuf,
+    codex_home: &Path,
+    strict_config: bool,
+) -> io::Result<Vec<ConfigLayerEntry>> {
+    let checkout_root = find_git_checkout_root(fs, cwd).await;
+    let repo_root = resolve_main_checkout_root(fs, checkout_root.as_ref()).await;
+    let discovered =
+        discover_project_layers(fs, cwd, project_root, codex_home, strict_config).await?;
+    let mut layers = Vec::with_capacity(discovered.len());
+    for layer in discovered {
+        let hooks_config_folder_override = root_checkout_hooks_folder_for_dir(
+            checkout_root.as_ref(),
+            repo_root.as_ref(),
+            &layer.dot_codex_folder,
+        );
+        let config =
+            resolve_relative_paths_in_config_toml(layer.config, layer.dot_codex_folder.as_path())?;
+        let config =
+            merge_root_checkout_project_hooks(fs, config, hooks_config_folder_override.as_ref())
+                .await?;
+        layers.push(project_layer_entry(
+            &layer.dot_codex_folder,
+            config,
+            hooks_config_folder_override,
+        ));
+    }
+    Ok(layers)
 }
 
 #[derive(Debug, Clone)]
 struct DiscoveredProjectLayer {
     dot_codex_folder: AbsolutePathBuf,
     config: TomlValue,
-    disabled_reason: Option<String>,
-    hooks_config_folder_override: Option<AbsolutePathBuf>,
-    load_root_checkout_hooks: bool,
-}
-
-struct DiscoveredProjectLayers {
-    layers: Vec<DiscoveredProjectLayer>,
-    startup_warnings: Vec<String>,
-}
-
-/// Return the appropriate list of layers (each with
-/// [ConfigLayerSource::Project] as the source) between `cwd` and
-/// `project_root`, inclusive. The list is ordered in _increasing_ precdence,
-/// starting from folders closest to `project_root` (which is the lowest
-/// precedence) to those closest to `cwd` (which is the highest precedence).
-/// Any warnings are stack-level startup messages, not additional config layers.
-async fn load_project_layers(
-    fs: &dyn ExecutorFileSystem,
-    cwd: &AbsolutePathBuf,
-    project_root: &AbsolutePathBuf,
-    trust_context: &ProjectTrustContext,
-    codex_home: &Path,
-    strict_config: bool,
-) -> io::Result<LoadedProjectLayers> {
-    let discovered = discover_project_layers(
-        fs,
-        cwd,
-        project_root,
-        trust_context,
-        codex_home,
-        strict_config,
-    )
-    .await?;
-    let mut layers = Vec::with_capacity(discovered.layers.len());
-    for layer in discovered.layers {
-        let config =
-            resolve_relative_paths_in_config_toml(layer.config, layer.dot_codex_folder.as_path())?;
-        let config = if layer.load_root_checkout_hooks {
-            merge_root_checkout_project_hooks(
-                fs,
-                config,
-                layer.hooks_config_folder_override.as_ref(),
-                layer.disabled_reason.is_none(),
-            )
-            .await?
-        } else {
-            config
-        };
-        layers.push(project_layer_entry(
-            &layer.dot_codex_folder,
-            config,
-            layer.disabled_reason,
-            layer.hooks_config_folder_override,
-        ));
-    }
-
-    Ok(LoadedProjectLayers {
-        layers,
-        startup_warnings: discovered.startup_warnings,
-    })
 }
 
 async fn discover_project_layers(
     fs: &dyn ExecutorFileSystem,
     cwd: &AbsolutePathBuf,
     project_root: &AbsolutePathBuf,
-    trust_context: &ProjectTrustContext,
     codex_home: &Path,
     strict_config: bool,
-) -> io::Result<DiscoveredProjectLayers> {
+) -> io::Result<Vec<DiscoveredProjectLayer>> {
     let codex_home_abs = AbsolutePathBuf::from_absolute_path(codex_home)?;
     let codex_home_normalized =
         normalize_path(codex_home_abs.as_path()).unwrap_or_else(|_| codex_home_abs.to_path_buf());
@@ -1701,22 +767,17 @@ async fn discover_project_layers(
     dirs.reverse();
 
     let mut layers = Vec::new();
-    let mut startup_warnings = Vec::new();
     for dir in dirs {
         let dot_codex_abs = dir.join(".codex");
         let dot_codex_uri = PathUri::from_abs_path(&dot_codex_abs);
         if !fs
-            .get_metadata(&dot_codex_uri, Default::default(), /*sandbox*/ None)
+            .get_metadata(&dot_codex_uri, Default::default())
             .await
             .map(|metadata| metadata.is_directory)
             .unwrap_or(false)
         {
             continue;
         }
-
-        let decision = trust_context.decision_for_dir(&dir);
-        let disabled_reason = trust_context.disabled_reason_for_decision(&decision);
-        let hooks_config_folder_override = trust_context.root_checkout_hooks_folder_for_dir(&dir);
         let dot_codex_normalized =
             normalize_path(dot_codex_abs.as_path()).unwrap_or_else(|_| dot_codex_abs.to_path_buf());
         if dot_codex_abs == codex_home_abs || dot_codex_normalized == codex_home_normalized {
@@ -1724,35 +785,21 @@ async fn discover_project_layers(
         }
         let config_file = dot_codex_abs.join(CONFIG_TOML_FILE);
         let config_file_uri = PathUri::from_abs_path(&config_file);
-        match fs
-            .read_file_text(&config_file_uri, Default::default(), /*sandbox*/ None)
+        let config = match fs
+            .read_file_text(&config_file_uri, Default::default())
             .await
         {
             Ok(contents) => {
-                let config: TomlValue = match toml::from_str(&contents) {
-                    Ok(config) => config,
-                    Err(e) => {
-                        if decision.is_trusted() {
-                            let config_file_display = config_file.as_path().display();
-                            return Err(io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                format!(
-                                    "Error parsing project config file {config_file_display}: {e}"
-                                ),
-                            ));
-                        }
-                        layers.push(DiscoveredProjectLayer {
-                            dot_codex_folder: dot_codex_abs,
-                            config: TomlValue::Table(toml::map::Map::new()),
-                            disabled_reason,
-                            hooks_config_folder_override,
-                            load_root_checkout_hooks: false,
-                        });
-                        continue;
-                    }
-                };
-                let mut config = config;
-                if disabled_reason.is_none() && strict_config {
+                let config: TomlValue = toml::from_str(&contents).map_err(|e| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "Error parsing project config file {}: {e}",
+                            config_file.as_path().display()
+                        ),
+                    )
+                })?;
+                if strict_config {
                     validate_config_toml_strictly(
                         config_file.as_path(),
                         &contents,
@@ -1760,52 +807,75 @@ async fn discover_project_layers(
                         dot_codex_abs.as_path(),
                     )?;
                 }
-                let ignored_project_config_keys = sanitize_project_config(
-                    &mut config,
-                    trust_context.credential_broker,
-                    &trust_context.credential_broker_provider_env_keys,
-                );
-                if disabled_reason.is_none() && !ignored_project_config_keys.is_empty() {
-                    startup_warnings.push(project_ignored_config_keys_warning(
-                        &dot_codex_abs,
-                        &ignored_project_config_keys,
-                    ));
-                }
-                layers.push(DiscoveredProjectLayer {
-                    dot_codex_folder: dot_codex_abs,
-                    config,
-                    disabled_reason,
-                    hooks_config_folder_override,
-                    load_root_checkout_hooks: true,
-                });
+                config
+            }
+            // A `.codex` folder without config.toml may still hold hooks and other files that
+            // are significant in the overall ConfigLayerStack.
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                TomlValue::Table(toml::map::Map::new())
             }
             Err(err) => {
-                if err.kind() == io::ErrorKind::NotFound {
-                    // If there is no config.toml file, record an empty entry
-                    // for this project layer, as this may still have subfolders
-                    // that are significant in the overall ConfigLayerStack.
-                    layers.push(DiscoveredProjectLayer {
-                        dot_codex_folder: dot_codex_abs,
-                        config: TomlValue::Table(toml::map::Map::new()),
-                        disabled_reason,
-                        hooks_config_folder_override,
-                        load_root_checkout_hooks: true,
-                    });
-                } else {
-                    let config_file_display = config_file.as_path().display();
-                    return Err(io::Error::new(
-                        err.kind(),
-                        format!("Failed to read project config file {config_file_display}: {err}"),
-                    ));
-                }
+                return Err(io::Error::new(
+                    err.kind(),
+                    format!(
+                        "Failed to read project config file {}: {err}",
+                        config_file.as_path().display()
+                    ),
+                ));
             }
-        }
+        };
+        layers.push(DiscoveredProjectLayer {
+            dot_codex_folder: dot_codex_abs,
+            config,
+        });
     }
+    Ok(layers)
+}
 
-    Ok(DiscoveredProjectLayers {
-        layers,
-        startup_warnings,
-    })
+/// Linked worktrees share hook declarations with their main checkout.
+fn root_checkout_hooks_folder_for_dir(
+    checkout_root: Option<&AbsolutePathBuf>,
+    repo_root: Option<&AbsolutePathBuf>,
+    dot_codex_folder: &AbsolutePathBuf,
+) -> Option<AbsolutePathBuf> {
+    let checkout_root = checkout_root?;
+    let repo_root = repo_root?;
+    // Regular checkouts resolve both paths to the same root; linked worktrees do not.
+    if checkout_root == repo_root {
+        return None;
+    }
+    let dir = dot_codex_folder.parent()?;
+    let relative_dir = dir.as_path().strip_prefix(checkout_root.as_path()).ok()?;
+    Some(repo_root.join(relative_dir).join(".codex"))
+}
+
+/// Resolves a linked worktree's `.git` pointer file to its main checkout.
+async fn resolve_main_checkout_root(
+    fs: &dyn ExecutorFileSystem,
+    checkout_root: Option<&AbsolutePathBuf>,
+) -> Option<AbsolutePathBuf> {
+    let checkout_root = checkout_root?;
+    let dot_git = checkout_root.join(".git");
+    let dot_git_uri = PathUri::from_abs_path(&dot_git);
+    let metadata = fs
+        .get_metadata(&dot_git_uri, Default::default())
+        .await
+        .ok()?;
+    if metadata.is_directory {
+        return Some(checkout_root.clone());
+    }
+    let contents = fs
+        .read_file_text(&dot_git_uri, Default::default())
+        .await
+        .ok()?;
+    let gitdir = contents.trim().strip_prefix("gitdir:")?.trim();
+    let gitdir = AbsolutePathBuf::resolve_path_against_base(gitdir, checkout_root.as_path());
+    // `<main>/.git/worktrees/<name>` -> `<main>`
+    let worktrees_dir = gitdir.parent()?;
+    if worktrees_dir.as_path().file_name()? != "worktrees" {
+        return None;
+    }
+    worktrees_dir.parent()?.parent()
 }
 
 /// For linked worktrees, preserve ordinary worktree-local project config while
@@ -1814,13 +884,11 @@ async fn merge_root_checkout_project_hooks(
     fs: &dyn ExecutorFileSystem,
     mut config: TomlValue,
     hooks_config_folder_override: Option<&AbsolutePathBuf>,
-    is_trusted: bool,
 ) -> io::Result<TomlValue> {
     let Some(hooks_config_folder) = hooks_config_folder_override else {
         return Ok(config);
     };
-    let root_config =
-        load_root_checkout_project_config(fs, hooks_config_folder, is_trusted).await?;
+    let root_config = load_root_checkout_project_config(fs, hooks_config_folder).await?;
     let root_config =
         resolve_relative_paths_in_config_toml(root_config, hooks_config_folder.as_path())?;
 
@@ -1837,37 +905,23 @@ async fn merge_root_checkout_project_hooks(
 async fn load_root_checkout_project_config(
     fs: &dyn ExecutorFileSystem,
     hooks_config_folder: &AbsolutePathBuf,
-    is_trusted: bool,
 ) -> io::Result<TomlValue> {
     let hooks_config_file = hooks_config_folder.join(CONFIG_TOML_FILE);
     let hooks_config_file_uri = PathUri::from_abs_path(&hooks_config_file);
     Ok(
         match fs
-            .read_file_text(
-                &hooks_config_file_uri,
-                Default::default(),
-                /*sandbox*/ None,
-            )
+            .read_file_text(&hooks_config_file_uri, Default::default())
             .await
         {
-            Ok(contents) => {
-                let parsed: TomlValue = match toml::from_str(&contents) {
-                    Ok(parsed) => parsed,
-                    Err(err) => {
-                        if is_trusted {
-                            return Err(io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                format!(
-                                    "Error parsing project hooks config file {}: {err}",
-                                    hooks_config_file.as_path().display()
-                                ),
-                            ));
-                        }
-                        TomlValue::Table(toml::map::Map::new())
-                    }
-                };
-                parsed
-            }
+            Ok(contents) => toml::from_str::<TomlValue>(&contents).map_err(|err| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "Error parsing project hooks config file {}: {err}",
+                        hooks_config_file.as_path().display()
+                    ),
+                )
+            })?,
             Err(err) if err.kind() == io::ErrorKind::NotFound => {
                 TomlValue::Table(toml::map::Map::new())
             }
@@ -1883,22 +937,6 @@ async fn load_root_checkout_project_config(
         },
     )
 }
-/// The legacy mechanism for specifying admin-enforced configuration is to read
-/// from a file like `/etc/codex/managed_config.toml` that has the same
-/// structure as `config.toml` where fields like `approval_policy` can specify
-/// exactly one value rather than a list of allowed values.
-///
-/// If present, re-interpret `managed_config.toml` as a `requirements.toml`
-/// where each specified field is treated as a constraint. Most fields allow
-/// only the specified value. `approvals_reviewer = "auto_review"` also allows
-/// `user` so people can opt out of the auto-reviewer.
-#[derive(Deserialize, Debug, Clone, Default, PartialEq)]
-struct LegacyManagedConfigToml {
-    approval_policy: Option<AskForApproval>,
-    approvals_reviewer: Option<ApprovalsReviewer>,
-    sandbox_mode: Option<SandboxMode>,
-}
-
 // Cannot name this `mod tests` because of tests.rs in this folder.
 #[cfg(test)]
 mod unit_tests {
@@ -1942,88 +980,6 @@ foo = "xyzzy"
         expected_toml_value.insert("foo".to_string(), TomlValue::String("xyzzy".to_string()));
         assert_eq!(normalized_toml_value, TomlValue::Table(expected_toml_value));
         Ok(())
-    }
-
-    #[test]
-    fn legacy_managed_config_backfill_includes_read_only_sandbox_mode() -> io::Result<()> {
-        let legacy = LegacyManagedConfigToml {
-            approval_policy: None,
-            approvals_reviewer: None,
-            sandbox_mode: Some(SandboxMode::WorkspaceWrite),
-        };
-
-        assert_eq!(
-            legacy_requirements_to_toml_value(legacy)?,
-            TomlValue::Table(toml::map::Map::from_iter([(
-                "allowed_sandbox_modes".to_string(),
-                TomlValue::Array(vec![
-                    TomlValue::String("read-only".to_string()),
-                    TomlValue::String("workspace-write".to_string()),
-                ]),
-            )]))
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn legacy_managed_config_backfill_allows_user_when_guardian_is_required() -> io::Result<()> {
-        let legacy = LegacyManagedConfigToml {
-            approval_policy: None,
-            approvals_reviewer: Some(ApprovalsReviewer::AutoReview),
-            sandbox_mode: None,
-        };
-
-        assert_eq!(
-            legacy_requirements_to_toml_value(legacy)?,
-            TomlValue::Table(toml::map::Map::from_iter([(
-                "allowed_approvals_reviewers".to_string(),
-                TomlValue::Array(vec![
-                    TomlValue::String("auto_review".to_string()),
-                    TomlValue::String("user".to_string()),
-                ]),
-            )]))
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn legacy_managed_config_backfill_preserves_user_only_approvals_reviewer() -> io::Result<()> {
-        let legacy = LegacyManagedConfigToml {
-            approval_policy: None,
-            approvals_reviewer: Some(ApprovalsReviewer::User),
-            sandbox_mode: None,
-        };
-
-        assert_eq!(
-            legacy_requirements_to_toml_value(legacy)?,
-            TomlValue::Table(toml::map::Map::from_iter([(
-                "allowed_approvals_reviewers".to_string(),
-                TomlValue::Array(vec![TomlValue::String("user".to_string())]),
-            )]))
-        );
-        Ok(())
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn windows_system_requirements_toml_file_uses_expected_suffix() {
-        let expected = windows_program_data_dir_from_known_folder()
-            .unwrap_or_else(|_| PathBuf::from(DEFAULT_PROGRAM_DATA_DIR_WINDOWS))
-            .join("OpenAI")
-            .join("Codex")
-            .join("requirements.toml");
-        assert_eq!(
-            windows_system_requirements_toml_file()
-                .expect("requirements.toml path")
-                .as_path(),
-            expected.as_path()
-        );
-        assert!(
-            windows_system_requirements_toml_file()
-                .expect("requirements.toml path")
-                .as_path()
-                .ends_with(Path::new("OpenAI").join("Codex").join("requirements.toml"))
-        );
     }
 
     #[cfg(windows)]

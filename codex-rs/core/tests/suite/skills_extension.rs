@@ -7,19 +7,13 @@ use anyhow::Result;
 use codex_config::ConfigLayerEntry;
 use codex_config::ConfigLayerSource;
 use codex_config::ConfigLayerStack;
-use codex_config::ConfigRequirements;
-use codex_config::ConfigRequirementsToml;
 use codex_core::StartThreadOptions;
 use codex_core::TurnInputRequest;
 use codex_core::WaitForEnvironmentToolConfig;
 use codex_core::config::Config;
-use codex_core::config::Constrained;
 use codex_exec_server::CreateDirectoryOptions;
 use codex_exec_server::EnvironmentManager;
-use codex_exec_server::ExecParams;
-use codex_exec_server::ExecProcessEvent;
 use codex_exec_server::LOCAL_ENVIRONMENT_ID;
-use codex_exec_server::ProcessId;
 use codex_exec_server::RemoveOptions;
 use codex_extension_api::ExtensionDataInit;
 use codex_extension_api::ExtensionEventSink;
@@ -42,29 +36,15 @@ use codex_otel::OtelSettings;
 use codex_otel::THREAD_SKILLS_KEPT_TOTAL_METRIC;
 use codex_protocol::capabilities::CapabilityRootLocation;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
-use codex_protocol::mcp_policy::EnvironmentMcpPolicy;
-use codex_protocol::models::FileSystemPermissions;
-use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::openai_models::TruncationPolicyConfig;
-use codex_protocol::permissions::FileSystemAccessMode;
-use codex_protocol::permissions::FileSystemPath;
-use codex_protocol::permissions::FileSystemSandboxEntry;
-use codex_protocol::permissions::FileSystemSandboxPolicy;
-use codex_protocol::permissions::FileSystemSpecialPath;
-use codex_protocol::permissions::NetworkSandboxPolicy;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EnvironmentConfigState;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
-use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::protocol::TurnSettingsUpdate;
 use codex_protocol::protocol::TurnSettingsUpdateOutcome;
-use codex_protocol::request_permissions::PermissionGrantScope;
-use codex_protocol::request_permissions::RequestPermissionProfile;
-use codex_protocol::request_permissions::RequestPermissionsResponse;
 use codex_protocol::user_input::UserInput;
 use codex_skills_extension::ExecutorSkillProvider;
 use codex_skills_extension::HostSkillProvider;
@@ -103,12 +83,10 @@ use core_test_support::responses::sse;
 use core_test_support::responses::start_websocket_server;
 use core_test_support::skip_if_no_network;
 use core_test_support::skip_if_remote;
-use core_test_support::skip_if_target_windows;
 use core_test_support::skip_if_wine_exec;
 use core_test_support::test_codex::environment_config_for_selection;
 use core_test_support::test_codex::test_codex;
 use core_test_support::test_codex::test_env;
-use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_mcp_server;
 use opentelemetry_sdk::metrics::data::AggregatedMetrics;
@@ -118,7 +96,6 @@ use serde_json::Value;
 use serde_json::json;
 use sha1::Digest;
 use tempfile::TempDir;
-use test_case::test_case;
 use tokio::time::Duration;
 use tokio::time::Instant;
 use toml::toml;
@@ -404,23 +381,16 @@ async fn wait_for_analytics_events(
 
 fn configure_catalog_test(config: &mut Config) {
     config.include_skill_instructions = true;
-    config
-        .features
-        .enable(Feature::ExecutorCapabilityDiscovery)
-        .expect("executor capability discovery should be configurable in tests");
+    config.features.enable(Feature::ExecutorCapabilityDiscovery);
     // A user layer also discovers the real `$HOME/.agents/skills`. Use a temporary system layer so
     // exact catalog and omission assertions only see the skills written under this test's home.
     let system_config_path = config.codex_home.join("config.toml");
-    config.config_layer_stack = ConfigLayerStack::new(
-        vec![ConfigLayerEntry::new(
-            ConfigLayerSource::System {
-                file: system_config_path,
-            },
-            toml! { skills = { bundled = { enabled = false } } }.into(),
-        )],
-        ConfigRequirements::default(),
-        ConfigRequirementsToml::default(),
-    )
+    config.config_layer_stack = ConfigLayerStack::new(vec![ConfigLayerEntry::new(
+        ConfigLayerSource::System {
+            file: system_config_path,
+        },
+        toml! { skills = { bundled = { enabled = false } } }.into(),
+    )])
     .expect("skills test config should be valid");
 }
 
@@ -645,7 +615,7 @@ async fn capability_sections_render_in_order_with_host_repo_and_plugin_skills() 
         max_context_tokens: config.skill_max_context_tokens,
         bundled_skills_enabled: config.bundled_skills_enabled(),
         cloud_skill_enabled: config.cloud_skill_enabled,
-        shadow_selection_enabled: config.features.enabled(Feature::SkillSearch),
+        shadow_selection_enabled: false,
     });
     let mut builder = test_codex()
         .with_home(Arc::clone(&codex_home))
@@ -655,8 +625,7 @@ async fn capability_sections_render_in_order_with_host_repo_and_plugin_skills() 
             let skill_dir = cwd.join(".agents/skills/repo-search");
             fs.create_directory(
                 &PathUri::from_host_native_path(&skill_dir)?,
-                CreateDirectoryOptions { recursive: true, follow_symlinks: true },
-                /*sandbox*/ None,
+                CreateDirectoryOptions { recursive: true, follow_symlinks: true }
             )
             .await?;
             fs.write_file(
@@ -665,7 +634,7 @@ async fn capability_sections_render_in_order_with_host_repo_and_plugin_skills() 
                     "---\nname: repo-search\ndescription: inspect repo data\n---\n\n{REPO_SKILL_BODY}\n"
                 )
                 .into_bytes(),
-                Default::default(), /*sandbox*/ None,
+                Default::default()
             )
             .await?;
             Ok(())
@@ -673,17 +642,15 @@ async fn capability_sections_render_in_order_with_host_repo_and_plugin_skills() 
         .with_config(move |config| {
             config
                 .features
-                .enable(Feature::Apps)
-                .expect("test config should allow feature update");
+                .enable(Feature::Apps);
             config.chatgpt_base_url = apps_server.chatgpt_base_url;
         });
     let test = builder.build_with_auto_env(&server).await?;
     let repo_skill_path = test
         .fs()
-        .canonicalize(
-            &PathUri::from_abs_path(&test.config.cwd.join(".agents/skills/repo-search/SKILL.md")),
-            /*sandbox*/ None,
-        )
+        .canonicalize(&PathUri::from_abs_path(
+            &test.config.cwd.join(".agents/skills/repo-search/SKILL.md"),
+        ))
         .await?
         .to_abs_path()?
         .to_path_buf();
@@ -1081,7 +1048,6 @@ async fn opted_in_executor_provider_skips_host_discovery_but_injects_discovered_
                         recursive: true,
                         follow_symlinks: true,
                     },
-                    /*sandbox*/ None,
                 )
                 .await?;
                 fs.write_file(
@@ -1089,7 +1055,6 @@ async fn opted_in_executor_provider_skips_host_discovery_but_injects_discovered_
                     format!("---\nname: {name}\ndescription: {description}\n---\n\n{body}\n")
                         .into_bytes(),
                     Default::default(),
-                    /*sandbox*/ None,
                 )
                 .await?;
             }
@@ -1097,10 +1062,7 @@ async fn opted_in_executor_provider_skips_host_discovery_but_injects_discovered_
         })
         .with_config(|config| {
             configure_catalog_test(config);
-            config
-                .features
-                .enable(Feature::SkipHostSkillDiscovery)
-                .expect("host skill discovery opt-out should be configurable");
+            config.features.enable(Feature::SkipHostSkillDiscovery);
         });
     let test = builder.build_with_auto_env(&server).await?;
     let environment = test.executor_environment().selection().clone();
@@ -1157,7 +1119,6 @@ async fn opted_in_executor_provider_skips_host_discovery_but_injects_discovered_
                 force: false,
                 follow_symlinks: true,
             },
-            /*sandbox*/ None,
         )
         .await?;
 
@@ -1295,8 +1256,7 @@ async fn executor_only_provider_preserves_structured_repo_skill_without_discover
                 CreateDirectoryOptions {
                     recursive: true,
                     follow_symlinks: true,
-                },
-                /*sandbox*/ None,
+                }
             )
             .await?;
             fs.write_file(
@@ -1305,8 +1265,7 @@ async fn executor_only_provider_preserves_structured_repo_skill_without_discover
                     "---\nname: {AMBIENT_SKILL_NAME}\ndescription: Ambient repository skill.\n---\n\n{AMBIENT_SKILL_BODY}\n"
                 )
                 .into_bytes(),
-                Default::default(),
-                /*sandbox*/ None,
+                Default::default()
             )
             .await?;
             Ok(())
@@ -1329,10 +1288,7 @@ async fn executor_only_provider_preserves_structured_repo_skill_without_discover
         .to_path_buf();
     let ambient_skill_path = test
         .fs()
-        .canonicalize(
-            &PathUri::from_host_native_path(&ambient_skill_path)?,
-            /*sandbox*/ None,
-        )
+        .canonicalize(&PathUri::from_host_native_path(&ambient_skill_path)?)
         .await?
         .to_abs_path()?
         .to_path_buf();
@@ -1365,452 +1321,6 @@ async fn executor_only_provider_preserves_structured_repo_skill_without_discover
     Ok(())
 }
 
-#[derive(Clone, Copy)]
-enum ExecutorReferenceRead {
-    Allowed,
-    Denied,
-    Granted,
-    Continuation,
-    EditedContinuation,
-    DeniedContinuation,
-}
-
-/// Live references and continuation pages use the step's captured permissions after discovery
-/// materialized the main prompt. Continuations preserve the cached snapshot across file edits.
-#[test_case(ExecutorReferenceRead::Allowed; "full disk read")]
-#[test_case(ExecutorReferenceRead::Denied; "denied reference")]
-#[test_case(ExecutorReferenceRead::Granted; "grant captured by the next model step")]
-#[test_case(ExecutorReferenceRead::Continuation; "unchanged continuation")]
-#[test_case(ExecutorReferenceRead::EditedContinuation; "edited continuation")]
-#[test_case(ExecutorReferenceRead::DeniedContinuation; "denied continuation")]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn executor_skill_tool_reads_references_under_current_permissions(
-    read: ExecutorReferenceRead,
-) -> Result<()> {
-    skip_if_no_network!(Ok(()));
-    if matches!(
-        read,
-        ExecutorReferenceRead::Denied
-            | ExecutorReferenceRead::Granted
-            | ExecutorReferenceRead::DeniedContinuation
-    ) {
-        skip_if_target_windows!(
-            Ok(()),
-            "restricted reads require the elevated Windows sandbox backend, unavailable in this fixture"
-        );
-    }
-
-    const REFERENCE_CONTENTS: &str = "Live executor reference instructions.";
-    let contents = match read {
-        ExecutorReferenceRead::Allowed
-        | ExecutorReferenceRead::Denied
-        | ExecutorReferenceRead::Granted => REFERENCE_CONTENTS.to_string(),
-        ExecutorReferenceRead::Continuation
-        | ExecutorReferenceRead::EditedContinuation
-        | ExecutorReferenceRead::DeniedContinuation => "reference line\n".repeat(800),
-    };
-    let restricted_path_access = match read {
-        ExecutorReferenceRead::Denied => FileSystemAccessMode::Deny,
-        ExecutorReferenceRead::Allowed
-        | ExecutorReferenceRead::Granted
-        | ExecutorReferenceRead::Continuation
-        | ExecutorReferenceRead::EditedContinuation
-        | ExecutorReferenceRead::DeniedContinuation => FileSystemAccessMode::Read,
-    };
-    let server = responses::start_mock_server().await;
-    let mut extensions = ExtensionRegistryBuilder::<Config>::new();
-    install_with_providers(
-        &mut extensions,
-        SkillProviders::new().with_executor_provider(Arc::new(
-            ExecutorSkillProvider::new_with_restriction_product(
-                Arc::new(EnvironmentManager::default_for_tests()),
-                /*restriction_product*/ None,
-            ),
-        )),
-        |config: &Config| SkillsExtensionConfig {
-            include_instructions: config.include_skill_instructions,
-            max_context_tokens: config.skill_max_context_tokens,
-            bundled_skills_enabled: false,
-            cloud_skill_enabled: false,
-            shadow_selection_enabled: false,
-        },
-    );
-    let mut builder = test_codex()
-        .with_extensions(Arc::new(extensions.build()))
-        .with_model_info_override("gpt-5.4", |model_info| {
-            model_info.truncation_policy = TruncationPolicyConfig::bytes(/*limit*/ 8192);
-        })
-        .with_config(configure_catalog_test);
-    let test = builder.build_with_auto_env(&server).await?;
-    let selection = test
-        .codex
-        .environment_selections()
-        .await
-        .into_iter()
-        .next()
-        .expect("thread should select an executor environment");
-    let file_system = test.fs();
-    let skill_dir = selection.cwd.join("skill")?;
-    file_system
-        .create_directory(
-            &skill_dir,
-            CreateDirectoryOptions {
-                recursive: true,
-                follow_symlinks: true,
-            },
-            /*sandbox*/ None,
-        )
-        .await?;
-    // Discovery retains the selected root's spelling, including macOS /var aliases.
-    // Only permission entries should use the canonical path.
-    let policy_skill_dir = file_system
-        .canonicalize(&skill_dir, /*sandbox*/ None)
-        .await?;
-    for (name, contents) in [
-        (
-            "SKILL.md",
-            "---\nname: skill\ndescription: Read executor references.\n---\n\nRead reference.md.\n",
-        ),
-        ("reference.md", contents.as_str()),
-    ] {
-        let directory = if name == "reference.md" && matches!(read, ExecutorReferenceRead::Granted)
-        {
-            &selection.cwd
-        } else {
-            &skill_dir
-        };
-        file_system
-            .write_file(
-                &directory.join(name)?,
-                contents.as_bytes().to_vec(),
-                Default::default(),
-                /*sandbox*/ None,
-            )
-            .await?;
-    }
-    if matches!(read, ExecutorReferenceRead::Granted) {
-        // The package directory must be listable for discovery. Put the reference outside it so
-        // it still requires a separate grant; create the link on the executor, including remotely.
-        let process = test
-            .executor_environment()
-            .environment()
-            .get_exec_backend()
-            .start(ExecParams {
-                process_id: ProcessId::from("link-grant-reference"),
-                metadata: None,
-                argv: ["/bin/ln", "-s", "../reference.md", "skill/reference.md"]
-                    .map(str::to_string)
-                    .to_vec(),
-                cwd: selection.cwd.clone(),
-                env_policy: None,
-                shell_snapshot: None,
-                env: Default::default(),
-                tty: false,
-                pipe_stdin: false,
-                arg0: None,
-                sandbox: None,
-                enforce_managed_network: false,
-                managed_network: None,
-                network_proxy: None,
-            })
-            .await?
-            .process;
-        let mut events = process.subscribe_events();
-        loop {
-            match events.recv().await? {
-                ExecProcessEvent::Exited { exit_code, .. } => {
-                    assert_eq!(exit_code, 0, "link the reference on the executor");
-                    break;
-                }
-                ExecProcessEvent::Output(_) => {}
-                event @ (ExecProcessEvent::Closed { .. } | ExecProcessEvent::Failed(_)) => {
-                    panic!("reference symlink process did not exit: {event:?}")
-                }
-            }
-        }
-    }
-    let package = format!(
-        "skill://reference-root/{}",
-        skill_dir
-            .inferred_native_path_string()
-            .replace('\\', "/")
-            .trim_start_matches('/')
-    );
-    let resource = format!("{package}/reference.md");
-    let mut thread_extension_init = ExtensionDataInit::new();
-    thread_extension_init.insert(vec![SelectedCapabilityRoot {
-        id: "reference-root".to_string(),
-        location: CapabilityRootLocation::Environment {
-            environment_id: selection.environment_id.clone(),
-            path: if matches!(read, ExecutorReferenceRead::Granted) {
-                skill_dir.clone()
-            } else {
-                selection.cwd.clone()
-            },
-        },
-    }]);
-    let mut config = test.config.clone();
-    if matches!(read, ExecutorReferenceRead::Granted) {
-        config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
-        config.features.enable(Feature::RequestPermissionsTool)?;
-    }
-    let (root_access, restricted_path) = if matches!(read, ExecutorReferenceRead::Granted) {
-        (FileSystemAccessMode::Deny, policy_skill_dir.clone())
-    } else {
-        (
-            FileSystemAccessMode::Read,
-            policy_skill_dir.join("reference.md")?,
-        )
-    };
-    config
-        .permissions
-        .set_permission_profile(PermissionProfile::from_runtime_permissions(
-            &FileSystemSandboxPolicy::restricted(vec![
-                FileSystemSandboxEntry::new(
-                    FileSystemPath::Special {
-                        value: FileSystemSpecialPath::Root,
-                    },
-                    root_access,
-                ),
-                FileSystemSandboxEntry::new(
-                    FileSystemPath::Path {
-                        path: restricted_path,
-                    },
-                    restricted_path_access,
-                ),
-            ]),
-            NetworkSandboxPolicy::Restricted,
-        ))?;
-    let thread = test
-        .thread_manager
-        .start_thread(StartThreadOptions {
-            environments: Some(vec![selection.into_request()]),
-            thread_extension_init,
-            ..StartThreadOptions::new(config)
-        })
-        .await?;
-    let requested_permissions = RequestPermissionProfile {
-        file_system: Some(FileSystemPermissions::from_read_write_path_uris(
-            Some(vec![if matches!(read, ExecutorReferenceRead::Granted) {
-                policy_skill_dir
-                    .parent()
-                    .expect("skill directory has a parent")
-                    .join("reference.md")?
-            } else {
-                policy_skill_dir.join("reference.md")?
-            }]),
-            /*write*/ None,
-        )),
-        ..Default::default()
-    };
-    let mut response_sequence = Vec::new();
-    if matches!(read, ExecutorReferenceRead::Granted) {
-        // Separate responses ensure the denied read finishes before approval can be requested.
-        response_sequence.push(sse(vec![
-            ev_response_created("resp-before-grant"),
-            responses::ev_function_call_with_namespace(
-                "read-before-grant",
-                "skills",
-                "read",
-                &json!({"package": package, "resource": resource}).to_string(),
-            ),
-            ev_completed("resp-before-grant"),
-        ]));
-        response_sequence.push(sse(vec![
-            ev_response_created("resp-grant"),
-            responses::ev_function_call(
-                "grant-reference",
-                "request_permissions",
-                &json!({"reason": "Read", "permissions": requested_permissions}).to_string(),
-            ),
-            ev_completed("resp-grant"),
-        ]));
-    }
-    // The next model step captures any newly approved permissions.
-    response_sequence.push(sse(vec![
-        ev_response_created("resp-read"),
-        responses::ev_function_call_with_namespace(
-            "read-reference",
-            "skills",
-            "read",
-            &json!({ "package": package, "resource": resource }).to_string(),
-        ),
-        ev_completed("resp-read"),
-    ]));
-    response_sequence.push(sse(vec![
-        ev_response_created("resp-2"),
-        ev_completed("resp-2"),
-    ]));
-    let response = responses::mount_sse_sequence(&server, response_sequence).await;
-    thread
-        .thread
-        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
-            text: "Read the executor skill reference.".to_string(),
-            text_elements: Vec::new(),
-        }]))
-        .await?;
-    if matches!(read, ExecutorReferenceRead::Granted) {
-        let event = wait_for_event(&thread.thread, |event| {
-            matches!(
-                event,
-                EventMsg::RequestPermissions(_) | EventMsg::TurnComplete(_)
-            )
-        })
-        .await;
-        let EventMsg::RequestPermissions(request) = event else {
-            panic!("expected request_permissions before completion: {event:?}");
-        };
-        thread
-            .thread
-            .submit(Op::RequestPermissionsResponse {
-                id: request.call_id,
-                response: RequestPermissionsResponse {
-                    permissions: requested_permissions,
-                    scope: PermissionGrantScope::Turn,
-                    strict_auto_review: false,
-                },
-            })
-            .await?;
-    }
-    wait_for_event(&thread.thread, |event| {
-        matches!(event, EventMsg::TurnComplete(_))
-    })
-    .await;
-    let output = response
-        .requests()
-        .last()
-        .expect("final model request includes the reference read")
-        .function_call_output_text("read-reference")
-        .expect("skills.read should return a tool result");
-    if matches!(read, ExecutorReferenceRead::Granted) {
-        assert_eq!(
-            response.requests()[1]
-                .function_call_output_text("read-before-grant")
-                .expect("the earlier skills.read should return a tool result"),
-            "failed to read skill resource",
-        );
-    }
-    if matches!(read, ExecutorReferenceRead::Denied) {
-        assert_eq!(output, "failed to read skill resource");
-    } else if matches!(
-        read,
-        ExecutorReferenceRead::Allowed | ExecutorReferenceRead::Granted
-    ) {
-        assert_eq!(
-            serde_json::from_str::<Value>(&output)?,
-            json!({
-                "resource": resource,
-                "contents": contents,
-                "skill_root": skill_dir.inferred_native_path_string(),
-                "next_cursor": null,
-            })
-        );
-    } else {
-        let page: Value = serde_json::from_str(&output)?;
-        let cursor = page["next_cursor"]
-            .as_str()
-            .expect("reference needs another page");
-        let first_contents = page["contents"].as_str().expect("first page contents");
-        assert_eq!(
-            page,
-            json!({
-                "resource": resource,
-                "contents": &contents[..first_contents.len()],
-                "skill_root": skill_dir.inferred_native_path_string(),
-                "next_cursor": cursor,
-            })
-        );
-        if matches!(read, ExecutorReferenceRead::EditedContinuation) {
-            file_system
-                .write_file(
-                    &skill_dir.join("reference.md")?,
-                    b"edited reference".to_vec(),
-                    Default::default(),
-                    /*sandbox*/ None,
-                )
-                .await?;
-        }
-        let response = responses::mount_sse_sequence(
-            &server,
-            vec![
-                sse(vec![
-                    ev_response_created("resp-3"),
-                    responses::ev_function_call_with_namespace(
-                        "continue-reference",
-                        "skills",
-                        "read",
-                        &json!({"package": package, "resource": resource, "cursor": cursor})
-                            .to_string(),
-                    ),
-                    ev_completed("resp-3"),
-                ]),
-                sse(vec![ev_response_created("resp-4"), ev_completed("resp-4")]),
-            ],
-        )
-        .await;
-        let mut input = TurnInputRequest::user_input(vec![UserInput::Text {
-            text: "Read the next page of the executor reference.".to_string(),
-            text_elements: Vec::new(),
-        }]);
-        if matches!(read, ExecutorReferenceRead::DeniedContinuation) {
-            let permissions = PermissionProfile::from_runtime_permissions(
-                &FileSystemSandboxPolicy::restricted(vec![
-                    FileSystemSandboxEntry::new(
-                        FileSystemPath::Special {
-                            value: FileSystemSpecialPath::Root,
-                        },
-                        FileSystemAccessMode::Read,
-                    ),
-                    FileSystemSandboxEntry::new(
-                        FileSystemPath::Path {
-                            path: policy_skill_dir.join("reference.md")?,
-                        },
-                        FileSystemAccessMode::Deny,
-                    ),
-                ]),
-                NetworkSandboxPolicy::Restricted,
-            );
-            let (sandbox_policy, permission_profile) =
-                turn_permission_fields(permissions, test.config.cwd.as_path());
-            input = input.with_thread_settings(ThreadSettingsOverrides {
-                sandbox_policy: Some(sandbox_policy),
-                permission_profile,
-                ..Default::default()
-            });
-        }
-        thread.thread.start_or_steer_turn(input).await?;
-        wait_for_event(&thread.thread, |event| {
-            matches!(event, EventMsg::TurnComplete(_))
-        })
-        .await;
-        let output = response.requests()[1]
-            .function_call_output_text("continue-reference")
-            .expect("skills.read continuation should return a tool result");
-        match read {
-            ExecutorReferenceRead::Continuation | ExecutorReferenceRead::EditedContinuation => {
-                assert_eq!(
-                    serde_json::from_str::<Value>(&output)?,
-                    json!({
-                        "resource": resource,
-                        "contents": &contents[first_contents.len()..],
-                        "skill_root": skill_dir.inferred_native_path_string(),
-                        "next_cursor": null,
-                    })
-                )
-            }
-            ExecutorReferenceRead::DeniedContinuation => {
-                assert_eq!(output, "failed to read skill resource")
-            }
-            ExecutorReferenceRead::Allowed
-            | ExecutorReferenceRead::Denied
-            | ExecutorReferenceRead::Granted => {
-                unreachable!("single-page cases handled above")
-            }
-        }
-    }
-    Ok(())
-}
-
 /// Live executor prompts reject oversized resources without rewriting earlier injected content.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn explicit_executor_skill_prompt_rejects_oversized_resource() -> Result<()> {
@@ -1827,7 +1337,6 @@ async fn explicit_executor_skill_prompt_rejects_oversized_resource() -> Result<(
             &skill_path,
             FIRST_BODY.as_bytes().to_vec(),
             Default::default(),
-            /*sandbox*/ None,
         )
         .await?;
     let catalog = SkillCatalog {
@@ -1845,13 +1354,7 @@ async fn explicit_executor_skill_prompt_rejects_oversized_resource() -> Result<(
         warnings: Vec::new(),
     };
     let environment_manager = match environment.exec_server_url() {
-        Some(url) => {
-            EnvironmentManager::create_for_tests(
-                Some(url.to_string()),
-                /*local_runtime_paths*/ None,
-            )
-            .await
-        }
+        Some(url) => EnvironmentManager::create_for_tests(Some(url.to_string())).await,
         None => EnvironmentManager::default_for_tests(),
     };
     let (event_tx, event_rx) = std::sync::mpsc::channel();
@@ -1897,12 +1400,7 @@ async fn explicit_executor_skill_prompt_rejects_oversized_resource() -> Result<(
     assert_eq!(first_prompts, expected_prompts);
 
     file_system
-        .write_file(
-            &skill_path,
-            vec![b'x'; 1024 * 1024 + 1],
-            Default::default(),
-            /*sandbox*/ None,
-        )
+        .write_file(&skill_path, vec![b'x'; 1024 * 1024 + 1], Default::default())
         .await?;
     let second_response = mount_sse_once(
         &server,
@@ -2249,10 +1747,7 @@ async fn assert_catalog_model_switch(max_context_tokens: Option<usize>) -> Resul
         .with_extensions(Arc::new(extensions.build()))
         .with_config(move |config| {
             configure_catalog_test(config);
-            config
-                .features
-                .enable(Feature::StepModelSwitching)
-                .expect("model switching");
+            config.features.enable(Feature::StepModelSwitching);
             config.skill_max_context_tokens =
                 max_context_tokens.and_then(std::num::NonZeroUsize::new);
             let template = bundled_models_response()
@@ -2941,10 +2436,7 @@ async fn production_turn_keeps_full_snapshot_host_skill_prompt() -> Result<()> {
         .with_extensions(extensions)
         .with_config(|config| {
             configure_catalog_test(config);
-            config
-                .features
-                .enable(Feature::SkipHostSkillDiscovery)
-                .expect("host skill provider must override the discovery opt-out");
+            config.features.enable(Feature::SkipHostSkillDiscovery);
         });
     let test = builder.build_with_auto_env(&server).await?;
 
@@ -3062,22 +2554,15 @@ async fn production_turn_keeps_rebalanced_catalogs_stable_after_compaction_and_r
             model_info.max_context_window = None;
         })
         .with_config(|config| {
-            config
-                .features
-                .enable(Feature::StableEnvironmentTools)
-                .expect("enable stable environment tools");
+            config.features.enable(Feature::StableEnvironmentTools);
             configure_catalog_test(config);
             config.cloud_skill_enabled = true;
             config.model_provider.name = "Skills compaction test".to_string();
             config.model_post_turn_compact_threshold_percent = 50;
+            config.features.enable(Feature::DeferredExecutor);
             config
                 .features
-                .enable(Feature::DeferredExecutor)
-                .expect("enable deferred executor");
-            config
-                .features
-                .disable(Feature::ExecutorCapabilityDiscovery)
-                .expect("disable executor capability discovery");
+                .disable(Feature::ExecutorCapabilityDiscovery);
         });
     // The executor below runs in this process, so use host-local workspace paths.
     let test = builder.build(&server).await?;
@@ -3086,15 +2571,12 @@ async fn production_turn_keeps_rebalanced_catalogs_stable_after_compaction_and_r
     let executor_address = listener.local_addr()?;
     let executor_url = format!("ws://{executor_address}");
     drop(listener);
-    let runtime_paths = codex_exec_server::ExecServerRuntimeOptions::new(
-        std::env::current_exe()?,
-        /*codex_linux_sandbox_exe*/ None,
-    )?;
     let http_client_factory = test.config.http_client_factory();
     let server_url = executor_url.clone();
-    let executor = tokio::spawn(async move {
-        codex_exec_server::run_main(&server_url, runtime_paths, http_client_factory).await
-    });
+    let executor =
+        tokio::spawn(
+            async move { codex_exec_server::run_main(&server_url, http_client_factory).await },
+        );
     tokio::time::timeout(Duration::from_secs(5), async {
         while tokio::net::TcpStream::connect(executor_address)
             .await
@@ -3169,11 +2651,6 @@ async fn production_turn_keeps_rebalanced_catalogs_stable_after_compaction_and_r
     .await;
 
     let mut ready_config = environment_config_for_selection(&test.config, &pending_selection);
-    // This fixture supplies its own skill catalogs; do not inherit the executor host's MCP servers.
-    ready_config.mcp_policy = Some(EnvironmentMcpPolicy {
-        servers: Some(Default::default()),
-        ..Default::default()
-    });
     ready_config.selected_capability_roots = vec![SelectedCapabilityRoot {
         id: "skills".to_string(),
         location: CapabilityRootLocation::Environment {

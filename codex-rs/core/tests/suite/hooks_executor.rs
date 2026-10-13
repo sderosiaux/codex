@@ -1,18 +1,13 @@
 use anyhow::Context;
 use anyhow::Result;
 use codex_config::McpServerConfig;
-use codex_config::test_support::CloudConfigBundleFixture;
 use codex_core::EnvironmentConfig;
 use codex_core::StartThreadOptions;
 use codex_core::TurnInputRequest;
-use codex_core::windows_sandbox::WindowsSandboxLevelExt;
 use codex_exec_server::CreateDirectoryOptions;
-use codex_exec_server::ExecServerRuntimeOptions;
 use codex_features::Feature;
 use codex_protocol::capabilities::CapabilityRootLocation;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
-use codex_protocol::config_types::WindowsSandboxLevel;
-use codex_protocol::models::PermissionProfileSnapshot;
 use codex_protocol::protocol::EnvironmentConfigState;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
@@ -126,8 +121,7 @@ async fn executor_stop_hook_uses_plugin_policy_refreshed_during_turn() -> Result
         test_codex().with_config(|config| {
             config
                 .features
-                .enable(Feature::DefaultModeRequestUserInput)
-                .expect("enable request_user_input");
+                .enable(Feature::DefaultModeRequestUserInput);
         }),
         &[("computer-use@openai-bundled", computer_use_hook_manifest())],
         vec![
@@ -390,19 +384,10 @@ async fn executor_stop_hook_rejects_mismatched_environment() -> Result<()> {
             let executor_address = listener.local_addr()?;
             let executor_url = format!("ws://{executor_address}");
             drop(listener);
-            let runtime_paths = ExecServerRuntimeOptions::new(
-                std::env::current_exe()?,
-                /*codex_linux_sandbox_exe*/ None,
-            )?;
             let http_client_factory = fixture.test.config.http_client_factory();
             let executor_url_for_server = executor_url.clone();
             let executor = tokio::spawn(async move {
-                codex_exec_server::run_main(
-                    &executor_url_for_server,
-                    runtime_paths,
-                    http_client_factory,
-                )
-                .await
+                codex_exec_server::run_main(&executor_url_for_server, http_client_factory).await
             });
             tokio::time::timeout(Duration::from_secs(5), async {
                 loop {
@@ -468,16 +453,13 @@ async fn executor_stop_hook_rejects_mismatched_environment() -> Result<()> {
     let mut mismatched_config = fixture.test.config.clone();
     let mut node_repl = mismatched_config
         .mcp_servers
-        .get()
         .get("node_repl")
         .context("Node REPL MCP server should be configured")?
         .clone();
     node_repl.environment_id = mismatched_environment_id.to_string();
-    mismatched_config.mcp_servers.set(
-        [(String::from("node_repl"), node_repl)]
-            .into_iter()
-            .collect(),
-    )?;
+    mismatched_config.mcp_servers = [(String::from("node_repl"), node_repl)]
+        .into_iter()
+        .collect();
     let _ = fixture
         .test
         .codex
@@ -523,28 +505,19 @@ async fn executor_stop_hook_rejects_mismatched_environment() -> Result<()> {
     Ok(())
 }
 
-#[test_case("Stop", "", "", 1; "enabled")]
-#[test_case("Interrupt", "", "", 1; "interrupt_enabled")]
-#[test_case("SubagentStop", "", "", 1; "subagent_enabled")]
+#[test_case("Stop", "", 1; "enabled")]
+#[test_case("Interrupt", "", 1; "interrupt_enabled")]
+#[test_case("SubagentStop", "", 1; "subagent_enabled")]
 #[test_case(
     "Stop",
     "[apps.connector_openai_browser]\nenabled = false\n",
-    "",
     0;
     "user_disabled"
-)]
-#[test_case(
-    "Stop",
-    "[apps.connector_openai_browser]\nenabled = true\n",
-    "[apps.connector_openai_browser]\nenabled = false\n",
-    0;
-    "managed_disabled"
 )]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn executor_browser_and_computer_use_cleanup_hooks_use_separate_mcp_routes(
     hook_event: &'static str,
     user_config: &'static str,
-    requirements: &'static str,
     expected_browser_calls: usize,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
@@ -610,14 +583,10 @@ async fn executor_browser_and_computer_use_cleanup_hooks_use_separate_mcp_routes
         ("computer-use@openai-bundled", computer_use_hook_manifest()),
     ];
     let mut fixture = executor_plugin_hook_fixture(
-        apps_enabled_builder(apps.chatgpt_base_url)
-            .with_pre_build_hook(move |home| {
-                std::fs::write(home.join("config.toml"), user_config)
-                    .expect("write Browser app configuration");
-            })
-            .with_cloud_config_bundle(
-                CloudConfigBundleFixture::loader_with_enterprise_requirement(requirements),
-            ),
+        apps_enabled_builder(apps.chatgpt_base_url).with_pre_build_hook(move |home| {
+            std::fs::write(home.join("config.toml"), user_config)
+                .expect("write Browser app configuration");
+        }),
         &plugins,
         vec![if hook_event == "Interrupt" {
             completed_turn_response("browser-turn").set_delay(Duration::from_secs(60))
@@ -852,27 +821,16 @@ async fn executor_plugin_hook_fixture(
 
     let node_repl_url = format!("{}/node-repl", server.uri());
     let mut builder = builder.with_config(move |config| {
-        config
-            .features
-            .enable(Feature::ExecutorCapabilityDiscovery)
-            .expect("enable executor capability discovery");
-        config
-            .features
-            .disable(Feature::CodexHooks)
-            .expect("disable ordinary hooks");
+        config.features.enable(Feature::ExecutorCapabilityDiscovery);
+        config.features.disable(Feature::CodexHooks);
         let node_repl: McpServerConfig = serde_json::from_value(json!({
             "url": node_repl_url,
             "environment_id": remote_aware_environment_id(),
         }))
         .expect("valid Node REPL MCP server configuration");
-        config
-            .mcp_servers
-            .set(
-                [(String::from("node_repl"), node_repl)]
-                    .into_iter()
-                    .collect(),
-            )
-            .expect("configure Node REPL MCP server");
+        config.mcp_servers = [(String::from("node_repl"), node_repl)]
+            .into_iter()
+            .collect();
     });
     let test = builder.build_with_auto_env(&server).await?;
     wait_for_mcp_server(&test.codex, "node_repl").await?;
@@ -891,7 +849,6 @@ async fn executor_plugin_hook_fixture(
                     recursive: true,
                     follow_symlinks: true,
                 },
-                /*sandbox*/ None,
             )
             .await?;
         filesystem
@@ -899,7 +856,6 @@ async fn executor_plugin_hook_fixture(
                 &manifest_path,
                 serde_json::to_vec(manifest)?,
                 Default::default(),
-                /*sandbox*/ None,
             )
             .await?;
         plugin_roots.push((*plugin_id, plugin_root));
@@ -941,16 +897,7 @@ impl ExecutorHookFixture {
                 EnvironmentConfig {
                     allow_login_shell: false,
                     workspace_roots: selection.workspace_roots.clone(),
-                    permission_profile: PermissionProfileSnapshot::legacy(
-                        self.test.config.permissions.permission_profile().clone(),
-                    ),
                     shell_environment_policy: Default::default(),
-                    windows_sandbox_level: WindowsSandboxLevel::from_config(&self.test.config),
-                    windows_sandbox_type: self.test.config.permissions.windows_sandbox_type,
-                    use_legacy_landlock: self.test.config.features.use_legacy_landlock(),
-                    exec_policy: None,
-                    mcp_policy: None,
-                    network_policy: None,
                     selected_capability_roots: self
                         .plugin_roots
                         .iter()

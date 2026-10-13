@@ -1,6 +1,5 @@
 //! Trusted reasoning-effort updates follow surviving history and the next turn's selected settings.
 
-use codex_config::test_support::CloudConfigBundleFixture;
 use codex_core::ForkSnapshot;
 use codex_core::RecoverTurnRequest;
 use codex_core::StartIfIdleSubmission;
@@ -46,10 +45,7 @@ fn override_builder() -> TestCodexBuilder {
             model.supports_reasoning_effort_updates = true;
         })
         .with_config(|config| {
-            config
-                .features
-                .enable(Feature::ReasoningEffortOverride)
-                .expect("enable reasoning effort overrides");
+            config.features.enable(Feature::ReasoningEffortOverride);
             config.model_reasoning_effort = Some(ReasoningEffort::Medium);
         })
 }
@@ -202,10 +198,7 @@ async fn prediction_fork_pins_effort_from_parent_with_overrides_disabled(
             model.default_reasoning_level = Some(ReasoningEffort::Low);
         })
         .with_config(|config| {
-            config
-                .features
-                .disable(Feature::ReasoningEffortOverride)
-                .expect("disable reasoning effort overrides");
+            config.features.disable(Feature::ReasoningEffortOverride);
             config.model_reasoning_effort = Some(ReasoningEffort::High);
             config.model_provider.supports_websockets = false;
         })
@@ -230,7 +223,7 @@ async fn prediction_fork_pins_effort_from_parent_with_overrides_disabled(
     options
         .config
         .features
-        .enable(Feature::ReasoningEffortOverride)?;
+        .enable(Feature::ReasoningEffortOverride);
     options.thread_source = Some(ThreadSource::Feature("composer_predictions".to_string()));
     let child = test
         .thread_manager
@@ -292,8 +285,6 @@ enum WorkerHistory {
     Ephemeral,
 }
 
-#[test_case(SessionSource::Internal(InternalSessionSource::Guardian), ThreadSource::GuardianReview, WorkerHistory::Persisted, WorkerOverrides::Disabled; "internal guardian")]
-#[test_case(SessionSource::SubAgent(SubAgentSource::Other("guardian".to_string())), ThreadSource::GuardianReview, WorkerHistory::Persisted, WorkerOverrides::Disabled; "legacy guardian")]
 #[test_case(SessionSource::Internal(InternalSessionSource::MemoryConsolidation), ThreadSource::MemoryConsolidation, WorkerHistory::Persisted, WorkerOverrides::Disabled; "memory consolidation")]
 #[test_case(SessionSource::SubAgent(SubAgentSource::MemoryConsolidation), ThreadSource::MemoryConsolidation, WorkerHistory::Persisted, WorkerOverrides::Disabled; "legacy memory consolidation")]
 #[test_case(SessionSource::Cli, ThreadSource::Feature("thread_title".to_string()), WorkerHistory::Ephemeral, WorkerOverrides::Disabled; "ephemeral thread title")]
@@ -316,12 +307,10 @@ async fn worker_reasoning_overrides_follow_effective_client_policy(
         );
     }
     let mut test = override_builder()
-        .with_cloud_config_bundle(
-            CloudConfigBundleFixture::loader_with_enterprise_requirement(
-                "[features]\nreasoning_effort_override = true\n",
-            ),
-        )
-        .with_config(|config| config.model_provider.supports_websockets = false)
+        .with_config(|config| {
+            config.features.enable(Feature::ReasoningEffortOverride);
+            config.model_provider.supports_websockets = false;
+        })
         .build_with_auto_env(&server)
         .await?;
     test.submit_text_turn("first parent turn").await?;
@@ -337,7 +326,7 @@ async fn worker_reasoning_overrides_follow_effective_client_policy(
     let parent = Arc::clone(&test.codex);
     parent.shutdown_and_wait().await?;
 
-    // Fork real parent history while managed requirements keep the feature enabled.
+    // Fork real parent history with the feature enabled in the parent config.
     let mut config = test.config.clone();
     config.ephemeral = history == WorkerHistory::Ephemeral;
     assert!(config.features.enabled(Feature::ReasoningEffortOverride));
@@ -790,8 +779,7 @@ async fn reasoning_effort_override_websocket_prewarm_preserves_baseline(
         config.model_provider.supports_websockets = true;
         config
             .features
-            .set_enabled(Feature::ReasoningEffortOverride, feature_enabled)
-            .expect("configure reasoning effort overrides");
+            .set_enabled(Feature::ReasoningEffortOverride, feature_enabled);
     };
     let mut builder = override_builder().with_config(configure_prewarm.clone());
     let test = if !matches!(startup, PrewarmStartup::New) {
@@ -802,10 +790,7 @@ async fn reasoning_effort_override_websocket_prewarm_preserves_baseline(
         .await;
         let mut previous = override_builder()
             .with_config(|config| {
-                config
-                    .features
-                    .disable(Feature::ReasoningEffortOverride)
-                    .expect("disable reasoning effort overrides for source history");
+                config.features.disable(Feature::ReasoningEffortOverride);
                 config.model_provider.supports_websockets = false;
             })
             .build_with_auto_env(&server)
@@ -1052,10 +1037,7 @@ impl OverrideUnavailable {
     fn builder(self) -> TestCodexBuilder {
         match self {
             Self::FeatureDisabled => override_builder().with_config(|config| {
-                config
-                    .features
-                    .disable(Feature::ReasoningEffortOverride)
-                    .expect("disable overrides");
+                config.features.disable(Feature::ReasoningEffortOverride);
             }),
             Self::NonOpenAiProvider => override_builder().with_config(|config| {
                 config.model_provider.name = "unsupported provider".into();

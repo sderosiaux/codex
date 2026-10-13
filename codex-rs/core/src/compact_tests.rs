@@ -1,9 +1,5 @@
 use super::*;
 use crate::session::tests::make_session_and_context_with_auth_and_config_and_rx;
-use crate::tools::context::ToolCallSource;
-use crate::tools::context::ToolPayload;
-use crate::tools::router::ToolCall;
-use codex_code_mode::CellId;
 use codex_features::Feature;
 use codex_history::CodexHarnessMetadata;
 use codex_history::ResponseItemEnvelope;
@@ -16,7 +12,6 @@ use codex_protocol::models::ExecutedToolCall;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ImageReference;
 use codex_protocol::models::InternalChatMessageMetadataPassthrough;
-use codex_tools::ToolName;
 use core_test_support::responses;
 use core_test_support::skip_if_no_network;
 use pretty_assertions::assert_eq;
@@ -39,10 +34,7 @@ async fn local_compaction_respects_tool_metadata_state(
             config.model = Some("gpt-5.2".to_string());
             config.model_provider = provider;
             config.model_provider.supports_websockets = false;
-            config
-                .features
-                .enable(Feature::ExecutedToolCallMetadata)
-                .expect("enable tool-call metadata");
+            config.features.enable(Feature::ExecutedToolCallMetadata);
         },
     )
     .await;
@@ -84,46 +76,10 @@ async fn local_compaction_respects_tool_metadata_state(
         output.mark_tool_calls_complete();
         items.push(output);
     }
-    let cell = CellId::new("local-compaction-cell".to_string());
-    let nested_call = ExecutedToolCall::new("nested_tool".to_string(), json!({}));
-    let recorder = &session.services.executed_tool_calls;
-    recorder.start_cell(&cell, "exec");
-    recorder.record_tool_call(
-        &ToolCall {
-            tool_name: ToolName::plain("nested_tool"),
-            call_id: "nested".to_string(),
-            payload: ToolPayload::Function {
-                arguments: "{}".to_string(),
-            },
-            encrypted_function_args: None,
-        },
-        &ToolCallSource::CodeMode {
-            cell_id: cell.as_str().to_string(),
-            runtime_tool_call_id: "nested".to_string(),
-        },
-        &StepContext::for_test(Arc::clone(&turn)),
-    );
-    recorder.finish_cell_recording(&cell);
-    items.push(serde_json::from_value(json!({
-        "type": "custom_tool_call", "call_id": "exec", "name": "exec", "input": "",
-    }))?);
-    items.push(serde_json::from_value(json!({
-        "type": "custom_tool_call_output", "call_id": "exec", "output": "done",
-    }))?);
     session
         .record_conversation_items(&turn, turn.model_info(), &items)
         .await;
     let live_history = session.clone_history().await;
-    let mut expected_code_mode_output = live_history
-        .raw_items()
-        .find(|item| matches!(item, ResponseItem::CustomToolCallOutput { .. }))
-        .expect("Code Mode output recorded")
-        .clone();
-    if metadata_enabled {
-        expected_code_mode_output.append_executed_tool_calls(vec![nested_call]);
-        expected_code_mode_output.set_tool_call_cell_id("exec");
-        expected_code_mode_output.mark_tool_calls_complete();
-    }
     let outputs = live_history
         .raw_items()
         .filter_map(|item| match item {
@@ -147,7 +103,7 @@ async fn local_compaction_respects_tool_metadata_state(
     if !metadata_enabled {
         let current_config = session.get_config().await;
         let mut config = current_config.as_ref().clone();
-        config.features.disable(Feature::ExecutedToolCallMetadata)?;
+        config.features.disable(Feature::ExecutedToolCallMetadata);
         let _ = session.refresh_runtime_config(current_config, config).await;
     }
 
@@ -181,10 +137,6 @@ async fn local_compaction_respects_tool_metadata_state(
 
     let request = mock.single_request();
     assert!(request.inputs_of_type("compaction_trigger").is_empty());
-    assert_eq!(
-        request.custom_tool_call_output("exec"),
-        serde_json::to_value(expected_code_mode_output)?,
-    );
     for mut output in outputs {
         let call_id = output["call_id"].as_str().expect("source call id");
         let compact_output = request.function_call_output(call_id);

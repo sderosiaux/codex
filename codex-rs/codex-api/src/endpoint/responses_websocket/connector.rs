@@ -1,5 +1,5 @@
 //! Establishes Responses sockets with caller-owned TLS and proxy configuration.
-//! Connector reuse never caches authentication or bypasses per-connection destination policy.
+//! Connector reuse never caches authentication.
 
 use super::ResponsesWebsocketClient;
 use super::ResponsesWebsocketConnection;

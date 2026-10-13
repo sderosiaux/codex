@@ -12,7 +12,6 @@ use anyhow::anyhow;
 use chrono::DateTime;
 use chrono::Local;
 use chrono::Utc;
-use codex_config::test_support::CloudConfigBundleFixture;
 use codex_core::SleepFuture;
 use codex_core::TimeFuture;
 use codex_core::TimeProvider;
@@ -23,7 +22,6 @@ use codex_features::CurrentTimeSource;
 use codex_features::Feature;
 use codex_model_provider_info::built_in_model_providers;
 use codex_protocol::ThreadId;
-use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::EventMsg;
@@ -67,7 +65,6 @@ enum ClockSetup {
     OrdinaryEffort,
     ModelTools,
     ExplicitlyDisabled,
-    RequiredOff,
 }
 
 struct TestTimeProvider {
@@ -137,10 +134,7 @@ fn enable_current_time_reminder(
     clock_source: CurrentTimeSource,
 ) {
     config.include_environment_context = false;
-    config
-        .features
-        .enable(Feature::CurrentTimeReminder)
-        .expect("test config should allow current-time reminders");
+    config.features.enable(Feature::CurrentTimeReminder);
     config.current_time_reminder = Some(CurrentTimeReminderConfig {
         reminder_interval_seconds: interval,
         clock_source,
@@ -255,8 +249,7 @@ async fn current_time_reminders_follow_time_interval_and_persist_in_history() ->
         .build(&server)
         .await?;
 
-    test.submit_turn_with_permission_profile("first turn", PermissionProfile::Disabled)
-        .await?;
+    test.submit_turn("first turn").await?;
     test.submit_turn("second turn").await?;
 
     let requests = responses.requests();
@@ -354,8 +347,7 @@ async fn current_time_reminders_can_follow_only_user_or_tool_outputs() -> Result
         .build(&server)
         .await?;
 
-    test.submit_turn_with_permission_profile("first turn", PermissionProfile::Disabled)
-        .await?;
+    test.submit_turn("first turn").await?;
 
     let requests = responses.requests();
     assert_eq!(requests.len(), 3);
@@ -376,7 +368,6 @@ async fn current_time_reminders_can_follow_only_user_or_tool_outputs() -> Result
 #[test_case(ClockSetup::OrdinaryEffort; "ordinary_effort")]
 #[test_case(ClockSetup::ModelTools; "model_tools_without_reminders")]
 #[test_case(ClockSetup::ExplicitlyDisabled; "explicitly_disabled")]
-#[test_case(ClockSetup::RequiredOff; "required_off")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn system_time_source_adds_current_time_reminder(clock_setup: ClockSetup) -> Result<()> {
     skip_if_no_network!(Ok(()));
@@ -401,9 +392,7 @@ async fn system_time_source_adds_current_time_reminder(clock_setup: ClockSetup) 
                 ClockSetup::ModelTools | ClockSetup::ExplicitlyDisabled => {
                     Some("[features]\ncurrent_time_reminder = false\n")
                 }
-                ClockSetup::Persistent | ClockSetup::OrdinaryEffort | ClockSetup::RequiredOff => {
-                    None
-                }
+                ClockSetup::Persistent | ClockSetup::OrdinaryEffort => None,
             };
             if let Some(config) = config {
                 std::fs::write(home.join("config.toml"), config)
@@ -416,17 +405,9 @@ async fn system_time_source_adds_current_time_reminder(clock_setup: ClockSetup) 
                 ClockSetup::OrdinaryEffort | ClockSetup::ModelTools => ReasoningEffort::High,
                 ClockSetup::Configured
                 | ClockSetup::Persistent
-                | ClockSetup::ExplicitlyDisabled
-                | ClockSetup::RequiredOff => ReasoningEffort::Persistent,
+                | ClockSetup::ExplicitlyDisabled => ReasoningEffort::Persistent,
             });
         });
-    if matches!(clock_setup, ClockSetup::RequiredOff) {
-        builder = builder.with_cloud_config_bundle(
-            CloudConfigBundleFixture::loader_with_enterprise_requirement(
-                "[features]\ncurrent_time_reminder = false\n",
-            ),
-        );
-    }
     let test = builder.build_with_auto_env(&server).await?;
 
     test.submit_text_turn("what time is it?").await?;
@@ -437,17 +418,12 @@ async fn system_time_source_adds_current_time_reminder(clock_setup: ClockSetup) 
         match clock_setup {
             ClockSetup::Configured => [true, false],
             ClockSetup::Persistent | ClockSetup::ModelTools => [true, true],
-            ClockSetup::OrdinaryEffort
-            | ClockSetup::ExplicitlyDisabled
-            | ClockSetup::RequiredOff => [false, false],
+            ClockSetup::OrdinaryEffort | ClockSetup::ExplicitlyDisabled => [false, false],
         }
     );
     if matches!(
         clock_setup,
-        ClockSetup::OrdinaryEffort
-            | ClockSetup::ModelTools
-            | ClockSetup::ExplicitlyDisabled
-            | ClockSetup::RequiredOff
+        ClockSetup::OrdinaryEffort | ClockSetup::ModelTools | ClockSetup::ExplicitlyDisabled
     ) {
         assert!(current_time_reminders(&request).is_empty());
         return Ok(());
@@ -489,15 +465,10 @@ async fn client_feature_map_can_disable_sleep_tool(
         })
         .with_config(move |config| {
             config.model_reasoning_effort = Some(reasoning_effort);
-            let mut features = config.features.get().clone();
-            features.apply_map(&BTreeMap::from([(
+            config.features.apply_map(&BTreeMap::from([(
                 "sleep_tool".to_string(),
                 sleep_tool_enabled,
             )]));
-            config
-                .features
-                .set(features)
-                .expect("test features should be allowed");
         })
         .build_with_auto_env(&server)
         .await?;
@@ -723,10 +694,7 @@ async fn opted_in_clock_failures_reach_the_model_without_aborting() -> Result<()
             config.model_auto_compact_token_limit = Some(200);
             enable_current_time_reminder(config, /*interval*/ 0, CurrentTimeSource::External);
             config.include_environment_context = true;
-            config
-                .features
-                .enable(Feature::NonfatalClockReadErrors)
-                .unwrap();
+            config.features.enable(Feature::NonfatalClockReadErrors);
         })
         .with_external_time_provider(Arc::new(FailingTimeProvider))
         .build_with_auto_env(&server)
@@ -799,10 +767,7 @@ async fn opted_in_clock_failures_are_reported_again_after_recovery() -> Result<(
     let test = test_codex()
         .with_config(|config| {
             enable_current_time_reminder(config, /*interval*/ 0, CurrentTimeSource::External);
-            config
-                .features
-                .enable(Feature::NonfatalClockReadErrors)
-                .unwrap();
+            config.features.enable(Feature::NonfatalClockReadErrors);
         })
         .with_external_time_provider(Arc::new(clock))
         .build_with_auto_env(&server)

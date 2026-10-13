@@ -28,10 +28,10 @@ pub(super) async fn spawn_review_thread(
         .await;
     // For reviews, disable web_search and view_image regardless of global settings.
     let mut review_features = sess.features.clone();
-    let _ = review_features.disable(Feature::WebSearchRequest);
-    let _ = review_features.disable(Feature::WebSearchCached);
-    let _ = review_features.disable(Feature::Goals);
-    let review_web_search_mode = WebSearchMode::Disabled;
+    review_features
+        .disable(Feature::WebSearchRequest)
+        .disable(Feature::WebSearchCached)
+        .disable(Feature::Goals);
 
     let review_prompt = resolved.prompt.clone();
     let model_info = review_model_info.clone();
@@ -57,15 +57,7 @@ pub(super) async fn spawn_review_thread(
             .map(|preset| preset.effort.clone())
             .or_else(|| review_model_info.default_reasoning_level.clone());
     }
-    if let Err(err) = per_turn_config.web_search_mode.set(review_web_search_mode) {
-        let fallback_value = per_turn_config.web_search_mode.value();
-        tracing::warn!(
-            error = %err,
-            ?review_web_search_mode,
-            ?fallback_value,
-            "review web_search_mode is disallowed by requirements; keeping constrained value"
-        );
-    }
+    per_turn_config.web_search_mode = WebSearchMode::Disabled;
 
     let session_source = parent_turn_context.session_source.clone();
     let (forked_from_thread_id, thread_source, service_tier) = {
@@ -81,10 +73,6 @@ pub(super) async fn spawn_review_thread(
                 .or_else(|| config.service_tier.clone()),
         )
     };
-    let auto_review_enabled = crate::guardian::routes_approval_policy_to_guardian(
-        per_turn_config.permissions.approval_policy.value(),
-        per_turn_config.approvals_reviewer,
-    );
     // The original config may retain a requested tier unsupported by the parent
     // model. Resolve it against the review model and the shared feature gate.
     selected.collaboration_mode.settings.model = model.clone();
@@ -100,20 +88,6 @@ pub(super) async fn spawn_review_thread(
     per_turn_config.service_tier = step_settings.service_tier.clone();
     let per_turn_config = Arc::new(per_turn_config);
     let review_turn_id = sub_id.to_string();
-    #[allow(deprecated)]
-    let windows_sandbox_selection = parent_turn_context
-        .initial_environments
-        .primary()
-        .map(TurnEnvironment::windows_sandbox_selection_for_turn_metadata)
-        .unwrap_or_else(|| {
-            crate::tools::sandboxing::configured_windows_sandbox_selection(
-                parent_turn_context
-                    .config
-                    .effective_local_windows_sandbox_type(),
-                parent_turn_context.windows_sandbox_level,
-                &codex_utils_path_uri::PathUri::from_abs_path(&parent_turn_context.cwd),
-            )
-        });
     let turn_metadata_state = Arc::new(TurnMetadataState::new(
         sess.session_id().to_string(),
         sess.thread_id().to_string(),
@@ -124,11 +98,6 @@ pub(super) async fn spawn_review_thread(
         review_turn_id.clone(),
         #[allow(deprecated)]
         parent_turn_context.cwd.clone(),
-        &parent_turn_context.permission_profile(),
-        windows_sandbox_selection,
-        parent_turn_context.network.is_some(),
-        auto_review_enabled,
-        &model_info,
     ));
 
     let review_turn_context = parent_turn_context.for_review(
@@ -159,7 +128,6 @@ pub(super) async fn spawn_review_thread(
             .spawn_git_enrichment_task(Arc::clone(&sess.services.git_root_discovery));
     }
     sess.abort_all_tasks(TurnAbortReason::Replaced).await;
-    sess.clear_connector_selection().await;
 
     // Announce entering review mode so UIs can switch modes.
     let item = TurnItem::EnteredReviewMode(EnteredReviewModeItem {

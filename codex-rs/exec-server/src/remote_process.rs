@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use codex_network_proxy::NetworkPolicyDecider;
 use tokio::sync::watch;
 use tracing::trace;
 
@@ -12,7 +11,6 @@ use crate::ExecProcessFuture;
 use crate::StartedExecProcess;
 use crate::client::LazyRemoteExecServerClient;
 use crate::client::Session;
-use crate::process::sandbox_type_from_protocol;
 use crate::protocol::ExecParams;
 use crate::protocol::ProcessSignal;
 use crate::protocol::ReadResponse;
@@ -36,32 +34,19 @@ impl RemoteProcess {
     async fn start(
         &self,
         params: ExecParams,
-        network_policy_decider: Option<Arc<dyn NetworkPolicyDecider>>,
     ) -> Result<StartedExecProcess, crate::ExecServerError> {
         let client = self.client.get().await?;
-        let session = client.start_process(params, network_policy_decider).await?;
-        let sandbox_type = sandbox_type_from_protocol(session.sandbox_type());
+        let session = client.start_process(params).await?;
 
         Ok(StartedExecProcess {
             process: Arc::new(RemoteExecProcess { session }),
-            sandbox_type,
         })
     }
 }
 
 impl ExecBackend for RemoteProcess {
     fn start(&self, params: ExecParams) -> ExecBackendFuture<'_> {
-        Box::pin(RemoteProcess::start(
-            self, params, /*network_policy_decider*/ None,
-        ))
-    }
-
-    fn start_with_network_policy_decider(
-        &self,
-        params: ExecParams,
-        decider: Arc<dyn NetworkPolicyDecider>,
-    ) -> ExecBackendFuture<'_> {
-        Box::pin(RemoteProcess::start(self, params, Some(decider)))
+        Box::pin(RemoteProcess::start(self, params))
     }
 }
 
@@ -128,7 +113,6 @@ impl ExecProcess for RemoteExecProcess {
 
 impl Drop for RemoteExecProcess {
     fn drop(&mut self) {
-        self.session.cancel_network_policy_decisions();
         let session = self.session.clone();
         tokio::spawn(async move {
             session.unregister().await;

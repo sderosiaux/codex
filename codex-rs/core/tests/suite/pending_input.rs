@@ -25,10 +25,8 @@ use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::models::ContentItem;
-use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InterAgentCommunication;
@@ -55,7 +53,6 @@ use core_test_support::streaming_sse::StreamingSseServer;
 use core_test_support::streaming_sse::start_streaming_sse_server;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::test_codex;
-use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
@@ -348,8 +345,6 @@ async fn submit_user_input(codex: &CodexThread, text: &str) {
 }
 
 async fn submit_danger_full_access_user_turn(test: &TestCodex, text: &str) {
-    let (sandbox_policy, permission_profile) =
-        turn_permission_fields(PermissionProfile::Disabled, test.config.cwd.as_path());
     test.codex
         .start_or_steer_turn(
             TurnInputRequest::user_input(vec![UserInput::Text {
@@ -358,9 +353,6 @@ async fn submit_danger_full_access_user_turn(test: &TestCodex, text: &str) {
             }])
             .with_thread_settings(ThreadSettingsOverrides {
                 environments: Some(local_requests(test.config.cwd.clone())),
-                approval_policy: Some(AskForApproval::Never),
-                sandbox_policy: Some(sandbox_policy),
-                permission_profile,
                 collaboration_mode: Some(CollaborationMode {
                     mode: ModeKind::Default,
                     settings: Settings {
@@ -406,11 +398,14 @@ async fn enqueue_queue_only_agent_mail(codex: &CodexThread, text: &str) {
 async fn submit_queue_only_agent_mail(codex: &CodexThread, text: &str) {
     enqueue_queue_only_agent_mail(codex, text).await;
     codex
-        .submit(Op::RealtimeConversationListVoices)
+        .submit(Op::ThreadSettings {
+            thread_settings: Default::default(),
+            reply: None,
+        })
         .await
-        .expect("submit list-voices barrier");
+        .expect("submit thread-settings barrier");
     wait_for_event(codex, |event| {
-        matches!(event, EventMsg::RealtimeConversationListVoicesResponse(_))
+        matches!(event, EventMsg::ThreadSettingsApplied(_))
     })
     .await;
 }
@@ -719,10 +714,7 @@ async fn steer_interrupts_wait_agent_and_is_sent_in_follow_up_request() {
     let codex = test_codex()
         .with_model("gpt-5.4")
         .with_config(|config| {
-            config
-                .features
-                .enable(Feature::MultiAgentV2)
-                .expect("test config should allow feature update");
+            config.features.enable(Feature::MultiAgentV2);
         })
         .build_with_streaming_server(&server)
         .await
@@ -799,10 +791,7 @@ async fn any_new_input_interrupts_sleep() {
     let test = test_codex()
         .with_model("gpt-5.4")
         .with_config(|config| {
-            config
-                .features
-                .enable(Feature::CurrentTimeReminder)
-                .expect("test config should allow current-time reminders");
+            config.features.enable(Feature::CurrentTimeReminder);
             config.current_time_reminder = Some(CurrentTimeReminderConfig {
                 sleep_tool: true,
                 ..CurrentTimeReminderConfig::default()
@@ -820,7 +809,7 @@ async fn any_new_input_interrupts_sleep() {
     wait_for_sleep_item_completed(&codex, FIRST_SLEEP_CALL_ID, SLEEP_DURATION_MS).await;
     wait_for_sleep_item_started(&codex, SECOND_SLEEP_CALL_ID, SLEEP_DURATION_MS).await;
 
-    // The list-voices barrier can consume the sleep completion that we need to observe next.
+    // The thread-settings barrier can consume the sleep completion that we need to observe next.
     enqueue_queue_only_agent_mail(&codex, "new mailbox input").await;
     wait_for_sleep_item_completed(&codex, SECOND_SLEEP_CALL_ID, SLEEP_DURATION_MS).await;
     wait_for_turn_complete(&codex).await;
@@ -1287,10 +1276,7 @@ async fn steer_interrupts_and_drains_websocket(discard_partial: bool) -> anyhow:
             model_info.use_responses_lite = true;
         })
         .with_config(|config| {
-            config
-                .features
-                .enable(Feature::InstantInterrupt)
-                .expect("enable InstantInterrupt feature");
+            config.features.enable(Feature::InstantInterrupt);
         })
         .build_with_websocket_server(&server)
         .await?;
@@ -1357,10 +1343,7 @@ async fn steer_during_stream_retry_skips_backoff() {
     let test = test_codex()
         .with_model("gpt-5.4")
         .with_config(|config| {
-            config
-                .features
-                .enable(Feature::InstantInterrupt)
-                .expect("enable InstantInterrupt feature");
+            config.features.enable(Feature::InstantInterrupt);
             config.model_provider.request_max_retries = Some(0);
             config.model_provider.stream_max_retries = Some(1);
         })
@@ -1408,10 +1391,7 @@ async fn steers_during_tool_drain_preserve_tool_output_and_each_input() {
     let test = test_codex()
         .with_model("gpt-5.4")
         .with_config(|config| {
-            config
-                .features
-                .enable(Feature::InstantInterrupt)
-                .expect("enable InstantInterrupt feature");
+            config.features.enable(Feature::InstantInterrupt);
         })
         .build_with_streaming_server(&server)
         .await
@@ -1508,29 +1488,11 @@ async fn steers_yield_exec_and_wait_without_stopping_the_cell(instant_interrupt:
         .with_model("test-gpt-5.1-codex")
         .with_config(move |config| {
             if instant_interrupt {
-                config
-                    .features
-                    .enable(Feature::InstantInterrupt)
-                    .expect("enable InstantInterrupt feature");
+                config.features.enable(Feature::InstantInterrupt);
             } else {
-                config
-                    .features
-                    .disable(Feature::InstantInterrupt)
-                    .expect("disable InstantInterrupt feature");
+                config.features.disable(Feature::InstantInterrupt);
             }
-            config
-                .features
-                .enable(Feature::CodeMode)
-                .expect("enable CodeMode feature");
-            config
-                .features
-                .enable(Feature::CodeModeHost)
-                .expect("enable CodeModeHost feature");
-            config.code_mode.disable_in_process_fallback = true;
-            config
-                .features
-                .disable(Feature::EnableRequestCompression)
-                .expect("disable request compression");
+            config.features.disable(Feature::EnableRequestCompression);
             config.model_provider.supports_websockets = false;
         })
         .build_with_auto_env(&server)
@@ -1736,14 +1698,8 @@ async fn steer_during_compaction_is_sent_after_compaction() {
             config.model_provider.name = "OpenAI (test)".into();
             config.model_provider.supports_websockets = false;
             config.model_auto_compact_token_limit = Some(200);
-            config
-                .features
-                .enable(Feature::InstantInterrupt)
-                .expect("enable InstantInterrupt feature");
-            config
-                .features
-                .disable(Feature::EnableRequestCompression)
-                .expect("disable request compression");
+            config.features.enable(Feature::InstantInterrupt);
+            config.features.disable(Feature::EnableRequestCompression);
         })
         .build_with_streaming_server(&server)
         .await
@@ -1781,137 +1737,6 @@ async fn steer_during_compaction_is_sent_after_compaction() {
     assert!(steer_counts.contains(&1), "steer counts: {steer_counts:?}");
     assert!(steer_counts.iter().all(|count| *count <= 1));
 
-    codex
-        .shutdown_and_wait()
-        .await
-        .expect("shut down test session");
-    server.shutdown().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn input_preempts_response_and_yields_running_code_mode_call() {
-    let (release_second_tx, release_second_rx) = oneshot::channel();
-    let (release_final_tx, release_final_rx) = oneshot::channel();
-    let (server, mut completions) = start_streaming_sse_server(vec![
-        vec![
-            chunk(ev_response_created("resp-calls")),
-            chunk(ev_custom_tool_call(
-                "first-exec",
-                "exec",
-                "// @exec: {\"yield_time_ms\": 60000}\nawait tools.held_tool({}); text('first completed');",
-            )),
-            // The second call remains unavailable while the steer is processed.
-            gated_chunk(
-                release_second_rx,
-                vec![
-                    ev_custom_tool_call(
-                        "second-exec",
-                        "exec",
-                        "// @exec: {\"yield_time_ms\": 60000}\nawait new Promise(() => {});",
-                    ),
-                    ev_completed("resp-calls"),
-                ],
-            ),
-        ],
-        vec![
-            chunk(ev_response_created("resp-follow-up")),
-            gated_chunk(release_final_rx, vec![ev_completed("resp-follow-up")]),
-        ],
-    ])
-    .await;
-    let test = test_codex()
-        .with_model("test-gpt-5.1-codex")
-        .with_config(|config| {
-            config
-                .features
-                .enable(Feature::InstantInterrupt)
-                .expect("enable InstantInterrupt feature");
-            config
-                .features
-                .enable(Feature::CodeMode)
-                .expect("enable CodeMode feature");
-            config
-                .features
-                .enable(Feature::CodeModeHost)
-                .expect("enable CodeModeHost feature");
-            config.code_mode.disable_in_process_fallback = true;
-            config
-                .features
-                .disable(Feature::EnableRequestCompression)
-                .expect("disable request compression");
-            config.model_provider.supports_websockets = false;
-        })
-        .build_with_streaming_server(&server)
-        .await
-        .expect("build Codex test session");
-    let codex = test
-        .thread_manager
-        .start_thread(StartThreadOptions {
-            dynamic_tools: vec![DynamicToolSpec::Function(DynamicToolFunctionSpec {
-                name: "held_tool".into(),
-                description: "A tool held until the test responds.".into(),
-                input_schema: json!({"type": "object", "properties": {}}),
-                defer_loading: false,
-            })],
-            ..StartThreadOptions::new(test.config.clone())
-        })
-        .await
-        .expect("start thread with dynamic tool")
-        .thread;
-
-    submit_user_input(&codex, "start cells").await;
-    let EventMsg::DynamicToolCallRequest(held_tool) = wait_for_event(&codex, |event| {
-        matches!(event, EventMsg::DynamicToolCallRequest(request) if request.tool == "held_tool")
-    })
-    .await else {
-        unreachable!("predicate guarantees a dynamic tool request");
-    };
-    steer_user_input(&codex, "yield cells").await;
-    tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        server.wait_for_request_count(/*count*/ 2),
-    )
-    .await
-    .expect("the first exec should yield before the follow-up");
-    let requests = server.requests().await;
-    let follow_up: Value = from_slice(&requests[1]).expect("parse follow-up request");
-    assert!(
-        call_output_text(&follow_up, "custom_tool_call_output", "first-exec")
-            .expect("yielded exec output")
-            .starts_with("Script running with cell ID ")
-    );
-    assert!(call_output_text(&follow_up, "custom_tool_call_output", "second-exec").is_none());
-    assert!(message_input_texts(&follow_up, "user").contains(&"yield cells".to_string()));
-    // Attempt to deliver the late call only after the replacement is running.
-    let _ = release_second_tx.send(());
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(10), completions.remove(0))
-        .await
-        .expect("the old server response should finish or detect the closed client");
-
-    codex
-        .submit(Op::DynamicToolResponse {
-            id: held_tool.call_id,
-            response: DynamicToolResponse {
-                content_items: vec![DynamicToolCallOutputContentItem::InputText {
-                    text: "released".into(),
-                }],
-                success: true,
-            },
-        })
-        .await
-        .expect("release nested tool");
-    release_final_tx
-        .send(())
-        .expect("finish follow-up response");
-    wait_for_event(&codex, |event| {
-        assert!(!matches!(
-            event,
-            EventMsg::RawResponseItem(raw)
-                if matches!(&raw.item, ResponseItem::CustomToolCall { call_id, .. } if call_id == "second-exec")
-        ));
-        matches!(event, EventMsg::TurnComplete(completed) if completed.error.is_none())
-    })
-    .await;
     codex
         .shutdown_and_wait()
         .await
@@ -1967,7 +1792,7 @@ async fn user_input_does_not_preempt_after_reasoning_item() {
     let codex = test_codex()
         .with_config(|config| {
             config.update_plan_enabled = true;
-            config.features.disable(Feature::InstantInterrupt).unwrap();
+            config.features.disable(Feature::InstantInterrupt);
         })
         .with_model("gpt-5.4")
         .build_with_streaming_server(&server)
@@ -2257,9 +2082,14 @@ async fn terminal_compaction_error_does_not_retry_pending_input(
                     start_options: Default::default(),
                 })
                 .await?;
-            codex.submit(Op::RealtimeConversationListVoices).await?;
+            codex
+                .submit(Op::ThreadSettings {
+                    thread_settings: Default::default(),
+                    reply: None,
+                })
+                .await?;
             wait_for_event(codex, |event| {
-                matches!(event, EventMsg::RealtimeConversationListVoicesResponse(_))
+                matches!(event, EventMsg::ThreadSettingsApplied(_))
             })
             .await;
         }
@@ -2399,7 +2229,7 @@ async fn steered_user_input_waits_for_model_continuation_after_mid_turn_compact(
     let codex = test_codex()
         .with_model("gpt-5.4")
         .with_config(|config| {
-            config.features.disable(Feature::InstantInterrupt).unwrap();
+            config.features.disable(Feature::InstantInterrupt);
             config.model_provider.name = "OpenAI (test)".to_string();
             config.model_provider.supports_websockets = false;
             config.model_auto_compact_token_limit = Some(200);
@@ -2485,7 +2315,7 @@ async fn steered_user_input_follows_compact_when_only_the_steer_needs_follow_up(
     let codex = test_codex()
         .with_model("gpt-5.4")
         .with_config(|config| {
-            config.features.disable(Feature::InstantInterrupt).unwrap();
+            config.features.disable(Feature::InstantInterrupt);
             config.model_provider.name = "OpenAI (test)".to_string();
             config.model_provider.supports_websockets = false;
             config.model_auto_compact_token_limit = Some(200);
@@ -2603,7 +2433,7 @@ async fn steered_user_input_waits_when_tool_output_triggers_compact_before_next_
     let test = test_codex()
         .with_model("gpt-5.4")
         .with_config(|config| {
-            config.features.disable(Feature::InstantInterrupt).unwrap();
+            config.features.disable(Feature::InstantInterrupt);
             config.model_provider.name = "OpenAI (test)".to_string();
             config.model_provider.supports_websockets = false;
             config.model_auto_compact_token_limit = Some(200);

@@ -4,25 +4,12 @@ use codex_protocol::items::TurnItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::SessionMetaLine;
-use codex_protocol::protocol::SessionSource;
-use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::TurnContextItem;
 use codex_protocol::protocol::UserMessageEvent;
 use codex_protocol::protocol::strip_user_message_prefix;
 use codex_protocol::protocol::user_message_preview;
 use serde::Serialize;
 use serde_json::Value;
-
-pub const GUARDIAN_THREAD_TITLE: &str = "Guardian review";
-pub const GUARDIAN_THREAD_PREVIEW: &str = "Approval review";
-
-/// Identifies internal review threads whose user messages are synthetic approval prompts.
-pub fn is_guardian_review_source(source: &SessionSource) -> bool {
-    matches!(
-        source,
-        SessionSource::SubAgent(SubAgentSource::Other(name)) if name == "guardian"
-    )
-}
 
 /// Apply a rollout item to the metadata structure.
 pub fn apply_rollout_item(
@@ -39,8 +26,7 @@ pub fn apply_rollout_item(
         | RolloutItem::InterAgentCommunicationMetadata { .. } => {}
         RolloutItem::Compacted(_) => {}
         RolloutItem::WorldState(_) => {}
-        RolloutItem::RetainedContext(_) | RolloutItem::SecurityRiskScore(_) => {}
-        RolloutItem::RealtimeItem(_) => {}
+        RolloutItem::RetainedContext(_) => {}
         RolloutItem::TokenUsageRecord(_) => {}
     }
     if metadata.model_provider.is_empty() {
@@ -71,9 +57,7 @@ pub fn rollout_item_affects_thread_metadata(item: &RolloutItem) -> bool {
         | RolloutItem::InterAgentCommunication(_)
         | RolloutItem::InterAgentCommunicationMetadata { .. }
         | RolloutItem::Compacted(_)
-        | RolloutItem::RealtimeItem(_)
         | RolloutItem::RetainedContext(_)
-        | RolloutItem::SecurityRiskScore(_)
         | RolloutItem::TokenUsageRecord(_)
         | RolloutItem::WorldState(_) => false,
     }
@@ -125,9 +109,6 @@ fn apply_turn_context(metadata: &mut ThreadMetadata, turn_ctx: &TurnContextItem)
     }
     metadata.model = Some(turn_ctx.model.clone());
     metadata.reasoning_effort = turn_ctx.effort.clone();
-    metadata.sandbox_policy =
-        serde_json::to_string(&turn_ctx.permission_profile()).unwrap_or_default();
-    metadata.approval_mode = enum_to_string(&turn_ctx.approval_policy);
 }
 
 fn apply_event_msg(metadata: &mut ThreadMetadata, event: &EventMsg) {
@@ -137,23 +118,19 @@ fn apply_event_msg(metadata: &mut ThreadMetadata, event: &EventMsg) {
                 metadata.tokens_used = info.total_token_usage.total_tokens.max(0);
             }
         }
-        EventMsg::UserMessage(user) if !metadata_is_guardian_review(metadata) => {
+        EventMsg::UserMessage(user) => {
             apply_user_message(metadata, user);
         }
         EventMsg::ItemCompleted(event) => {
-            if let TurnItem::UserMessage(user) = &event.item
-                && !metadata_is_guardian_review(metadata)
-            {
+            if let TurnItem::UserMessage(user) = &event.item {
                 apply_user_message(metadata, &user.as_legacy_user_message_event());
-            } else if let TurnItem::FunctionCallOutput(output) = &event.item
-                && !metadata_is_guardian_review(metadata)
-            {
+            } else if let TurnItem::FunctionCallOutput(output) = &event.item {
                 // Delegated turns have no user message, but must still be discoverable.
                 let preview = crate::delegated_output_preview(output);
                 set_preview_if_empty(metadata, preview);
             }
         }
-        EventMsg::ThreadGoalUpdated(event) if !metadata_is_guardian_review(metadata) => {
+        EventMsg::ThreadGoalUpdated(event) => {
             let objective = event.goal.objective.trim();
             if !objective.is_empty() {
                 set_preview_if_empty(metadata, Some(objective.to_string()));
@@ -165,21 +142,12 @@ fn apply_event_msg(metadata: &mut ThreadMetadata, event: &EventMsg) {
             metadata.model_provider = settings.model_provider_id.clone();
             metadata.reasoning_effort = settings.reasoning_effort.clone();
             metadata.cwd = settings.cwd.clone().into_path_buf();
-            metadata.sandbox_policy =
-                serde_json::to_string(&settings.permission_profile).unwrap_or_default();
-            metadata.approval_mode = enum_to_string(&settings.approval_policy);
         }
         _ => {}
     }
 }
 
 fn apply_response_item(_metadata: &mut ThreadMetadata, _item: &ResponseItem) {}
-
-pub(crate) fn metadata_is_guardian_review(metadata: &ThreadMetadata) -> bool {
-    serde_json::from_str::<SessionSource>(metadata.source.as_str())
-        .as_ref()
-        .is_ok_and(is_guardian_review_source)
-}
 
 fn apply_user_message(metadata: &mut ThreadMetadata, user: &UserMessageEvent) {
     let preview = user_message_preview(user);
@@ -213,13 +181,11 @@ pub(crate) fn enum_to_string<T: Serialize>(value: &T) -> String {
 mod tests {
     use super::apply_rollout_item;
     use super::rollout_item_affects_thread_metadata;
-    use crate::ThreadMetadataBuilder;
     use crate::model::ThreadMetadata;
     use chrono::DateTime;
     use chrono::Utc;
     use codex_history::RolloutItem;
     use codex_protocol::ThreadId;
-    use codex_protocol::config_types::ApprovalsReviewer;
     use codex_protocol::config_types::CollaborationMode;
     use codex_protocol::config_types::ModeKind;
     use codex_protocol::config_types::ReasoningSummary;
@@ -227,17 +193,13 @@ mod tests {
     use codex_protocol::items::TurnItem;
     use codex_protocol::items::UserMessageItem;
     use codex_protocol::models::ContentItem;
-    use codex_protocol::models::PermissionProfile;
     use codex_protocol::models::ResponseItem;
     use codex_protocol::openai_models::ReasoningEffort;
-    use codex_protocol::protocol::AskForApproval;
     use codex_protocol::protocol::EventMsg;
     use codex_protocol::protocol::ItemCompletedEvent;
-    use codex_protocol::protocol::SandboxPolicy;
     use codex_protocol::protocol::SessionMeta;
     use codex_protocol::protocol::SessionMetaLine;
     use codex_protocol::protocol::SessionSource;
-    use codex_protocol::protocol::SubAgentSource;
     use codex_protocol::protocol::ThreadGoal;
     use codex_protocol::protocol::ThreadGoalStatus;
     use codex_protocol::protocol::ThreadGoalUpdatedEvent;
@@ -356,62 +318,6 @@ mod tests {
         );
         assert_eq!(metadata.preview.as_deref(), Some("actual user request"));
         assert_eq!(metadata.title, "actual user request");
-    }
-
-    #[test]
-    fn guardian_projection_skips_prompts_and_preserves_custom_names() {
-        let thread_id = ThreadId::new();
-        let source = SessionSource::SubAgent(SubAgentSource::Other("guardian".to_string()));
-        let mut metadata =
-            ThreadMetadataBuilder::new(thread_id, PathBuf::new(), Utc::now(), source.clone())
-                .build("test-provider");
-        let session_meta = RolloutItem::SessionMeta(SessionMetaLine {
-            meta: SessionMeta {
-                session_id: thread_id.into(),
-                id: thread_id,
-                source,
-                ..Default::default()
-            },
-            git: None,
-        });
-        apply_rollout_item(&mut metadata, &session_meta, "test-provider");
-        let mut expected = metadata.clone();
-        expected.title = super::GUARDIAN_THREAD_TITLE.to_string();
-        expected.name = None;
-        expected.preview = Some(super::GUARDIAN_THREAD_PREVIEW.to_string());
-        expected.first_user_message = None;
-
-        let user = UserMessageItem::new(&[UserInput::Text {
-            text: "large synthetic guardian prompt".to_string(),
-            text_elements: Vec::new(),
-        }]);
-        for event in [
-            EventMsg::UserMessage(user.as_legacy_user_message_event()),
-            EventMsg::ItemCompleted(ItemCompletedEvent {
-                thread_id,
-                turn_id: "turn-1".to_string(),
-                item: TurnItem::UserMessage(user),
-                started_at_ms: Some(0),
-                completed_at_ms: 0,
-            }),
-        ] {
-            apply_rollout_item(
-                &mut metadata,
-                &RolloutItem::EventMsg(event),
-                "test-provider",
-            );
-            assert_eq!(metadata, expected);
-        }
-
-        let mut existing = metadata.clone();
-        existing.title = "Named Guardian review".to_string();
-        metadata.prefer_existing_explicit_title(&existing);
-        assert_eq!(metadata, existing);
-
-        metadata.name = Some("Named Guardian review".to_string());
-        let expected = metadata.clone();
-        apply_rollout_item(&mut metadata, &session_meta, "test-provider");
-        assert_eq!(metadata, expected);
     }
 
     #[test]
@@ -573,17 +479,10 @@ mod tests {
                         .join("parent/workspace")
                 ))
                 .expect("absolute parent cwd"),
-                approval_policy: AskForApproval::Never,
-                approvals_reviewer: None,
-                sandbox_policy: SandboxPolicy::DangerFullAccess,
-                permission_profile: None,
-                active_permission_profile: None,
-                file_system_sandbox_policy: None,
                 model: "gpt-5".to_string(),
                 comp_hash: None,
                 collaboration_mode: None,
                 multi_agent_version: None,
-                realtime_active: None,
                 cyber_access_program: None,
                 effort: None,
                 summary: Some(codex_protocol::config_types::ReasoningSummary::Auto),
@@ -592,53 +491,6 @@ mod tests {
         );
 
         assert_eq!(metadata.cwd, PathBuf::from("/child/worktree"));
-        let permission_profile: PermissionProfile = PermissionProfile::Disabled;
-        assert_eq!(
-            metadata.sandbox_policy,
-            serde_json::to_string(&permission_profile).expect("serialize permission profile")
-        );
-        assert_eq!(metadata.approval_mode, "never");
-    }
-
-    #[test]
-    fn turn_context_sets_permission_profile_metadata() {
-        let mut metadata = metadata_for_test();
-        let permission_profile = PermissionProfile::workspace_write();
-
-        apply_rollout_item(
-            &mut metadata,
-            &RolloutItem::TurnContext(TurnContextItem {
-                turn_id: Some("turn-1".to_string()),
-                root_turn_id: None,
-                disabled_plugin_ids: None,
-                cwd: serde_json::from_value(serde_json::json!(
-                    std::env::current_dir()
-                        .expect("current directory")
-                        .join("workspace")
-                ))
-                .expect("absolute workspace cwd"),
-                approval_policy: AskForApproval::OnRequest,
-                approvals_reviewer: None,
-                sandbox_policy: SandboxPolicy::DangerFullAccess,
-                permission_profile: Some(permission_profile.clone()),
-                active_permission_profile: None,
-                file_system_sandbox_policy: None,
-                model: "gpt-5".to_string(),
-                comp_hash: None,
-                collaboration_mode: None,
-                multi_agent_version: None,
-                realtime_active: None,
-                cyber_access_program: None,
-                effort: None,
-                summary: Some(codex_protocol::config_types::ReasoningSummary::Auto),
-            }),
-            "test-provider",
-        );
-
-        assert_eq!(
-            metadata.sandbox_policy,
-            serde_json::to_string(&permission_profile).expect("serialize permission profile")
-        );
     }
 
     #[test]
@@ -657,17 +509,10 @@ mod tests {
                 disabled_plugin_ids: None,
                 cwd: serde_json::from_value(serde_json::json!(&fallback_cwd))
                     .expect("absolute fallback cwd"),
-                approval_policy: AskForApproval::OnRequest,
-                approvals_reviewer: None,
-                sandbox_policy: SandboxPolicy::new_read_only_policy(),
-                permission_profile: None,
-                active_permission_profile: None,
-                file_system_sandbox_policy: None,
                 model: "gpt-5".to_string(),
                 comp_hash: None,
                 collaboration_mode: None,
                 multi_agent_version: None,
-                realtime_active: None,
                 cyber_access_program: None,
                 effort: Some(ReasoningEffort::High),
                 summary: Some(codex_protocol::config_types::ReasoningSummary::Auto),
@@ -694,17 +539,10 @@ mod tests {
                         .join("fallback/workspace")
                 ))
                 .expect("absolute fallback cwd"),
-                approval_policy: AskForApproval::OnRequest,
-                approvals_reviewer: None,
-                sandbox_policy: SandboxPolicy::new_read_only_policy(),
-                permission_profile: None,
-                active_permission_profile: None,
-                file_system_sandbox_policy: None,
                 model: "gpt-5".to_string(),
                 comp_hash: None,
                 collaboration_mode: None,
                 multi_agent_version: None,
-                realtime_active: None,
                 cyber_access_program: None,
                 effort: Some(ReasoningEffort::High),
                 summary: Some(codex_protocol::config_types::ReasoningSummary::Auto),
@@ -719,7 +557,6 @@ mod tests {
     #[test]
     fn thread_settings_applied_updates_resume_metadata() {
         let mut metadata = metadata_for_test();
-        let permission_profile = PermissionProfile::workspace_write();
         let cwd = std::env::current_dir()
             .expect("current directory")
             .join("updated/workspace");
@@ -731,10 +568,6 @@ mod tests {
                     model: "gpt-5.2-codex".to_string(),
                     model_provider_id: "updated-provider".to_string(),
                     service_tier: None,
-                    approval_policy: AskForApproval::Never,
-                    approvals_reviewer: ApprovalsReviewer::User,
-                    permission_profile: permission_profile.clone(),
-                    active_permission_profile: None,
                     cwd: cwd.clone().try_into().expect("absolute settings cwd"),
                     runtime_workspace_roots: None,
                     reasoning_effort: Some(ReasoningEffort::Ultra),
@@ -759,12 +592,6 @@ mod tests {
         assert_eq!(metadata.model_provider, "updated-provider");
         assert_eq!(metadata.reasoning_effort, Some(ReasoningEffort::Ultra));
         assert_eq!(metadata.cwd, cwd);
-        assert_eq!(metadata.approval_mode, "never");
-        assert_eq!(
-            metadata.sandbox_policy,
-            serde_json::to_string(&permission_profile)
-                .expect("permission profile should serialize")
-        );
     }
 
     #[test]
@@ -841,8 +668,6 @@ mod tests {
             title: String::new(),
             name: None,
             preview: None,
-            sandbox_policy: "read-only".to_string(),
-            approval_mode: "on-request".to_string(),
             tokens_used: 1,
             first_user_message: None,
             archived_at: None,

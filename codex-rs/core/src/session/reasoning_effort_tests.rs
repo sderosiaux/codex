@@ -26,10 +26,7 @@ async fn initial_replay_preserves_prewarmed_effort(history: InitialHistory) {
         CodexAuth::from_api_key("Test API Key"),
         Vec::new(),
         |config| {
-            config
-                .features
-                .enable(Feature::ReasoningEffortOverride)
-                .unwrap();
+            config.features.enable(Feature::ReasoningEffortOverride);
         },
     )
     .await;
@@ -71,10 +68,7 @@ async fn compaction_effort_lookup_preserves_pin_for_fallback_models() {
         CodexAuth::from_api_key("Test API Key"),
         Vec::new(),
         |config| {
-            config
-                .features
-                .enable(Feature::ReasoningEffortOverride)
-                .unwrap();
+            config.features.enable(Feature::ReasoningEffortOverride);
         },
     )
     .await;
@@ -114,10 +108,7 @@ async fn unsupported_model_compaction_uses_selected_effort_without_mutating_pin(
         CodexAuth::from_api_key("Test API Key"),
         Vec::new(),
         |config| {
-            config
-                .features
-                .enable(Feature::ReasoningEffortOverride)
-                .unwrap();
+            config.features.enable(Feature::ReasoningEffortOverride);
             config.model_reasoning_effort = Some(ReasoningEffort::High);
         },
     )

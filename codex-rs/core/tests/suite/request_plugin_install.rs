@@ -18,14 +18,12 @@ use codex_extension_api::McpServerContributor;
 use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_models_manager::bundled_models_response;
-use codex_protocol::approvals::ElicitationAction;
-use codex_protocol::approvals::ElicitationRequest;
-use codex_protocol::approvals::ElicitationRequestEvent;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
-use codex_protocol::models::PermissionProfile;
-use codex_protocol::protocol::AskForApproval;
+use codex_protocol::elicitation::ElicitationAction;
+use codex_protocol::elicitation::ElicitationRequest;
+use codex_protocol::elicitation::ElicitationRequestEvent;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SessionSource;
@@ -48,7 +46,6 @@ use core_test_support::skip_if_no_network;
 use core_test_support::skip_if_wine_exec;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::test_codex;
-use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_match;
 use pretty_assertions::assert_eq;
@@ -133,10 +130,7 @@ fn configure_apps_without_search_tool(config: &mut Config, apps_base_url: &str) 
         Feature::RemotePlugin,
         Feature::ToolSuggest,
     ] {
-        config
-            .features
-            .enable(feature)
-            .expect("test config should allow feature update");
+        config.features.enable(feature);
     }
     let mut model_catalog = bundled_models_response()
         .unwrap_or_else(|err| panic!("bundled models.json should parse: {err}"));
@@ -209,10 +203,6 @@ async fn build_test(
         .with_config({
             let apps_base_url = apps_server.chatgpt_base_url.clone();
             move |config| {
-                config
-                    .permissions
-                    .set_permission_profile(PermissionProfile::Disabled)
-                    .expect("test config should allow disabled permissions");
                 configure_apps_without_search_tool(config, apps_base_url.as_str());
             }
         });
@@ -229,15 +219,11 @@ async fn build_gated_step_preparation_test(
     let mut builder = test_codex()
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
         .with_config(move |config| {
-            config
-                .permissions
-                .set_permission_profile(PermissionProfile::Disabled)
-                .expect("test config should allow disabled permissions");
             configure_apps_without_search_tool(config, apps_base_url.as_str());
 
             let barrier_file = config.cwd.join("allow-step-preparation-initialize");
             let pid_file = config.cwd.join("step-preparation.pid");
-            let mut servers = config.mcp_servers.get().clone();
+            let mut servers = config.mcp_servers.clone();
             servers.insert(
                 STEP_PREPARATION_MCP_SERVER.to_string(),
                 serde_json::from_value(json!({
@@ -253,10 +239,7 @@ async fn build_gated_step_preparation_test(
                 }))
                 .expect("test MCP server configuration"),
             );
-            config
-                .mcp_servers
-                .set(servers)
-                .expect("test config should allow MCP servers");
+            config.mcp_servers = servers;
         });
     builder.build_with_auto_env(server).await
 }
@@ -278,8 +261,6 @@ async fn start_gated_step_preparation(test: &TestCodex, server: &MockServer) -> 
         .into_iter()
         .filter(|request| request.url.path() == "/ps/plugins/suggested/codex")
         .count();
-    let (sandbox_policy, permission_profile) =
-        turn_permission_fields(PermissionProfile::Disabled, test.config.cwd.as_path());
     test.codex
         .start_or_steer_turn(
             TurnInputRequest::user_input(vec![UserInput::Text {
@@ -287,9 +268,6 @@ async fn start_gated_step_preparation(test: &TestCodex, server: &MockServer) -> 
                 text_elements: Vec::new(),
             }])
             .with_thread_settings(ThreadSettingsOverrides {
-                approval_policy: Some(AskForApproval::Never),
-                sandbox_policy: Some(sandbox_policy),
-                permission_profile,
                 ..Default::default()
             }),
         )
@@ -300,7 +278,7 @@ async fn start_gated_step_preparation(test: &TestCodex, server: &MockServer) -> 
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let mcp_started = fs
-                .read_file_text(&pid_file, Default::default(), /*sandbox*/ None)
+                .read_file_text(&pid_file, Default::default())
                 .await
                 .is_ok_and(|pid| !pid.trim().is_empty());
             let recommendation_count = server
@@ -324,8 +302,6 @@ async fn start_gated_step_preparation(test: &TestCodex, server: &MockServer) -> 
 }
 
 async fn start_install_turn(test: &TestCodex, prompt: &str) -> Result<ElicitationRequestEvent> {
-    let (sandbox_policy, permission_profile) =
-        turn_permission_fields(PermissionProfile::Disabled, test.config.cwd.as_path());
     test.codex
         .start_or_steer_turn(
             TurnInputRequest::user_input(vec![UserInput::Text {
@@ -333,9 +309,6 @@ async fn start_install_turn(test: &TestCodex, prompt: &str) -> Result<Elicitatio
                 text_elements: Vec::new(),
             }])
             .with_thread_settings(ThreadSettingsOverrides {
-                approval_policy: Some(AskForApproval::Never),
-                sandbox_policy: Some(sandbox_policy),
-                permission_profile,
                 collaboration_mode: Some(CollaborationMode {
                     mode: ModeKind::Default,
                     settings: Settings {
@@ -510,20 +483,11 @@ async fn startup_recommendations_use_developer_message(
             configure_apps_without_search_tool(config, &apps_server.chatgpt_base_url);
             config.model_provider.supports_websockets = false;
             for suggestion_feature in [Feature::ToolSuggest, Feature::RecommendedPlugins] {
-                config
-                    .features
-                    .disable(suggestion_feature)
-                    .expect("test config should allow feature update");
+                config.features.disable(suggestion_feature);
             }
-            config
-                .features
-                .enable(feature)
-                .expect("test config should allow feature update");
+            config.features.enable(feature);
             if let Some(disabled_feature) = disabled_feature {
-                config
-                    .features
-                    .disable(disabled_feature)
-                    .expect("test config should allow feature update");
+                config.features.disable(disabled_feature);
             }
         });
     let startup = builder.build_with_auto_env(&server);
@@ -646,12 +610,7 @@ async fn mcp_discovery_overlaps_endpoint_plugin_recommendations() -> Result<()> 
         "sampling should wait for the complete MCP catalog"
     );
     test.fs()
-        .write_file(
-            &barrier,
-            b"ready".to_vec(),
-            Default::default(),
-            /*sandbox*/ None,
-        )
+        .write_file(&barrier, b"ready".to_vec(), Default::default())
         .await?;
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
@@ -716,12 +675,7 @@ async fn interrupting_concurrent_step_preparation_prevents_sampling() -> Result<
     );
 
     test.fs()
-        .write_file(
-            &barrier,
-            b"ready".to_vec(),
-            Default::default(),
-            /*sandbox*/ None,
-        )
+        .write_file(&barrier, b"ready".to_vec(), Default::default())
         .await?;
     test.codex.shutdown_and_wait().await?;
     assert!(
@@ -760,12 +714,7 @@ async fn unavailable_recommendations_preserve_legacy_workflow(
     )
     .await;
     let test = build_test(&server, &apps_server).await?;
-    test.submit_turn_with_approval_and_permission_profile(
-        "list tools",
-        AskForApproval::Never,
-        PermissionProfile::Disabled,
-    )
-    .await?;
+    test.submit_turn("list tools").await?;
 
     let requests = mock.requests();
     assert_eq!(requests.len(), 2);
@@ -874,8 +823,6 @@ async fn subagent_install_request_returns_root_only_error(
                 text_elements: Vec::new(),
             }])
             .with_thread_settings(ThreadSettingsOverrides {
-                approval_policy: Some(AskForApproval::Never),
-                permission_profile: Some(PermissionProfile::Disabled),
                 ..Default::default()
             }),
         )
@@ -964,15 +911,8 @@ async fn local_plugin_skill_availability_reaches_tool_suggestion_candidates(
         .with_config({
             let apps_base_url = apps_server.chatgpt_base_url.clone();
             move |config| {
-                config
-                    .permissions
-                    .set_permission_profile(PermissionProfile::Disabled)
-                    .expect("test config should allow disabled permissions");
                 configure_apps_without_search_tool(config, apps_base_url.as_str());
-                config
-                    .features
-                    .disable(Feature::RemotePlugin)
-                    .expect("test config should allow local plugin suggestions");
+                config.features.disable(Feature::RemotePlugin);
                 config.tool_suggest.discoverables = vec![ToolSuggestDiscoverable {
                     kind: ToolSuggestDiscoverableType::Plugin,
                     id: "sample@openai-curated".to_string(),
@@ -980,12 +920,7 @@ async fn local_plugin_skill_availability_reaches_tool_suggestion_candidates(
             }
         });
     let test = builder.build_with_auto_env(&server).await?;
-    test.submit_turn_with_approval_and_permission_profile(
-        "list available plugins",
-        AskForApproval::Never,
-        PermissionProfile::Disabled,
-    )
-    .await?;
+    test.submit_turn("list available plugins").await?;
 
     let requests = mock.requests();
     assert_eq!(requests.len(), 2);

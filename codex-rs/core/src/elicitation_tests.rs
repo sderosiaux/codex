@@ -1,19 +1,18 @@
 use super::*;
 
 #[tokio::test]
-async fn wait_until_clear_waits_for_every_registration() {
+async fn paused_until_every_registration_drops() {
     let service = ElicitationService::new();
+    let paused = service.subscribe();
+    assert!(!*paused.borrow());
+
     let first = service.register();
     let second = service.register();
-    let waiting = tokio::spawn({
-        let service = service.clone();
-        async move { service.wait_until_clear().await }
-    });
+    assert!(*paused.borrow());
 
     drop(first);
-    tokio::task::yield_now().await;
-    assert!(!waiting.is_finished());
+    assert!(*paused.borrow());
 
     drop(second);
-    waiting.await.expect("elicitation waiter should complete");
+    assert!(!*paused.borrow());
 }

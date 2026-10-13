@@ -19,7 +19,6 @@ use codex_extension_api::ResponseItem;
 use codex_extension_api::ToolLifecycleContributor;
 use codex_extension_api::ToolLifecycleFuture;
 use codex_extension_api::ToolStartInput;
-use codex_features::Feature;
 use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
 use codex_protocol::mcp::CallToolResult;
 use codex_protocol::models::ContentItem;
@@ -31,7 +30,7 @@ use core_test_support::apps_test_server::SEARCH_CALENDAR_LIST_TOOL;
 use core_test_support::apps_test_server::SEARCH_CALENDAR_NAMESPACE;
 use core_test_support::apps_test_server::apps_enabled_builder;
 use core_test_support::apps_test_server::recorded_apps_tool_call_by_call_id;
-use core_test_support::hooks::trust_discovered_hooks;
+use core_test_support::hooks::enable_discovered_hooks;
 use core_test_support::responses;
 use core_test_support::skip_if_no_network;
 use core_test_support::skip_if_wine_exec;
@@ -316,12 +315,6 @@ async fn tool_start_receives_executed_mcp_call_for_connector(
 }
 
 #[derive(Clone, Copy)]
-enum McpCallMode {
-    Direct,
-    CodeMode,
-}
-
-#[derive(Clone, Copy)]
 enum McpResultProcessing {
     Unchanged,
     Replace,
@@ -355,16 +348,11 @@ impl ToolLifecycleContributor for BlockingMcpResultContributor {
     }
 }
 
-#[test_case(McpCallMode::Direct, McpResultProcessing::Unchanged; "direct_unchanged")]
-#[test_case(McpCallMode::Direct, McpResultProcessing::Replace; "direct_replaced")]
-#[test_case(McpCallMode::Direct, McpResultProcessing::Fail; "direct_error")]
-#[test_case(McpCallMode::CodeMode, McpResultProcessing::Replace; "code_mode_replaced")]
-#[test_case(McpCallMode::CodeMode, McpResultProcessing::Fail; "code_mode_error")]
+#[test_case(McpResultProcessing::Unchanged; "unchanged")]
+#[test_case(McpResultProcessing::Replace; "replaced")]
+#[test_case(McpResultProcessing::Fail; "error")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn mcp_result_processing_precedes_completion(
-    mode: McpCallMode,
-    processing: McpResultProcessing,
-) -> Result<()> {
+async fn mcp_result_processing_precedes_completion(processing: McpResultProcessing) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
@@ -411,29 +399,17 @@ async fn mcp_result_processing_precedes_completion(
     extensions.tool_lifecycle_contributor(contributor.clone());
     let test = apps_enabled_builder(apps_server.chatgpt_base_url)
         .with_extensions(Arc::new(extensions.build()))
-        .with_config(move |config| {
-            if matches!(mode, McpCallMode::CodeMode) {
-                let _ = config.features.enable(Feature::CodeMode);
-            }
-        })
         .build_with_auto_env(&server)
         .await?;
     wait_for_mcp_server(&test.codex, CODEX_APPS_MCP_SERVER_NAME).await?;
 
     let call_id = "mcp-result-call";
-    let call = match mode {
-        McpCallMode::Direct => responses::ev_function_call_with_namespace(
-            call_id,
-            SEARCH_CALENDAR_NAMESPACE,
-            SEARCH_CALENDAR_LIST_TOOL,
-            r#"{"query":"callback test"}"#,
-        ),
-        McpCallMode::CodeMode => responses::ev_custom_tool_call(
-            call_id,
-            "exec",
-            r#"text(await tools.mcp__codex_apps__calendar_list_events({query: "callback test"}));"#,
-        ),
-    };
+    let call = responses::ev_function_call_with_namespace(
+        call_id,
+        SEARCH_CALENDAR_NAMESPACE,
+        SEARCH_CALENDAR_LIST_TOOL,
+        r#"{"query":"callback test"}"#,
+    );
     responses::mount_sse_once(
         &server,
         responses::sse(vec![call, responses::ev_completed("first-response")]),
@@ -487,10 +463,7 @@ async fn mcp_result_processing_precedes_completion(
     .await;
 
     let request = follow_up.single_request();
-    let output = match mode {
-        McpCallMode::Direct => request.function_call_output(call_id),
-        McpCallMode::CodeMode => request.custom_tool_call_output(call_id),
-    };
+    let output = request.function_call_output(call_id);
     let output = output["output"].to_string();
     assert!(
         output.contains(
@@ -615,7 +588,7 @@ async fn tool_start_receives_rewritten_payload_and_post_hook_history() -> Result
             write_pre_tool_hook(home, "^update_plan$", &hook_output)
                 .expect("write pre-tool hook fixture");
         })
-        .with_config(trust_discovered_hooks)
+        .with_config(enable_discovered_hooks)
         .with_config(|config| config.update_plan_enabled = true)
         .build_with_auto_env(&server)
         .await?;
@@ -706,7 +679,7 @@ async fn tool_start_is_not_called_when_pre_tool_hook_prevents_execution() -> Res
                 write_pre_tool_hook(home, matcher, &hook_output)
                     .expect("write pre-tool hook fixture");
             })
-            .with_config(trust_discovered_hooks)
+            .with_config(enable_discovered_hooks)
             .with_config(|config| config.update_plan_enabled = true)
             .build_with_auto_env(&server)
             .await?;

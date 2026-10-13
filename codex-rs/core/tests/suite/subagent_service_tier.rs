@@ -64,10 +64,7 @@ fn assert_request_service_tier(request: &ResponseMock, expected: Option<&str>) {
 
 fn configure_priority_role(config: &mut Config) {
     for feature in [Feature::Collab, Feature::MultiAgentV2] {
-        config
-            .features
-            .enable(feature)
-            .expect("test config should allow feature update");
+        config.features.enable(feature);
     }
     config.model_provider.request_max_retries = Some(0);
     config.model_provider.stream_max_retries = Some(0);

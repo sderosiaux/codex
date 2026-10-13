@@ -7,7 +7,6 @@ use chrono::DateTime;
 use codex_app_server_protocol::ThreadHistoryChangeSet;
 use codex_app_server_protocol::project_rollout_line;
 use codex_protocol::ThreadId;
-use codex_rollout::RolloutItem;
 use tracing::warn;
 
 use super::LocalThreadStore;
@@ -246,8 +245,6 @@ fn read_projection_steps_sync(
             .changed_items
             .iter()
             .any(|item| item.started_at_ms.is_none())
-            || (!is_inherited_subagent_history
-                && matches!(&line.item, RolloutItem::RealtimeItem(_)))
         {
             match DateTime::parse_from_rfc3339(line.timestamp.as_str()) {
                 Ok(timestamp) => Some(timestamp.timestamp_millis()),
@@ -313,10 +310,6 @@ fn read_projection_steps_sync(
                 end_byte_offset: line_end_offset,
                 fallback_created_at_ms,
                 changes,
-                realtime_item: match line.item {
-                    RolloutItem::RealtimeItem(item) if !is_inherited_subagent_history => Some(item),
-                    _ => None,
-                },
             },
         )));
         next_ordinal = next_line_ordinal;

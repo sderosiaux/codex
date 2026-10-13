@@ -23,7 +23,6 @@ use crate::protocol::FS_READ_FILE_METHOD;
 use crate::protocol::INITIALIZED_METHOD;
 use crate::protocol::JSONRPCMessage;
 use crate::protocol::JSONRPCResponse;
-use crate::protocol::RequestId;
 
 struct Harness {
     client: RpcClient,
@@ -226,18 +225,13 @@ async fn timeout_and_cancellation_count_as_attempts() {
 }
 
 #[tokio::test]
-async fn notifications_responses_and_disabled_metrics_do_not_record_attempts() {
+async fn notifications_and_disabled_metrics_do_not_record_attempts() {
     let mut harness = Harness::new();
     harness
         .client
         .notify(INITIALIZED_METHOD, &())
         .await
         .expect("notification");
-    harness
-        .client
-        .respond(RequestId::Integer(1), &())
-        .await
-        .expect("response");
     assert_eq!(harness.counts(), BTreeMap::new());
     harness.client.metrics = None;
     harness.client.close_transport().await;

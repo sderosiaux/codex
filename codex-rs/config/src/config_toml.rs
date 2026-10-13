@@ -3,35 +3,23 @@
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::num::NonZeroU64;
-use std::num::NonZeroUsize;
-use std::path::Path;
 
 use crate::HooksToml;
-use crate::browser_use::BrowserUseConfigToml;
-use crate::computer_use::ComputerUseConfigToml;
-use crate::permissions_toml::PermissionsToml;
 use crate::profile_toml::ConfigProfile;
 use crate::types::AnalyticsConfigToml;
-use crate::types::ApprovalsReviewer;
 use crate::types::AppsConfigToml;
 use crate::types::AuthCredentialsStoreMode;
-use crate::types::FeedbackConfigToml;
 use crate::types::History;
 use crate::types::MarketplaceConfig;
 use crate::types::McpEnterpriseManagedAuthConfig;
 use crate::types::McpServerConfig;
 use crate::types::MemoriesToml;
-use crate::types::Notice;
 use crate::types::OAuthCredentialsStoreMode;
 use crate::types::OtelConfigToml;
 use crate::types::PluginsConfigToml;
-use crate::types::SandboxWorkspaceWrite;
 use crate::types::ShellEnvironmentPolicyToml;
 use crate::types::SkillsConfig;
 use crate::types::ToolSuggestConfig;
-use crate::types::Tui;
-use crate::types::UriBasedFileOpener;
-use crate::types::WindowsToml;
 use codex_features::FeaturesToml;
 use codex_model_provider_info::AMAZON_BEDROCK_PROVIDER_ID;
 use codex_model_provider_info::AMAZON_BEDROCK_RUNTIME_PROVIDER_ID;
@@ -45,24 +33,16 @@ use codex_protocol::config_types::AutoCompactTokenLimitScope;
 use codex_protocol::config_types::ForcedLoginMethod;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary;
-use codex_protocol::config_types::SandboxMode;
-use codex_protocol::config_types::TrustLevel;
 use codex_protocol::config_types::Verbosity;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::config_types::WebSearchToolConfig;
-use codex_protocol::config_types::WindowsSandboxLevel;
-use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ReasoningEffort;
-use codex_protocol::permissions::NetworkSandboxPolicy;
-use codex_protocol::protocol::AskForApproval;
 use codex_utils_absolute_path::AbsolutePathBuf;
-use codex_utils_path_uri::Platform;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
 use serde::de::Error as SerdeError;
-use serde_json::Value as JsonValue;
 
 const RESERVED_MODEL_PROVIDER_IDS: [&str; 5] = [
     AMAZON_BEDROCK_PROVIDER_ID,
@@ -166,8 +146,6 @@ pub struct FeatureToggleToml {
 pub struct ConfigToml {
     /// Optional override of model selection.
     pub model: Option<String>,
-    /// Default Daybreak preference for new threads and non-interactive turns.
-    pub daybreak: Option<bool>,
     /// Review model override used by the `/review` feature.
     pub review_model: Option<String>,
 
@@ -190,23 +168,6 @@ pub struct ConfigToml {
     #[schemars(range(min = 0, max = 100))]
     pub model_post_turn_compact_threshold_percent: Option<u8>,
 
-    /// Default approval policy for executing commands.
-    #[schemars(with = "Option<crate::schema::ConfigAskForApproval>")]
-    pub approval_policy: Option<AskForApproval>,
-
-    /// Configures who approval requests are routed to for review once they have
-    /// been escalated. This does not disable separate safety checks such as
-    /// ARC.
-    pub approvals_reviewer: Option<ApprovalsReviewer>,
-
-    /// Optional policy instructions for the guardian auto-reviewer.
-    #[serde(default)]
-    pub auto_review: Option<AutoReviewToml>,
-
-    pub browser_use: Option<BrowserUseConfigToml>,
-
-    pub computer_use: Option<ComputerUseConfigToml>,
-
     #[serde(default)]
     pub shell_environment_policy: ShellEnvironmentPolicyToml,
 
@@ -220,28 +181,6 @@ pub struct ConfigToml {
     /// shell.
     pub allow_login_shell: Option<bool>,
 
-    /// Sandbox mode to use.
-    pub sandbox_mode: Option<SandboxMode>,
-
-    /// Allow macOS sandbox writable roots at or beneath CODEX_HOME to traverse
-    /// symlinks. Read only from the host's user config at startup; defaults to false.
-    /// This grants no write access by itself, but trusts symlink targets even if
-    /// they change between commands or lie outside CODEX_HOME.
-    /// This setting has no effect on Linux or Windows.
-    pub allow_symlinked_codex_home: Option<bool>,
-
-    /// Sandbox configuration to apply if `sandbox` is `WorkspaceWrite`.
-    pub sandbox_workspace_write: Option<SandboxWorkspaceWrite>,
-
-    /// Default permissions profile to apply. Names starting with `:` refer to
-    /// built-in profiles; other names are resolved from the `[permissions]`
-    /// table.
-    pub default_permissions: Option<String>,
-
-    /// Named permissions profiles.
-    #[serde(default)]
-    pub permissions: Option<PermissionsToml>,
-
     /// Optional external command to spawn for end-user notifications.
     #[serde(default)]
     pub notify: Option<Vec<String>>,
@@ -252,9 +191,6 @@ pub struct ConfigToml {
     /// Developer instructions inserted as a `developer` role message.
     #[serde(default)]
     pub developer_instructions: Option<String>,
-
-    /// Whether to inject the `<permissions instructions>` developer block.
-    pub include_permissions_instructions: Option<bool>,
 
     /// Whether to inject the `<apps_instructions>` developer block.
     pub include_apps_instructions: Option<bool>,
@@ -379,13 +315,6 @@ pub struct ConfigToml {
     /// Defaults to `$CODEX_HOME/log`.
     pub log_dir: Option<AbsolutePathBuf>,
 
-    /// Optional URI-based file opener. If set, citations to files in the model
-    /// output will be hyperlinked using the specified URI scheme.
-    pub file_opener: Option<UriBasedFileOpener>,
-
-    /// Collection of settings that are specific to the TUI.
-    pub tui: Option<Tui>,
-
     /// When set to `true`, `AgentReasoning` events will be hidden from the
     /// UI/output. Defaults to `false`.
     #[serde(default = "default_hide_agent_reasoning")]
@@ -430,39 +359,6 @@ pub struct ConfigToml {
     /// Base URL override for the built-in `openai` model provider.
     pub openai_base_url: Option<String>,
 
-    /// Machine-local realtime audio device preferences used by realtime voice.
-    #[serde(default)]
-    pub audio: Option<RealtimeAudioToml>,
-
-    /// Experimental / do not use. Overrides only the realtime conversation
-    /// websocket transport base URL (the `Op::RealtimeConversation`
-    /// `/v1/realtime`
-    /// connection) without changing normal provider HTTP requests.
-    pub experimental_realtime_ws_base_url: Option<String>,
-    /// Experimental / do not use. Overrides only the WebRTC realtime call
-    /// creation base URL. This is separate from `experimental_realtime_ws_base_url`
-    /// because WebRTC call creation is HTTP, while sideband control is websocket.
-    pub experimental_realtime_webrtc_call_base_url: Option<String>,
-    /// Experimental / do not use. Selects the realtime websocket model/snapshot
-    /// used for the `Op::RealtimeConversation` connection.
-    pub experimental_realtime_ws_model: Option<String>,
-    /// Experimental / do not use. Realtime websocket session selection.
-    /// `version` controls v1/v2 and `type` controls conversational/transcription.
-    #[serde(default)]
-    pub realtime: Option<RealtimeToml>,
-    /// Experimental / do not use. Overrides only the realtime conversation
-    /// websocket transport instructions (the `Op::RealtimeConversation`
-    /// `/ws` session.update instructions) without changing normal prompts.
-    pub experimental_realtime_ws_backend_prompt: Option<String>,
-    /// Experimental / do not use. Replaces the synthesized realtime startup
-    /// context appended to websocket session instructions. An empty string
-    /// disables startup context injection entirely.
-    pub experimental_realtime_ws_startup_context: Option<String>,
-    /// Experimental / do not use. Replaces the built-in realtime start
-    /// instructions inserted into developer messages when realtime becomes
-    /// active.
-    pub experimental_realtime_start_instructions: Option<String>,
-
     /// Removed. Former remote thread-store endpoint setting kept only so we can
     /// fail fast instead of silently falling back to local persistence.
     #[schemars(skip)]
@@ -470,7 +366,6 @@ pub struct ConfigToml {
 
     /// Experimental / do not use. Selects the thread store implementation.
     pub experimental_thread_store: Option<ThreadStoreToml>,
-    pub projects: Option<HashMap<String, ProjectConfig>>,
 
     /// Controls the web search tool mode: disabled, cached, indexed, or live.
     pub web_search: Option<WebSearchMode>,
@@ -523,44 +418,19 @@ pub struct ConfigToml {
     #[serde(default)]
     pub project_root_markers: Option<Vec<String>>,
 
-    /// When `true`, checks for Codex updates on startup and surfaces update prompts.
-    /// Set to `false` only if your Codex updates are centrally managed.
-    /// Defaults to `true`.
-    pub check_for_update_on_startup: Option<bool>,
-
-    /// Legacy fallback for `tui.disable_paste_burst`. Prefer the setting under `[tui]`.
-    pub disable_paste_burst: Option<bool>,
-
     /// When `enabled` is `false`, disables OpenAI analytics across Codex product surfaces on this machine.
     /// Custom OTLP metrics exporters are controlled by `otel.metrics_exporter`.
     /// When unset, the default depends on the client.
     pub analytics: Option<AnalyticsConfigToml>,
 
-    /// When `false`, disables feedback collection across Codex product surfaces.
-    /// Defaults to `true`.
-    pub feedback: Option<FeedbackConfigToml>,
-
     /// Settings for app-specific controls.
     #[serde(default)]
     pub apps: Option<AppsConfigToml>,
 
-    /// Opaque desktop settings stored alongside the rest of config.toml.
-    #[serde(default)]
-    pub desktop: Option<HashMap<String, JsonValue>>,
-
     /// OTEL configuration.
     pub otel: Option<OtelConfigToml>,
 
-    /// Windows-specific configuration.
-    #[serde(default)]
-    pub windows: Option<WindowsToml>,
-
-    /// Collection of in-product notices (different from notifications)
-    /// See [`crate::types::Notice`] for more details
-    pub notice: Option<Notice>,
-
     pub experimental_compact_prompt_file: Option<AbsolutePathBuf>,
-    pub experimental_use_unified_exec_tool: Option<bool>,
     /// Preferred OSS provider for local models, e.g. "lmstudio" or "ollama".
     pub oss_provider: Option<String>,
 }
@@ -573,126 +443,6 @@ pub enum ThreadStoreToml {
     InMemory {
         id: String,
     },
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
-pub struct AutoReviewToml {
-    /// Controls whether circuit-breaker interruptions include a structured error.
-    /// Strict mode writes structured errors that older clients may not
-    /// recognize when reading shared history. Defaults to `default`.
-    pub circuit_break_action: Option<CircuitBreakAction>,
-    /// Additional policy instructions inserted into the guardian prompt.
-    pub policy: Option<String>,
-    /// Additional policy text inserted into the Guardian template's `{{ extra_policy }}` slot.
-    pub extra_policy: Option<String>,
-    /// Experimental full Guardian prompt template containing the tenant policy placeholder.
-    pub experimental_policy_template: Option<String>,
-    /// Experimental replacement for the history-retrieval instructions when history tools
-    /// and Apps are enabled. Omitted or blank values use the built-in prompt.
-    pub experimental_conversation_history_prompt: Option<String>,
-    /// Maximum estimated tokens per Guardian history-tool response, before the standard
-    /// serialization allowance. Defaults to 4,000; stricter parent tool limits still apply.
-    pub conversation_history_max_output_tokens: Option<NonZeroUsize>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum CircuitBreakAction {
-    /// Emit the warning and interrupt without structured error details.
-    #[default]
-    Default,
-    /// Emit the same warning and interruption, with structured error details.
-    Strict,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
-#[schemars(deny_unknown_fields)]
-pub struct ProjectConfig {
-    pub trust_level: Option<TrustLevel>,
-}
-
-impl ProjectConfig {
-    pub fn is_trusted(&self) -> bool {
-        matches!(self.trust_level, Some(TrustLevel::Trusted))
-    }
-
-    pub fn is_untrusted(&self) -> bool {
-        matches!(self.trust_level, Some(TrustLevel::Untrusted))
-    }
-}
-
-/// Selected microphone inputs. Scalars preserve existing single-channel configuration.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
-#[serde(untagged)]
-pub enum MicrophoneChannels {
-    Single(std::num::NonZeroU16),
-    Multiple(Vec<std::num::NonZeroU16>),
-}
-
-impl MicrophoneChannels {
-    pub fn as_slice(&self) -> &[std::num::NonZeroU16] {
-        match self {
-            Self::Single(channel) => std::slice::from_ref(channel),
-            Self::Multiple(channels) => channels,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct RealtimeAudioConfig {
-    /// One-based microphone channels to mix; unset mixes all input channels.
-    pub microphone_channel: Option<MicrophoneChannels>,
-    pub microphone: Option<String>,
-    pub speaker: Option<String>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum RealtimeWsMode {
-    #[default]
-    Conversational,
-    Transcription,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum RealtimeTransport {
-    #[default]
-    #[serde(rename = "webrtc")]
-    WebRtc,
-    Websocket,
-}
-
-pub use codex_protocol::protocol::RealtimeConversationVersion as RealtimeWsVersion;
-pub use codex_protocol::protocol::RealtimeVoice;
-
-#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
-#[schemars(deny_unknown_fields)]
-pub struct RealtimeConfig {
-    pub version: RealtimeWsVersion,
-    #[serde(rename = "type")]
-    pub session_type: RealtimeWsMode,
-    pub transport: RealtimeTransport,
-    pub voice: Option<RealtimeVoice>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
-#[schemars(deny_unknown_fields)]
-pub struct RealtimeToml {
-    pub version: Option<RealtimeWsVersion>,
-    #[serde(rename = "type")]
-    pub session_type: Option<RealtimeWsMode>,
-    pub transport: Option<RealtimeTransport>,
-    pub voice: Option<RealtimeVoice>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
-#[schemars(deny_unknown_fields)]
-pub struct RealtimeAudioToml {
-    /// One-based microphone channels to mix; unset mixes all input channels.
-    pub microphone_channel: Option<MicrophoneChannels>,
-    pub microphone: Option<String>,
-    pub speaker: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, JsonSchema)]
@@ -818,114 +568,6 @@ pub struct GhostSnapshotToml {
     pub disable_warnings: Option<bool>,
 }
 
-/// Apply the executor's sandbox availability to an already selected sandbox mode.
-///
-/// Call this before resolving workspace-write settings so unused writable roots
-/// do not affect the read-only fallback. Named permission profiles are resolved
-/// separately and must not be downgraded through this helper.
-pub fn effective_sandbox_mode(
-    mode: SandboxMode,
-    platform: Platform,
-    windows_sandbox_level: WindowsSandboxLevel,
-) -> SandboxMode {
-    if platform == Platform::Windows
-        && windows_sandbox_level == WindowsSandboxLevel::Disabled
-        && mode == SandboxMode::WorkspaceWrite
-    {
-        SandboxMode::ReadOnly
-    } else {
-        mode
-    }
-}
-
-impl ConfigToml {
-    /// Derive the effective permission profile from sandbox config.
-    ///
-    /// Call this only after ruling out `default_permissions`: named
-    /// `[permissions]` profiles must be compiled through the permissions
-    /// profile pipeline, not reconstructed from `sandbox_mode`.
-    pub async fn derive_permission_profile(
-        &self,
-        sandbox_mode_override: Option<SandboxMode>,
-        windows_sandbox_level: WindowsSandboxLevel,
-        active_project: Option<&ProjectConfig>,
-        permission_profile_constraint: Option<&crate::Constrained<PermissionProfile>>,
-    ) -> PermissionProfile {
-        let configured_sandbox_mode = sandbox_mode_override.or(self.sandbox_mode);
-        let resolved_sandbox_mode = configured_sandbox_mode
-            .or_else(|| {
-                // If no sandbox_mode is set but this directory has a trust decision,
-                // default to workspace-write before applying the platform fallback.
-                active_project
-                    .filter(|project| project.is_trusted() || project.is_untrusted())
-                    .map(|_| SandboxMode::WorkspaceWrite)
-            })
-            .unwrap_or_default();
-        let effective_sandbox_mode = effective_sandbox_mode(
-            resolved_sandbox_mode,
-            Platform::native(),
-            windows_sandbox_level,
-        );
-
-        let permission_profile = match effective_sandbox_mode {
-            SandboxMode::ReadOnly => PermissionProfile::read_only(),
-            SandboxMode::WorkspaceWrite => match self.sandbox_workspace_write.as_ref() {
-                Some(SandboxWorkspaceWrite {
-                    writable_roots,
-                    network_access,
-                    exclude_tmpdir_env_var,
-                    exclude_slash_tmp,
-                }) => {
-                    let network_policy = if *network_access {
-                        NetworkSandboxPolicy::Enabled
-                    } else {
-                        NetworkSandboxPolicy::Restricted
-                    };
-                    PermissionProfile::workspace_write_with(
-                        writable_roots,
-                        network_policy,
-                        *exclude_tmpdir_env_var,
-                        *exclude_slash_tmp,
-                    )
-                }
-                None => PermissionProfile::workspace_write(),
-            },
-            SandboxMode::DangerFullAccess => PermissionProfile::Disabled,
-        };
-        if configured_sandbox_mode.is_none()
-            && let Some(constraint) = permission_profile_constraint
-            && let Err(err) = constraint.can_set(&permission_profile)
-        {
-            tracing::warn!(
-                error = %err,
-                "default sandbox policy is disallowed by requirements; falling back to required default"
-            );
-            PermissionProfile::read_only()
-        } else {
-            permission_profile
-        }
-    }
-
-    /// Resolves the cwd to an existing project, or returns None if ConfigToml
-    /// does not contain a project corresponding to cwd or the resolved git repo
-    /// root for cwd.
-    pub fn get_active_project(
-        &self,
-        resolved_cwd: &Path,
-        repo_root: Option<&Path>,
-    ) -> Option<ProjectConfig> {
-        self.projects.as_ref()?;
-        // Only canonicalize the repository root when neither cwd key matches.
-        std::iter::once(resolved_cwd)
-            .chain(repo_root)
-            .find_map(|path| {
-                self.get_active_project_for_lookup(&crate::ProjectTrustLookup::from_native_path(
-                    path,
-                ))
-            })
-    }
-}
-
 pub fn validate_reserved_model_provider_ids(
     model_providers: &HashMap<String, ModelProviderInfo>,
 ) -> Result<(), String> {
@@ -1021,37 +663,6 @@ mod tests {
 
     const WORKSPACE_ID_A: &str = "123e4567-e89b-42d3-a456-426614174000";
     const WORKSPACE_ID_B: &str = "123e4567-e89b-42d3-a456-426614174001";
-
-    #[test]
-    fn sandbox_mode_uses_executor_platform_and_sandbox_level() {
-        use Platform::Linux;
-        use Platform::Macos;
-        use Platform::Unknown;
-        use Platform::Windows;
-        use SandboxMode::DangerFullAccess;
-        use SandboxMode::ReadOnly;
-        use SandboxMode::WorkspaceWrite;
-        use WindowsSandboxLevel::Disabled;
-        use WindowsSandboxLevel::Elevated;
-        use WindowsSandboxLevel::RestrictedToken;
-
-        for (mode, platform, level, expected) in [
-            (WorkspaceWrite, Windows, Disabled, ReadOnly),
-            (WorkspaceWrite, Windows, RestrictedToken, WorkspaceWrite),
-            (WorkspaceWrite, Windows, Elevated, WorkspaceWrite),
-            (WorkspaceWrite, Linux, Disabled, WorkspaceWrite),
-            (WorkspaceWrite, Macos, Disabled, WorkspaceWrite),
-            (WorkspaceWrite, Unknown, Disabled, WorkspaceWrite),
-            (ReadOnly, Windows, Disabled, ReadOnly),
-            (DangerFullAccess, Windows, Disabled, DangerFullAccess),
-        ] {
-            assert_eq!(
-                effective_sandbox_mode(mode, platform, level),
-                expected,
-                "{mode:?}, {platform:?}, {level:?}"
-            );
-        }
-    }
 
     #[test]
     fn thread_unload_delay_requires_nonnegative_seconds() {

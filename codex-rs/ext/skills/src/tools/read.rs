@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use codex_analytics::InvocationType;
+use super::InvocationType;
 use codex_extension_api::FunctionCallError;
 use codex_extension_api::ToolCall;
 use codex_extension_api::ToolExecutor;
@@ -264,11 +264,8 @@ impl<'call> ToolExecutor<ToolCall<'call>> for ReadTool {
                     });
             }
 
-            if requested_resource == main_prompt
-                && args.cursor.is_none()
-                && let Some(analytics) = self.context.analytics.as_ref()
-            {
-                analytics.track_skill_invocation(
+            if requested_resource == main_prompt && args.cursor.is_none() {
+                self.context.telemetry.track_skill_invocation(
                     &skill_entry,
                     call.model.clone(),
                     call.turn_id.clone(),

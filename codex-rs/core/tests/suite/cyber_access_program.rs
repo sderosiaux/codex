@@ -226,14 +226,8 @@ async fn cyber_access_program_survives_mid_turn_remote_compaction_v2(
         .with_auth(auth)
         .with_config(|config| {
             config.model_auto_compact_token_limit = Some(200);
-            config
-                .features
-                .enable(Feature::ApiKeyModelDiscovery)
-                .expect("enable API-key model discovery");
-            config
-                .features
-                .enable(Feature::ApiKeyCyberAccessPrograms)
-                .expect("enable API-key Cyber access programs");
+            config.features.enable(Feature::ApiKeyModelDiscovery);
+            config.features.enable(Feature::ApiKeyCyberAccessPrograms);
         })
         .build_with_auto_env(&server)
         .await?;
@@ -305,15 +299,9 @@ async fn cyber_access_program_is_inherited_by_child_turns() -> Result<()> {
             .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
             .with_model(if is_v2 { "gpt-5.6-sol" } else { "gpt-5.1" })
             .with_config(move |config| {
-                config
-                    .features
-                    .enable(Feature::Collab)
-                    .expect("enable multi-agent tools");
+                config.features.enable(Feature::Collab);
                 if is_v2 {
-                    config
-                        .features
-                        .enable(Feature::MultiAgentV2)
-                        .expect("enable v2 tools");
+                    config.features.enable(Feature::MultiAgentV2);
                 }
             })
             .build_with_auto_env(&server)
@@ -428,14 +416,8 @@ async fn cyber_access_program_changes_on_one_websocket_with_response_reuse(
     let test = test_codex()
         .with_auth(auth)
         .with_config(|config| {
-            config
-                .features
-                .enable(Feature::ApiKeyModelDiscovery)
-                .expect("enable API-key model discovery");
-            config
-                .features
-                .enable(Feature::ApiKeyCyberAccessPrograms)
-                .expect("enable API-key Cyber access programs");
+            config.features.enable(Feature::ApiKeyModelDiscovery);
+            config.features.enable(Feature::ApiKeyCyberAccessPrograms);
         })
         .build_with_websocket_server(&server)
         .await?;

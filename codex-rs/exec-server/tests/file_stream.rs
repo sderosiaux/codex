@@ -44,10 +44,7 @@ async fn stream_stops_after_an_exact_block_boundary() -> Result<()> {
     std::fs::write(&path, vec![b'x'; BLOCK_SIZE * 2])?;
 
     let chunks = file_system
-        .read_file_stream(
-            &PathUri::from_host_native_path(path)?,
-            /*sandbox*/ None,
-        )
+        .read_file_stream(&PathUri::from_host_native_path(path)?)
         .await?
         .try_collect::<Vec<_>>()
         .await?;
@@ -70,7 +67,7 @@ async fn completed_streams_release_handle_capacity() -> Result<()> {
 
     for _ in 0..=OPEN_FILE_LIMIT {
         let chunks = file_system
-            .read_file_stream(&path, /*sandbox*/ None)
+            .read_file_stream(&path)
             .await?
             .try_collect::<Vec<_>>()
             .await?;
@@ -101,11 +98,7 @@ async fn file_reads_reject_fifo_without_waiting_for_a_writer(follow_symlinks: bo
     let path_uri = PathUri::from_host_native_path(&path)?;
     let read_result = timeout(
         Duration::from_secs(1),
-        file_system.read_file(
-            &path_uri,
-            ReadFileOptions { follow_symlinks },
-            /*sandbox*/ None,
-        ),
+        file_system.read_file(&path_uri, ReadFileOptions { follow_symlinks }),
     )
     .await
     .context("reading a FIFO should not wait for a writer")?;
@@ -114,7 +107,7 @@ async fn file_reads_reject_fifo_without_waiting_for_a_writer(follow_symlinks: bo
     };
     let stream_result = timeout(
         Duration::from_secs(1),
-        file_system.read_file_stream(&path_uri, /*sandbox*/ None),
+        file_system.read_file_stream(&path_uri),
     )
     .await
     .context("streaming a FIFO should not wait for a writer")?;
@@ -149,7 +142,6 @@ async fn file_reads_reject_named_pipes() -> Result<()> {
         file_system.read_file(
             &PathUri::from_host_native_path(std::path::Path::new(&read_path))?,
             ReadFileOptions::default(),
-            /*sandbox*/ None,
         ),
     )
     .await
@@ -162,10 +154,9 @@ async fn file_reads_reject_named_pipes() -> Result<()> {
         .create(&stream_path)?;
     let stream_result = timeout(
         Duration::from_secs(1),
-        file_system.read_file_stream(
-            &PathUri::from_host_native_path(std::path::Path::new(&stream_path))?,
-            /*sandbox*/ None,
-        ),
+        file_system.read_file_stream(&PathUri::from_host_native_path(std::path::Path::new(
+            &stream_path,
+        ))?),
     )
     .await
     .expect("streaming a named pipe should not hang");
@@ -191,9 +182,8 @@ async fn stream_keeps_reading_the_open_file_after_path_replacement() -> Result<(
     let tmp = TempDir::new()?;
     let path = tmp.path().join("replaceable.bin");
     std::fs::write(&path, vec![b'a'; BLOCK_SIZE + 1])?;
-    let sandbox = read_only_sandbox(tmp.path().to_path_buf());
     let mut stream = file_system
-        .read_file_stream(&PathUri::from_host_native_path(&path)?, Some(&sandbox))
+        .read_file_stream(&PathUri::from_host_native_path(&path)?)
         .await?;
 
     assert_eq!(
@@ -230,7 +220,6 @@ async fn read_block_supports_non_sequential_offsets_and_lengths() -> Result<()> 
             handle_id: Uuid::new_v4().simple().to_string(),
             path: PathUri::from_host_native_path(path)?,
             mode: FsOpenMode::Read,
-            sandbox: None,
         })
         .await?;
 
@@ -306,7 +295,6 @@ async fn open_enforces_the_per_connection_limit_and_close_releases_capacity() ->
                 handle_id: Uuid::new_v4().simple().to_string(),
                 path: path.clone(),
                 mode: FsOpenMode::Read,
-                sandbox: None,
             })
             .await?;
         handles.push(open.handle_id);
@@ -317,7 +305,6 @@ async fn open_enforces_the_per_connection_limit_and_close_releases_capacity() ->
             handle_id: Uuid::new_v4().simple().to_string(),
             path: path.clone(),
             mode: FsOpenMode::Read,
-            sandbox: None,
         })
         .await
         .expect_err("opening beyond the limit should fail");
@@ -342,7 +329,6 @@ async fn open_enforces_the_per_connection_limit_and_close_releases_capacity() ->
             handle_id: Uuid::new_v4().simple().to_string(),
             path,
             mode: FsOpenMode::Read,
-            sandbox: None,
         })
         .await?;
     drop(client);
@@ -376,7 +362,6 @@ async fn replace_open_rejects_unavailable_handles_before_touching_files(
                 handle_id: index.to_string(),
                 path: PathUri::from_host_native_path(&existing)?,
                 mode: FsOpenMode::Read,
-                sandbox: None,
             })
             .await?;
     }
@@ -387,7 +372,6 @@ async fn replace_open_rejects_unavailable_handles_before_touching_files(
                 handle_id: handle_id.to_string(),
                 path: PathUri::from_host_native_path(path)?,
                 mode: FsOpenMode::Replace,
-                sandbox: None,
             })
             .await;
         let Err(ExecServerError::Server { code, message }) = error else {
@@ -418,7 +402,6 @@ async fn open_rejects_handle_ids_longer_than_32_bytes() -> Result<()> {
             handle_id: "x".repeat(33),
             path: PathUri::from_host_native_path(path)?,
             mode: FsOpenMode::Read,
-            sandbox: None,
         })
         .await
         .expect_err("oversized handle ID should fail");
@@ -453,7 +436,6 @@ async fn write_blocks_support_non_sequential_offsets_and_enforce_bounds() -> Res
             handle_id: "writer".to_string(),
             path: PathUri::from_host_native_path(&path)?,
             mode: FsOpenMode::Replace,
-            sandbox: None,
         })
         .await?;
     for (offset, chunk) in [
@@ -530,7 +512,6 @@ async fn write_blocks_reject_ranges_outside_signed_file_offsets(
             handle_id: "writer".to_string(),
             path: PathUri::from_host_native_path(&path)?,
             mode: FsOpenMode::Replace,
-            sandbox: None,
         })
         .await?;
     client
@@ -585,7 +566,6 @@ async fn replace_open_truncates_existing_file() -> Result<()> {
             handle_id: "replacement".to_string(),
             path: PathUri::from_host_native_path(&path)?,
             mode: FsOpenMode::Replace,
-            sandbox: None,
         })
         .await?;
     assert_eq!(std::fs::read(&path)?, b"");
@@ -597,113 +577,7 @@ async fn replace_open_truncates_existing_file() -> Result<()> {
     Ok(())
 }
 
-/// Both restricted reads and full-disk reads must retain write sandbox enforcement.
-#[cfg(unix)]
-#[tokio::test]
-async fn writable_open_obeys_sandbox_write_permissions() -> Result<()> {
-    use codex_exec_server::FileSystemSandboxContext;
-    use codex_protocol::models::PermissionProfile;
-    use codex_protocol::permissions::FileSystemAccessMode;
-    use codex_protocol::permissions::FileSystemPath;
-    use codex_protocol::permissions::FileSystemSandboxEntry;
-    use codex_protocol::permissions::FileSystemSandboxPolicy;
-    use codex_protocol::permissions::FileSystemSpecialPath;
-    use codex_protocol::permissions::NetworkSandboxPolicy;
-    use codex_utils_absolute_path::AbsolutePathBuf;
-
-    let server = exec_server().await?;
-    let client = ExecServerClient::connect_websocket(RemoteExecServerConnectArgs::new(
-        server.websocket_url().to_string(),
-        "file-write-sandbox-test".to_string(),
-        HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
-    ))
-    .await?;
-    let workspace = TempDir::new()?;
-    let outside = TempDir::new()?;
-    let allowed = workspace.path().join("allowed.bin");
-    let denied = outside.path().join("denied.bin");
-    std::fs::write(&denied, b"original")?;
-    for full_disk_read in [false, true] {
-        let mut entries = vec![FileSystemSandboxEntry::new(
-            AbsolutePathBuf::from_absolute_path(workspace.path())?.into(),
-            FileSystemAccessMode::Write,
-        )];
-        if full_disk_read {
-            entries.push(FileSystemSandboxEntry::new(
-                FileSystemPath::Special {
-                    value: FileSystemSpecialPath::Root,
-                },
-                FileSystemAccessMode::Read,
-            ));
-        }
-        let sandbox = FileSystemSandboxContext::from_permission_profile(
-            PermissionProfile::from_runtime_permissions(
-                &FileSystemSandboxPolicy::restricted(entries),
-                NetworkSandboxPolicy::Restricted,
-            ),
-            PathUri::from_host_native_path(workspace.path())?,
-        );
-        client
-            .fs_open(FsOpenParams {
-                handle_id: "denied".to_string(),
-                path: PathUri::from_host_native_path(&denied)?,
-                mode: FsOpenMode::Replace,
-                sandbox: Some(sandbox.clone()),
-            })
-            .await
-            .expect_err("writable opens must not escape the write sandbox");
-        let open = client
-            .fs_open(FsOpenParams {
-                handle_id: "allowed".to_string(),
-                path: PathUri::from_host_native_path(&allowed)?,
-                mode: FsOpenMode::Replace,
-                sandbox: Some(sandbox.clone()),
-            })
-            .await?;
-        client
-            .fs_write_block(FsWriteBlockParams {
-                handle_id: open.handle_id.clone(),
-                offset: 0,
-                chunk: b"allowed".to_vec().into(),
-            })
-            .await?;
-        client
-            .fs_close(FsCloseParams {
-                handle_id: open.handle_id,
-            })
-            .await?;
-        assert_eq!(std::fs::read(&allowed)?, b"allowed");
-        assert_eq!(std::fs::read(&denied)?, b"original");
-    }
-    Ok(())
-}
-
 fn connect_file_system(websocket_url: &str) -> Result<Arc<dyn ExecutorFileSystem>> {
     let environment = Environment::create_for_tests(Some(websocket_url.to_string()))?;
     Ok(environment.get_filesystem())
-}
-
-// Only the Unix stream tests above need this sandbox builder.
-#[cfg(unix)]
-fn read_only_sandbox(path: std::path::PathBuf) -> codex_exec_server::FileSystemSandboxContext {
-    use codex_exec_server::FileSystemSandboxContext;
-    use codex_protocol::models::PermissionProfile;
-    use codex_protocol::permissions::FileSystemAccessMode;
-    use codex_protocol::permissions::FileSystemSandboxEntry;
-    use codex_protocol::permissions::FileSystemSandboxPolicy;
-    use codex_protocol::permissions::NetworkSandboxPolicy;
-    use codex_utils_absolute_path::AbsolutePathBuf;
-
-    let path = AbsolutePathBuf::from_absolute_path(&path)
-        .unwrap_or_else(|err| panic!("sandbox path should be absolute: {err}"));
-    let cwd = PathUri::from_abs_path(&path);
-    let permissions = PermissionProfile::from_runtime_permissions(
-        &FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
-            path: path.into(),
-            access: FileSystemAccessMode::Read,
-            missing_path_behavior: None,
-        }]),
-        NetworkSandboxPolicy::Restricted,
-    );
-    FileSystemSandboxContext::from_permission_profile(permissions, cwd)
 }

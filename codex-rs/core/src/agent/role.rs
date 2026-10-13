@@ -95,8 +95,7 @@ async fn apply_role_to_config_inner(
                     feature @ (Feature::ShellTool
                     | Feature::Apps
                     | Feature::Plugins
-                    | Feature::MemoryTool
-                    | Feature::RequestPermissionsTool),
+                    | Feature::MemoryTool),
                 ) = feature_for_key(&key)
             {
                 overrides.features.insert(feature.key().to_string(), false);
@@ -215,7 +214,7 @@ mod role_overrides {
         }
         for key in overrides.features.keys() {
             if let Some(feature) = feature_for_key(key) {
-                next_config.features.disable(feature)?;
+                next_config.features.disable(feature);
             }
         }
         if overrides
@@ -252,17 +251,7 @@ mod role_overrides {
             ConfigLayerEntry::new(ConfigLayerSource::SessionFlags, role_layer_toml.clone());
         let insertion_index = layers.partition_point(|layer| layer.name <= role_layer.name);
         layers.insert(insertion_index, role_layer);
-        Ok(ConfigLayerStack::new(
-            layers,
-            config.config_layer_stack.requirements().clone(),
-            config.config_layer_stack.requirements_toml().clone(),
-        )?
-        .with_cloud_config_binding(config.config_layer_stack.cloud_config_binding().cloned())
-        .with_user_and_project_exec_policy_rules_ignored(
-            config
-                .config_layer_stack
-                .ignore_user_and_project_exec_policy_rules(),
-        ))
+        Ok(ConfigLayerStack::new(layers)?)
     }
 }
 

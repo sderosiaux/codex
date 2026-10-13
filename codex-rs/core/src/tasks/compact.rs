@@ -33,7 +33,6 @@ impl SessionTask for CompactTask {
         _input: Vec<TurnInput>,
         cancellation_token: CancellationToken,
     ) -> SessionTaskResult {
-        let _profile_guard = ctx.turn_timing_state.begin_compaction();
         let _compaction_span = tracing::trace_span!(
             "codex.compaction",
             codex.turn.phase = "compaction",

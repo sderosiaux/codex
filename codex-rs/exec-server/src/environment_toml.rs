@@ -838,7 +838,6 @@ url = "ws://127.0.0.1:4513"
             environment_provider_from_codex_home(codex_home.path()).expect("environment provider");
         let manager = EnvironmentManager::from_snapshot(
             provider.snapshot().await.expect("environment snapshot"),
-            /*local_runtime_paths*/ None,
             HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
         )
         .expect("environment manager");

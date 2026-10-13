@@ -10,9 +10,7 @@ use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::PostToolUsePayload;
 use crate::tools::registry::PreToolUsePayload;
 use crate::tools::registry::ToolExecutor;
-use crate::tools::sandboxing::ToolError;
 use crate::unified_exec::UnifiedExecContext;
-use crate::unified_exec::UnifiedExecError;
 use crate::unified_exec::WriteStdinInteractionEvent;
 use crate::unified_exec::WriteStdinRequest;
 use codex_tools::ToolName;
@@ -85,7 +83,6 @@ impl WriteStdinHandler {
         if turn
             .config
             .features
-            .get()
             .enabled(Feature::StableEnvironmentTools)
         {
             resolve_tool_environment(
@@ -120,16 +117,7 @@ impl WriteStdinHandler {
             )
             .await
             .map_err(|err| {
-                let message = match err {
-                    UnifiedExecError::StdinApproval(ToolError::Rejected(reason)) => {
-                        format!("write_stdin rejected: {reason}")
-                    }
-                    UnifiedExecError::StdinApproval(ToolError::Codex(err)) => {
-                        format!("write_stdin approval failed: {err}")
-                    }
-                    err => format!("write_stdin failed: {err}"),
-                };
-                FunctionCallError::RespondToModel(message)
+                FunctionCallError::RespondToModel(format!("write_stdin failed: {err}"))
             })?;
 
         Ok(boxed_tool_output(response))

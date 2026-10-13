@@ -411,7 +411,7 @@ async fn routed_tcp_connections_only_enable_nodelay_when_requested() {
 }
 
 fn websocket_tcp_nodelay(websocket: &WebSocketConnection) -> bool {
-    let Some(ConnectionInner::Left(stream)) = &websocket.inner else {
+    let ConnectionInner::Left(stream) = &websocket.inner else {
         panic!("default connector should use Tungstenite's transport");
     };
     let MaybeTlsStream::Plain(stream) = stream.get_ref() else {
@@ -707,9 +707,5 @@ fn test_tls_configs() -> (Arc<ClientConfig>, TlsAcceptor, CertificateDer<'static
 }
 
 fn test_connection(inner: ConnectionInner) -> WebSocketConnection {
-    let policy = codex_http_client::NetworkPolicy::unmanaged();
-    let lease = policy
-        .acquire(&url::Url::parse("wss://localhost/").unwrap())
-        .unwrap();
-    WebSocketConnection::new(inner, lease)
+    WebSocketConnection { inner }
 }

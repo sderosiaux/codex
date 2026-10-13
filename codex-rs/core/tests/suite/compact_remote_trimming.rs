@@ -172,10 +172,7 @@ async fn remote_compact_v2_trim_estimate_uses_session_base_instructions(
                         config.model_context_window = Some(12_000);
                         config.base_instructions = Some(instructions);
                         if incremental_tools {
-                            config
-                                .features
-                                .enable(Feature::IncrementalTools)
-                                .expect("enable incremental tools");
+                            config.features.enable(Feature::IncrementalTools);
                         }
                     }
                 }),

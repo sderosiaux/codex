@@ -170,7 +170,6 @@ async fn responses_stream_includes_subagent_header_on_review() {
             summary.unwrap_or(model_info.default_reasoning_summary),
             /*service_tier*/ None,
             &responses_metadata,
-            &codex_rollout_trace::InferenceTraceContext::disabled(),
         )
         .await
         .expect("stream failed");
@@ -317,7 +316,6 @@ async fn responses_stream_includes_subagent_header_on_other() {
             summary.unwrap_or(model_info.default_reasoning_summary),
             /*service_tier*/ None,
             &responses_metadata,
-            &codex_rollout_trace::InferenceTraceContext::disabled(),
         )
         .await
         .expect("stream failed");
@@ -449,7 +447,6 @@ async fn responses_respects_model_info_overrides_from_config() {
             summary.unwrap_or(model_info.default_reasoning_summary),
             /*service_tier*/ None,
             &responses_metadata,
-            &codex_rollout_trace::InferenceTraceContext::disabled(),
         )
         .await
         .expect("stream failed");

@@ -12,11 +12,7 @@ use chrono::Utc;
 use codex_git_utils::GitSha;
 use codex_protocol::SanitizedGitUrl;
 use codex_protocol::ThreadId;
-use codex_protocol::models::PermissionProfile;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::GitInfo;
-use codex_protocol::protocol::NetworkAccess;
-use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_rollout::ARCHIVED_SESSIONS_SUBDIR;
@@ -159,8 +155,7 @@ pub(super) fn stored_thread_from_rollout_item(
         forked_from_id: None,
         parent_thread_id: item.parent_thread_id,
         preview,
-        name: codex_state::is_guardian_review_source(&source)
-            .then(|| codex_state::GUARDIAN_THREAD_TITLE.to_string()),
+        name: None,
         model_provider: item
             .model_provider
             .filter(|provider| !provider.is_empty())
@@ -186,33 +181,10 @@ pub(super) fn stored_thread_from_rollout_item(
         agent_role: item.agent_role,
         agent_path: None,
         git_info,
-        approval_mode: AskForApproval::OnRequest,
-        permission_profile: PermissionProfile::read_only(),
         token_usage: None,
         first_user_message: item.first_user_message,
         history: None,
     })
-}
-
-pub(super) fn permission_profile_from_metadata_value(value: &str, cwd: &Path) -> PermissionProfile {
-    serde_json::from_str::<PermissionProfile>(value)
-        .or_else(|_| {
-            parse_legacy_sandbox_policy(value)
-                .map(|policy| PermissionProfile::from_legacy_sandbox_policy_for_cwd(&policy, cwd))
-        })
-        .unwrap_or_else(|_| PermissionProfile::read_only())
-}
-
-pub(super) fn permission_profile_to_metadata_value(
-    permission_profile: &PermissionProfile,
-) -> String {
-    match serde_json::to_string(permission_profile) {
-        Ok(value) => value,
-        Err(err) => {
-            tracing::warn!("failed to serialize permission profile metadata: {err}");
-            String::new()
-        }
-    }
 }
 
 pub(super) fn sqlite_thread_name(metadata: &ThreadMetadata) -> Option<String> {
@@ -281,24 +253,11 @@ pub(super) async fn resolve_thread_names(
                 ThreadHistoryMode::Paginated => sqlite_thread_name(metadata),
             };
             if let Some(name) = name {
-                if history_mode == ThreadHistoryMode::Legacy && has_guardian_default_title(metadata)
-                {
-                    names.entry(thread_id).or_insert(name);
-                } else {
-                    names.insert(thread_id, name);
-                }
+                names.insert(thread_id, name);
             }
         }
     }
     Ok(names)
-}
-
-/// Identifies the derived Guardian label, which must yield to legacy indexed names.
-pub(super) fn has_guardian_default_title(metadata: &ThreadMetadata) -> bool {
-    metadata.title.trim() == codex_state::GUARDIAN_THREAD_TITLE
-        && serde_json::from_str::<SessionSource>(&metadata.source)
-            .as_ref()
-            .is_ok_and(codex_state::is_guardian_review_source)
 }
 
 pub(super) fn distinct_thread_metadata_title(metadata: &ThreadMetadata) -> Option<String> {
@@ -320,20 +279,6 @@ fn parse_rfc3339(value: Option<&str>) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(value?)
         .ok()
         .map(|dt| dt.with_timezone(&Utc))
-}
-
-fn parse_legacy_sandbox_policy(value: &str) -> serde_json::Result<SandboxPolicy> {
-    serde_json::from_str(value)
-        .or_else(|_| serde_json::from_value(serde_json::Value::String(value.to_string())))
-        .or_else(|_| match value {
-            "danger-full-access" => Ok(SandboxPolicy::DangerFullAccess),
-            "read-only" => Ok(SandboxPolicy::new_read_only_policy()),
-            "workspace-write" => Ok(SandboxPolicy::new_workspace_write_policy()),
-            "external-sandbox" => Ok(SandboxPolicy::ExternalSandbox {
-                network_access: NetworkAccess::Restricted,
-            }),
-            _ => serde_json::from_value(serde_json::Value::String(value.to_string())),
-        })
 }
 
 pub(super) fn git_info_from_parts(
@@ -367,7 +312,7 @@ fn thread_id_from_rollout_path(path: &Path) -> Option<ThreadId> {
 
 #[cfg(test)]
 mod tests {
-    use codex_protocol::protocol::SubAgentSource;
+
     use codex_rollout::ThreadItem;
     use pretty_assertions::assert_eq;
     use uuid::Uuid;
@@ -375,7 +320,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn guardian_rollout_conversion_preserves_name_and_logical_path() {
+    fn rollout_conversion_uses_logical_path() {
         let uuid = Uuid::from_u128(1);
         let compressed_path = PathBuf::from(format!(
             "/tmp/sessions/2025/01/03/rollout-2025-01-03T12-00-00-{uuid}.jsonl.zst"
@@ -383,9 +328,7 @@ mod tests {
         let thread = stored_thread_from_rollout_item(
             ThreadItem {
                 path: compressed_path.clone(),
-                source: Some(SessionSource::SubAgent(SubAgentSource::Other(
-                    "guardian".to_string(),
-                ))),
+                source: Some(SessionSource::Cli),
                 ..Default::default()
             },
             /*archived*/ false,
@@ -393,7 +336,7 @@ mod tests {
         )
         .expect("stored thread");
 
-        assert_eq!(thread.name.as_deref(), Some("Guardian review"));
+        assert_eq!(thread.name, None);
         assert_eq!(
             thread.rollout_path,
             Some(

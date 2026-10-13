@@ -281,10 +281,9 @@ fn registry_rejects_default_namespace_alias_collisions() {
 }
 
 #[test]
-fn registry_preserves_external_winners_and_trusted_synthetic_order() {
+fn registry_preserves_external_winners() {
     let handler = |tool_name| Arc::new(TestHandler { tool_name }) as Arc<dyn CoreToolRuntime>;
-    let [first_name, second_name, synthetic_name] =
-        ["first", "second", "synthetic"].map(codex_tools::ToolName::plain);
+    let [first_name, second_name] = ["first", "second"].map(codex_tools::ToolName::plain);
     let first_handler = handler(first_name.clone());
 
     let mut registry = ToolRegistry::from_tools([Arc::clone(&first_handler)]);
@@ -292,14 +291,13 @@ fn registry_preserves_external_winners_and_trusted_synthetic_order() {
     let canonical_first_name = first_name.clone().with_default_namespace();
     assert_eq!(registry.first_collision(), Some(&canonical_first_name));
     assert!(registry.register_external(handler(second_name.clone())));
-    registry.prepend_trusted(handler(synthetic_name.clone()));
 
     assert_eq!(
         registry
             .entries()
             .map(|tool| tool.runtime.tool_name())
             .collect::<Vec<_>>(),
-        vec![synthetic_name, first_name.clone(), second_name],
+        vec![first_name.clone(), second_name],
     );
     assert!(
         registry
@@ -400,7 +398,7 @@ async fn readiness_selects_exact_tool_with_registry_owned_exposure() {
         readiness_waits: Arc::clone(&namespaced_readiness_waits),
     });
     let mut registry = ToolRegistry::from_tools([plain_handler]);
-    registry.register_trusted_with_exposure(namespaced_handler, ToolExposure::DirectModelOnly);
+    registry.register_trusted_with_exposure(namespaced_handler, ToolExposure::Direct);
 
     registry
         .tool(&plain_name)
@@ -559,24 +557,6 @@ async fn spawn_agent_function_tools_use_agent_matcher_alias() {
 }
 
 #[tokio::test]
-async fn code_mode_wait_does_not_expose_default_hook_payloads() {
-    let (session, turn) = crate::session::tests::make_session_and_context().await;
-    let output = crate::tools::context::FunctionToolOutput::from_text("ok".to_string(), Some(true));
-
-    let wait = crate::tools::handlers::CodeModeWaitHandler::new(
-        /*description_override*/ None, /*parameters_override*/ None,
-    );
-    let wait_invocation = test_invocation(
-        Arc::new(session),
-        Arc::new(turn),
-        "wait-call",
-        wait.tool_name(),
-    );
-    assert_eq!(wait.pre_tool_use_payload(&wait_invocation), None);
-    assert_eq!(wait.post_tool_use_payload(&wait_invocation, &output), None);
-}
-
-#[tokio::test]
 async fn write_stdin_does_not_expose_default_pre_tool_use_payload() {
     let (session, turn) = crate::session::tests::make_session_and_context().await;
 
@@ -611,7 +591,6 @@ fn post_tool_use_feedback_output_preserves_fallback_token_limit_override(
                     meta: None,
                 },
                 tool_input: serde_json::json!({}),
-                result_metadata_capture_allowed: false,
                 wall_time: Duration::ZERO,
                 original_image_detail_supported: false,
                 truncation_policy,
@@ -637,98 +616,6 @@ fn post_tool_use_feedback_output_preserves_fallback_token_limit_override(
             }),
         }
     );
-}
-
-#[test]
-fn post_tool_use_feedback_output_keeps_code_mode_result_typed() {
-    let result = AnyToolResult {
-        call_id: "call-1".to_string(),
-        payload: ToolPayload::Function {
-            arguments: "{}".to_string(),
-        },
-        result: Box::new(PostToolUseFeedbackOutput {
-            original: Box::new(codex_tools::JsonToolOutput::new(
-                serde_json::json!({ "typed": true }),
-            )),
-            model_visible: crate::tools::context::FunctionToolOutput::from_text(
-                "hook feedback".to_string(),
-                /*success*/ None,
-            ),
-        }),
-        post_tool_use_payload: None,
-    };
-
-    assert_eq!(
-        result.into_response(),
-        ResponseItemEnvelope::new(
-            ResponseInputItem::FunctionCallOutput {
-                call_id: "call-1".to_string(),
-                output: codex_protocol::models::FunctionCallOutputPayload::from_text(
-                    "hook feedback".to_string()
-                ),
-            }
-            .into()
-        )
-    );
-
-    let result = AnyToolResult {
-        call_id: "call-1".to_string(),
-        payload: ToolPayload::Function {
-            arguments: "{}".to_string(),
-        },
-        result: Box::new(PostToolUseFeedbackOutput {
-            original: Box::new(codex_tools::JsonToolOutput::new(
-                serde_json::json!({ "typed": true }),
-            )),
-            model_visible: crate::tools::context::FunctionToolOutput::from_text(
-                "hook feedback".to_string(),
-                /*success*/ None,
-            ),
-        }),
-        post_tool_use_payload: None,
-    };
-
-    assert_eq!(
-        result.code_mode_result(),
-        serde_json::json!({ "typed": true })
-    );
-}
-
-#[test_case::test_case(false; "success")]
-#[test_case::test_case(true; "tool error")]
-fn post_tool_use_feedback_output_preserves_mcp_result_metadata(tool_error: bool) {
-    let metadata = serde_json::json!({
-        "openai/resource_access": { "resources": [] },
-        "provider/custom": { "items": [1, null, { "value": true }] },
-    });
-    let result = PostToolUseFeedbackOutput {
-        original: Box::new(crate::tools::context::McpToolOutput {
-            result: codex_protocol::mcp::CallToolResult {
-                content: vec![serde_json::json!({
-                    "type": "text",
-                    "text": "original result",
-                })],
-                structured_content: None,
-                is_error: Some(tool_error),
-                meta: Some(metadata.clone()),
-            },
-            tool_input: serde_json::json!({ "query": "rewritten query" }),
-            result_metadata_capture_allowed: true,
-            wall_time: std::time::Duration::ZERO,
-            original_image_detail_supported: false,
-            truncation_policy: codex_utils_output_truncation::TruncationPolicy::Bytes(64),
-        }),
-        model_visible: FunctionToolOutput::from_text(
-            "unrelated hook feedback".to_string(),
-            /*success*/ None,
-        ),
-    };
-    let payload = ToolPayload::Function {
-        arguments: "{}".to_string(),
-    };
-    let original_result = result.original.code_mode_result(&payload);
-    assert_eq!(result.tool_result_metadata(), Some(&metadata));
-    assert_eq!(result.code_mode_result(&payload), original_result);
 }
 
 #[tokio::test]

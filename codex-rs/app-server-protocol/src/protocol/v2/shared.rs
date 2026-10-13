@@ -1,22 +1,7 @@
 use crate::JsonSchema;
 use crate::TS;
-use codex_experimental_api_macros::ExperimentalApi;
-use codex_protocol::config_types::ApprovalsReviewer as CoreApprovalsReviewer;
-use codex_protocol::config_types::SandboxMode as CoreSandboxMode;
-use codex_protocol::protocol::AskForApproval as CoreAskForApproval;
 use codex_protocol::protocol::CodexErrorInfo as CoreCodexErrorInfo;
-use codex_protocol::protocol::GranularApprovalConfig as CoreGranularApprovalConfig;
 use codex_protocol::protocol::NonSteerableTurnKind as CoreNonSteerableTurnKind;
-#[cfg(test)]
-use schemars::r#gen::SchemaGenerator;
-#[cfg(test)]
-use schemars::schema::InstanceType;
-#[cfg(test)]
-use schemars::schema::Metadata;
-#[cfg(test)]
-use schemars::schema::Schema;
-#[cfg(test)]
-use schemars::schema::SchemaObject;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
@@ -82,7 +67,6 @@ pub enum CodexErrorInfo {
     ServerOverloaded,
     CyberPolicy,
     MisalignmentPolicyViolation,
-    TooManyDenials,
     HttpConnectionFailed {
         #[serde(rename = "httpStatusCode")]
         #[ts(rename = "httpStatusCode")]
@@ -98,7 +82,6 @@ pub enum CodexErrorInfo {
     Unauthorized,
     BadRequest,
     ThreadRollbackFailed,
-    SandboxError,
     /// The response SSE stream disconnected in the middle of a turn before completion.
     ResponseStreamDisconnected {
         #[serde(rename = "httpStatusCode")]
@@ -160,7 +143,6 @@ impl From<CoreCodexErrorInfo> for CodexErrorInfo {
             CoreCodexErrorInfo::MisalignmentPolicyViolation => {
                 CodexErrorInfo::MisalignmentPolicyViolation
             }
-            CoreCodexErrorInfo::TooManyDenials => CodexErrorInfo::TooManyDenials,
             CoreCodexErrorInfo::HttpConnectionFailed { http_status_code } => {
                 CodexErrorInfo::HttpConnectionFailed { http_status_code }
             }
@@ -172,7 +154,6 @@ impl From<CoreCodexErrorInfo> for CodexErrorInfo {
             CoreCodexErrorInfo::BadRequest => CodexErrorInfo::BadRequest,
             CoreCodexErrorInfo::InvalidPrompt => CodexErrorInfo::Other,
             CoreCodexErrorInfo::ThreadRollbackFailed => CodexErrorInfo::ThreadRollbackFailed,
-            CoreCodexErrorInfo::SandboxError => CodexErrorInfo::SandboxError,
             CoreCodexErrorInfo::ResponseStreamDisconnected { http_status_code } => {
                 CodexErrorInfo::ResponseStreamDisconnected { http_status_code }
             }
@@ -194,166 +175,6 @@ impl From<CoreNonSteerableTurnKind> for NonSteerableTurnKind {
         match value {
             CoreNonSteerableTurnKind::Review => Self::Review,
             CoreNonSteerableTurnKind::Compact => Self::Compact,
-        }
-    }
-}
-
-#[derive(
-    Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS, ExperimentalApi,
-)]
-#[serde(rename_all = "kebab-case")]
-#[ts(rename_all = "kebab-case", export_to = "v2/")]
-pub enum AskForApproval {
-    #[serde(rename = "untrusted")]
-    #[ts(rename = "untrusted")]
-    UnlessTrusted,
-    OnRequest,
-    #[experimental("askForApproval.granular")]
-    Granular {
-        sandbox_approval: bool,
-        rules: bool,
-        #[serde(default)]
-        skill_approval: bool,
-        #[serde(default)]
-        request_permissions: bool,
-        mcp_elicitations: bool,
-    },
-    Never,
-}
-
-impl AskForApproval {
-    pub fn to_core(self) -> CoreAskForApproval {
-        match self {
-            AskForApproval::UnlessTrusted => CoreAskForApproval::UnlessTrusted,
-            AskForApproval::OnRequest => CoreAskForApproval::OnRequest,
-            AskForApproval::Granular {
-                sandbox_approval,
-                rules,
-                skill_approval,
-                request_permissions,
-                mcp_elicitations,
-            } => CoreAskForApproval::Granular(CoreGranularApprovalConfig {
-                sandbox_approval,
-                rules,
-                skill_approval,
-                request_permissions,
-                mcp_elicitations,
-            }),
-            AskForApproval::Never => CoreAskForApproval::Never,
-        }
-    }
-}
-
-impl From<CoreAskForApproval> for AskForApproval {
-    fn from(value: CoreAskForApproval) -> Self {
-        match value {
-            CoreAskForApproval::UnlessTrusted => AskForApproval::UnlessTrusted,
-            CoreAskForApproval::OnRequest => AskForApproval::OnRequest,
-            CoreAskForApproval::Granular(granular_config) => AskForApproval::Granular {
-                sandbox_approval: granular_config.sandbox_approval,
-                rules: granular_config.rules,
-                skill_approval: granular_config.skill_approval,
-                request_permissions: granular_config.request_permissions,
-                mcp_elicitations: granular_config.mcp_elicitations,
-            },
-            CoreAskForApproval::Never => AskForApproval::Never,
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, TS)]
-#[ts(
-    type = r#""user" | "auto_review" | "guardian_subagent""#,
-    export_to = "v2/"
-)]
-/// Configures who approval requests are routed to for review. Examples
-/// include sandbox escapes, blocked network access, MCP approval prompts, and
-/// ARC escalations. Defaults to `user`. `auto_review` uses a carefully
-/// prompted subagent to gather relevant context and apply a risk-based
-/// decision framework before approving or denying the request.
-pub enum ApprovalsReviewer {
-    #[serde(rename = "user")]
-    User,
-    #[serde(rename = "auto_review", alias = "guardian_subagent")]
-    AutoReview,
-}
-
-#[cfg(test)]
-impl JsonSchema for ApprovalsReviewer {
-    fn schema_name() -> String {
-        "ApprovalsReviewer".to_string()
-    }
-
-    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
-        string_enum_schema_with_description(
-            &["user", "auto_review", "guardian_subagent"],
-            "Configures who approval requests are routed to for review. Examples include sandbox escapes, blocked network access, MCP approval prompts, and ARC escalations. Defaults to `user`. `auto_review` uses a carefully prompted subagent to gather relevant context and apply a risk-based decision framework before approving or denying the request. The legacy value `guardian_subagent` is accepted for compatibility.",
-        )
-    }
-}
-
-#[cfg(test)]
-fn string_enum_schema_with_description(values: &[&str], description: &str) -> Schema {
-    let mut schema = SchemaObject {
-        instance_type: Some(InstanceType::String.into()),
-        metadata: Some(Box::new(Metadata {
-            description: Some(description.to_string()),
-            ..Default::default()
-        })),
-        ..Default::default()
-    };
-    schema.enum_values = Some(
-        values
-            .iter()
-            .map(|value| JsonValue::String((*value).to_string()))
-            .collect(),
-    );
-    Schema::Object(schema)
-}
-
-impl ApprovalsReviewer {
-    pub fn to_core(self) -> CoreApprovalsReviewer {
-        match self {
-            ApprovalsReviewer::User => CoreApprovalsReviewer::User,
-            ApprovalsReviewer::AutoReview => CoreApprovalsReviewer::AutoReview,
-        }
-    }
-}
-
-impl From<CoreApprovalsReviewer> for ApprovalsReviewer {
-    fn from(value: CoreApprovalsReviewer) -> Self {
-        match value {
-            CoreApprovalsReviewer::User => ApprovalsReviewer::User,
-            CoreApprovalsReviewer::AutoReview => ApprovalsReviewer::AutoReview,
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
-#[serde(rename_all = "kebab-case")]
-#[ts(rename_all = "kebab-case", export_to = "v2/")]
-pub enum SandboxMode {
-    ReadOnly,
-    WorkspaceWrite,
-    DangerFullAccess,
-}
-
-impl SandboxMode {
-    pub fn to_core(self) -> CoreSandboxMode {
-        match self {
-            SandboxMode::ReadOnly => CoreSandboxMode::ReadOnly,
-            SandboxMode::WorkspaceWrite => CoreSandboxMode::WorkspaceWrite,
-            SandboxMode::DangerFullAccess => CoreSandboxMode::DangerFullAccess,
-        }
-    }
-}
-
-impl From<CoreSandboxMode> for SandboxMode {
-    fn from(value: CoreSandboxMode) -> Self {
-        match value {
-            CoreSandboxMode::ReadOnly => SandboxMode::ReadOnly,
-            CoreSandboxMode::WorkspaceWrite => SandboxMode::WorkspaceWrite,
-            CoreSandboxMode::DangerFullAccess => SandboxMode::DangerFullAccess,
         }
     }
 }

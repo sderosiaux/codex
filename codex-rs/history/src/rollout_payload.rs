@@ -5,11 +5,9 @@ use super::CompactedItem;
 use super::EventMsg;
 use super::InterAgentCommunication;
 use super::McpResourceOriginCheckpoint;
-use super::RealtimeItem;
 use super::ResponseItem;
 use super::ResponseItemEnvelope;
 use super::RolloutItem;
-use super::SecurityRiskScore;
 use super::SessionMetaLine;
 use super::TokenUsageRecord;
 use super::TurnContextItem;
@@ -60,14 +58,8 @@ pub(super) enum RolloutItemWire<'a> {
     RetainedContext {
         payload: Cow<'a, crate::RetainedContextEvent>,
     },
-    SecurityRiskScore {
-        payload: Cow<'a, SecurityRiskScore>,
-    },
     EventMsg {
         payload: Cow<'a, EventMsg>,
-    },
-    RealtimeItem {
-        payload: Cow<'a, RealtimeItem>,
     },
 }
 
@@ -129,9 +121,8 @@ impl<'a> From<&'a RolloutItem> for RolloutItemWire<'a> {
                             logprobs: None,
                             text,
                         }],
-                        // Older Guardian clients exclude commentary from root-to-worker
-                        // review. Keep the phase unspecified so they can review this
-                        // confirmed delivery without claiming it ended the turn.
+                        // Keep the phase unspecified so this confirmed delivery does not
+                        // claim it ended the turn.
                         phase: None,
                         internal_chat_message_metadata_passthrough: Some(
                             InternalChatMessageMetadataPassthrough {
@@ -150,13 +141,7 @@ impl<'a> From<&'a RolloutItem> for RolloutItemWire<'a> {
             RolloutItem::RetainedContext(payload) => Self::RetainedContext {
                 payload: Cow::Borrowed(payload),
             },
-            RolloutItem::SecurityRiskScore(payload) => Self::SecurityRiskScore {
-                payload: Cow::Borrowed(payload),
-            },
             RolloutItem::EventMsg(payload) => Self::EventMsg {
-                payload: Cow::Borrowed(payload),
-            },
-            RolloutItem::RealtimeItem(payload) => Self::RealtimeItem {
                 payload: Cow::Borrowed(payload),
             },
         }
@@ -227,11 +212,7 @@ impl From<RolloutItemWire<'_>> for RolloutItem {
             RolloutItemWire::RetainedContext { payload } => {
                 Self::RetainedContext(payload.into_owned())
             }
-            RolloutItemWire::SecurityRiskScore { payload } => {
-                Self::SecurityRiskScore(payload.into_owned())
-            }
             RolloutItemWire::EventMsg { payload } => Self::EventMsg(payload.into_owned()),
-            RolloutItemWire::RealtimeItem { payload } => Self::RealtimeItem(payload.into_owned()),
         }
     }
 }
@@ -248,8 +229,6 @@ pub(super) struct CompactedItemWire<'a> {
     replacement_history: Option<Vec<Cow<'a, ResponseItem>>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     replacement_history_metadata: Option<Vec<Cow<'a, CodexHarnessMetadata>>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    guardian_history: Option<Cow<'a, crate::GuardianHistoryCheckpoint>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     retained_context: Option<Cow<'a, crate::RetainedContext>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -296,7 +275,6 @@ impl<'a> From<&'a CompactedItem> for CompactedItemWire<'a> {
                     .collect()
             }),
             replacement_history_metadata,
-            guardian_history: item.guardian_history.as_ref().map(Cow::Borrowed),
             retained_context: item.retained_context.as_ref().map(Cow::Borrowed),
             mcp_resource_origins: item.mcp_resource_origins.as_ref().map(Cow::Borrowed),
             window_number: item.window_number,
@@ -365,7 +343,6 @@ impl TryFrom<CompactedItemWire<'_>> for CompactedItem {
         Ok(Self {
             message: item.message.into_owned(),
             replacement_history,
-            guardian_history: item.guardian_history.map(Cow::into_owned),
             retained_context: item.retained_context.map(Cow::into_owned),
             mcp_resource_origins: item.mcp_resource_origins.map(Cow::into_owned),
             window_number,

@@ -514,7 +514,6 @@ async fn schedule(runtime: &CommandHookRuntime, handler: ConfiguredHandler, cwd:
     let engine = ClaudeHooksEngine {
         handlers: vec![handler],
         warnings: Vec::new(),
-        required_load_errors: Vec::new(),
         command_runtime: runtime.clone(),
         mcp_executor: mcp_executor(),
     };

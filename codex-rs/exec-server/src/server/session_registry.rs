@@ -7,7 +7,6 @@ use codex_exec_server_protocol::JSONRPCErrorError;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use crate::ExecServerRuntimeOptions;
 use crate::rpc::RpcNotificationSender;
 use crate::rpc::invalid_request;
 use crate::rpc::session_already_attached;
@@ -68,7 +67,6 @@ impl SessionRegistry {
         self: &Arc<Self>,
         resume_session_id: Option<String>,
         notifications: RpcNotificationSender,
-        runtime_paths: ExecServerRuntimeOptions,
     ) -> Result<SessionHandle, JSONRPCErrorError> {
         enum AttachOutcome {
             Attached(Arc<SessionEntry>),
@@ -104,7 +102,7 @@ impl SessionRegistry {
                 let session_id = Uuid::new_v4().to_string();
                 let entry = Arc::new(SessionEntry::new(
                     session_id.clone(),
-                    ProcessHandler::new(notifications, self.telemetry.clone(), runtime_paths),
+                    ProcessHandler::new(notifications, self.telemetry.clone()),
                     connection_id,
                 ));
                 sessions.insert(session_id, Arc::clone(&entry));

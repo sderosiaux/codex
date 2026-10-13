@@ -180,9 +180,14 @@ async fn interrupt_during_wake_context_construction_does_not_start_turn() -> any
             start_options: Default::default(),
         })
         .await?;
-    codex.submit(Op::RealtimeConversationListVoices).await?;
+    codex
+        .submit(Op::ThreadSettings {
+            thread_settings: Default::default(),
+            reply: None,
+        })
+        .await?;
     wait_for_event(codex, |event| {
-        matches!(event, EventMsg::RealtimeConversationListVoicesResponse(_))
+        matches!(event, EventMsg::ThreadSettingsApplied(_))
     })
     .await;
     models
@@ -194,9 +199,14 @@ async fn interrupt_during_wake_context_construction_does_not_start_turn() -> any
     // Process the interrupt before allowing that context construction to finish.
     models.context_build.entered.notified().await;
     codex.submit(Op::Interrupt).await?;
-    codex.submit(Op::RealtimeConversationListVoices).await?;
+    codex
+        .submit(Op::ThreadSettings {
+            thread_settings: Default::default(),
+            reply: None,
+        })
+        .await?;
     wait_for_event(codex, |event| {
-        matches!(event, EventMsg::RealtimeConversationListVoicesResponse(_))
+        matches!(event, EventMsg::ThreadSettingsApplied(_))
     })
     .await;
     models.context_build.release.notify_one();

@@ -31,14 +31,12 @@ impl EnvironmentManager {
             LazyRemoteExecServerClient::from_connected(client, http_client_factory.clone());
         let environment = Arc::new(Environment::remote_with_client(
             client,
-            /*local_runtime_paths*/ None,
             ScopedSkillsConfig::default(),
         ));
         Ok(Self {
             default_environment: Some(environment_id.clone()),
             environments: RwLock::new(HashMap::from([(environment_id, environment)])),
             local_environment: None,
-            local_runtime_paths: None,
             http_client_factory,
         })
     }

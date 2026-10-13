@@ -31,7 +31,6 @@ use super::ConcurrentRequestLimit;
 use super::RequestDispatchMode;
 use super::RequestDispatcher;
 use super::RequestTaskResult;
-use crate::ExecServerRuntimeOptions;
 use crate::connection::JsonRpcConnectionEvent;
 use crate::rpc::RpcNotificationSender;
 use crate::rpc::RpcRouter;
@@ -174,15 +173,9 @@ async fn request_queue_waits_for_dispatcher_admission_before_recording_telemetry
     let telemetry = ExecServerTelemetry::new(metrics.clone());
     let (outgoing_tx, mut outgoing_rx) = mpsc::channel(/*buffer*/ 1);
     let notifications = RpcNotificationSender::new(outgoing_tx.clone());
-    let requests = notifications.request_sender();
     let handler = Arc::new(ExecServerHandler::new(
         SessionRegistry::new(telemetry.clone()),
         notifications,
-        ExecServerRuntimeOptions::new(
-            std::env::current_exe().expect("current executable"),
-            /*codex_linux_sandbox_exe*/ None,
-        )
-        .expect("runtime paths"),
         HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
     ));
     let mut router = RpcRouter::new();
@@ -210,7 +203,6 @@ async fn request_queue_waits_for_dispatcher_admission_before_recording_telemetry
         handler,
         outgoing_tx,
         disconnected_rx,
-        requests,
         telemetry,
         RequestDispatchMode::Concurrent {
             max_concurrent_requests: ConcurrentRequestLimit::new(
@@ -383,15 +375,9 @@ fn request_telemetry_fixture(router: RpcRouter<ExecServerHandler>) -> RequestTel
     let telemetry = ExecServerTelemetry::new(metrics.clone());
     let (outgoing_tx, outgoing_rx) = mpsc::channel(/*buffer*/ 1);
     let notifications = RpcNotificationSender::new(outgoing_tx.clone());
-    let requests = notifications.request_sender();
     let handler = Arc::new(ExecServerHandler::new(
         SessionRegistry::new(telemetry.clone()),
         notifications,
-        ExecServerRuntimeOptions::new(
-            std::env::current_exe().expect("current executable"),
-            /*codex_linux_sandbox_exe*/ None,
-        )
-        .expect("runtime paths"),
         HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
     ));
     let (disconnected_tx, disconnected_rx) = watch::channel(/*init*/ false);
@@ -400,7 +386,6 @@ fn request_telemetry_fixture(router: RpcRouter<ExecServerHandler>) -> RequestTel
         handler,
         outgoing_tx,
         disconnected_rx,
-        requests,
         telemetry,
         RequestDispatchMode::Inline,
     );

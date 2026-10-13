@@ -11,12 +11,10 @@ use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::AgentMessageEvent;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::HistoryPosition;
 use codex_protocol::protocol::RateLimitSnapshot;
 use codex_protocol::protocol::RateLimitWindow;
-use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionMeta;
 use codex_protocol::protocol::SessionMetaLine;
 use codex_protocol::protocol::SessionSource;
@@ -24,7 +22,6 @@ use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::TokenCountEvent;
 use codex_protocol::protocol::TurnContextItem;
 use codex_protocol::protocol::UserMessageEvent;
-use codex_protocol::security_risk::SecurityRiskScore;
 use codex_utils_absolute_path::test_support::PathExt;
 use pretty_assertions::assert_eq;
 use std::collections::BTreeMap;
@@ -377,119 +374,6 @@ async fn load_rollout_items_ignores_unknown_fork_source_history_mode() -> std::i
     assert_eq!(loaded_thread_id, Some(thread_id));
     assert_eq!(parse_errors, 1);
     assert_eq!(items.len(), 2);
-    Ok(())
-}
-
-#[tokio::test]
-async fn load_rollout_items_preserves_legacy_guardian_assessment_lines() -> std::io::Result<()> {
-    let home = TempDir::new().expect("temp dir");
-    let rollout_path = home.path().join("rollout.jsonl");
-    let mut file = File::create(&rollout_path)?;
-    let thread_id = ThreadId::new();
-    let ts = "2025-01-03T12:00:00Z";
-
-    writeln!(
-        file,
-        "{}",
-        serde_json::json!({
-            "timestamp": ts,
-            "type": "session_meta",
-            "payload": {
-                "session_id": thread_id,
-                "id": thread_id,
-                "timestamp": ts,
-                "cwd": ".",
-                "originator": "test_originator",
-                "cli_version": "test_version",
-                "source": "cli",
-                "model_provider": "test-provider",
-            },
-        })
-    )?;
-    writeln!(
-        file,
-        "{}",
-        serde_json::json!({
-            "timestamp": ts,
-            "type": "event_msg",
-            "payload": {
-                "type": "guardian_assessment",
-                "id": "guardian-1",
-                "turn_id": "turn-1",
-                "status": "in_progress",
-                "action": {
-                    "type": "command",
-                    "source": "shell",
-                    "command": "rm -rf /tmp/guardian",
-                    "cwd": if cfg!(windows) { r"C:\tmp" } else { "/tmp" },
-                },
-            },
-        })
-    )?;
-
-    let (items, loaded_thread_id, parse_errors) =
-        RolloutRecorder::load_rollout_items(&rollout_path).await?;
-
-    assert_eq!(loaded_thread_id, Some(thread_id));
-    assert_eq!(parse_errors, 0);
-    assert_eq!(items.len(), 2);
-    let RolloutItem::EventMsg(EventMsg::GuardianAssessment(assessment)) = &items[1] else {
-        panic!("expected guardian assessment rollout item");
-    };
-    assert_eq!(assessment.id, "guardian-1");
-    assert_eq!(assessment.turn_id, "turn-1");
-    assert_eq!(assessment.started_at_ms, 0);
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn load_rollout_items_preserves_security_risk_scores() -> std::io::Result<()> {
-    let home = TempDir::new().expect("temp dir");
-    let rollout_path = home.path().join("rollout.jsonl");
-    let thread_id = ThreadId::new();
-    let security_risk = SecurityRiskScore {
-        scores: BTreeMap::from([
-            ("action_risk".to_string(), 0.76),
-            ("data_exfiltration".to_string(), 0.31),
-        ]),
-        call_id: Some("call-1".to_owned()),
-        action: Some(serde_json::json!({"path": "README.md", "tool": "read_file"})),
-        sampled_at: None,
-    };
-    let security_risk_item = RolloutItem::SecurityRiskScore(security_risk.clone());
-
-    let mut file = File::create(&rollout_path)?;
-    for (ordinal, item) in [
-        paginated_session_meta_item(thread_id, home.path()),
-        security_risk_item,
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let line = RolloutLine {
-            timestamp: "2026-07-09T00:00:00Z".to_string(),
-            ordinal: Some(ordinal as u64),
-            item,
-        };
-        writeln!(
-            file,
-            "{}",
-            serde_json::to_string(&line).map_err(std::io::Error::other)?
-        )?;
-    }
-
-    let (items, loaded_thread_id, parse_errors) =
-        RolloutRecorder::load_rollout_items(&rollout_path).await?;
-
-    assert_eq!(loaded_thread_id, Some(thread_id));
-    assert_eq!(parse_errors, 0);
-    assert_eq!(items.len(), 2);
-    let RolloutItem::SecurityRiskScore(persisted_security_risk) = &items[1] else {
-        panic!("expected security risk score rollout item");
-    };
-    assert_eq!(persisted_security_risk, &security_risk);
-
     Ok(())
 }
 
@@ -1933,17 +1817,10 @@ async fn resume_candidate_matches_cwd_reads_latest_turn_context() -> std::io::Re
             disabled_plugin_ids: None,
             cwd: serde_json::from_value(serde_json::json!(&latest_cwd))
                 .expect("absolute latest cwd"),
-            approval_policy: AskForApproval::Never,
-            approvals_reviewer: None,
-            sandbox_policy: SandboxPolicy::new_read_only_policy(),
-            permission_profile: None,
-            active_permission_profile: None,
-            file_system_sandbox_policy: None,
             model: "test-model".to_string(),
             comp_hash: None,
             collaboration_mode: None,
             multi_agent_version: None,
-            realtime_active: None,
             cyber_access_program: None,
             effort: None,
             summary: Some(codex_protocol::config_types::ReasoningSummary::Auto),

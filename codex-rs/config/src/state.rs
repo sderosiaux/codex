@@ -1,13 +1,10 @@
 use crate::CONFIG_TOML_FILE;
-use crate::config_requirements::ConfigRequirements;
-use crate::config_requirements::ConfigRequirementsToml;
 use crate::format_config_layer_source;
 
 use super::fingerprint::record_origins;
 use super::fingerprint::version_for_toml;
 use super::key_aliases::normalize_key_aliases;
 use super::merge::merge_toml_values;
-use crate::CloudConfigBundleLoader;
 use crate::ConfigLayer;
 use crate::ConfigLayerMetadata;
 use crate::ConfigLayerSource;
@@ -25,7 +22,6 @@ use toml::Value as TomlValue;
 pub struct ConfigLoadOptions {
     pub loader_overrides: LoaderOverrides,
     pub strict_config: bool,
-    pub cloud_config_bundle: CloudConfigBundleLoader,
 }
 
 impl From<LoaderOverrides> for ConfigLoadOptions {
@@ -33,71 +29,32 @@ impl From<LoaderOverrides> for ConfigLoadOptions {
         Self {
             loader_overrides,
             strict_config: false,
-            cloud_config_bundle: CloudConfigBundleLoader::default(),
         }
     }
 }
 
-/// LoaderOverrides overrides managed configuration inputs (primarily for tests).
+/// LoaderOverrides overrides configuration inputs (primarily for tests).
 #[derive(Debug, Default, Clone)]
 pub struct LoaderOverrides {
     /// Optional configuration file supplied with the installed Codex package.
     pub packaged_defaults_path: Option<AbsolutePathBuf>,
     pub user_config_path: Option<AbsolutePathBuf>,
     pub user_config_profile: Option<ProfileV2Name>,
-    pub managed_config_path: Option<PathBuf>,
     pub system_config_path: Option<PathBuf>,
-    pub system_requirements_path: Option<PathBuf>,
-    pub ignore_managed_requirements: bool,
-    /// Remote app servers own their authentication policy independently.
-    pub ignore_login_requirements: bool,
     pub ignore_user_config: bool,
     /// Skip project-root discovery and all project configuration layers.
     pub ignore_project_config: bool,
-    pub ignore_user_and_project_exec_policy_rules: bool,
-    //TODO(gt): Add a macos_ prefix to this field and remove the target_os check.
-    #[cfg(target_os = "macos")]
-    pub managed_preferences_base64: Option<String>,
-    pub macos_managed_config_requirements_base64: Option<String>,
 }
 
 impl LoaderOverrides {
-    /// Returns overrides that ignore host-managed configuration.
+    /// Returns overrides that ignore the host's system config.
     ///
     /// This is intended for tests that should load only repo-controlled config fixtures.
     pub fn without_managed_config_for_tests() -> Self {
         let base = std::env::temp_dir().join("codex-config-tests");
         Self {
-            packaged_defaults_path: None,
-            user_config_path: None,
-            user_config_profile: None,
-            managed_config_path: Some(base.join("managed_config.toml")),
             system_config_path: Some(base.join("config.toml")),
-            system_requirements_path: Some(base.join("requirements.toml")),
-            ignore_managed_requirements: false,
-            ignore_login_requirements: false,
-            ignore_user_config: false,
-            ignore_project_config: false,
-            ignore_user_and_project_exec_policy_rules: false,
-            #[cfg(target_os = "macos")]
-            managed_preferences_base64: Some(String::new()),
-            macos_managed_config_requirements_base64: Some(String::new()),
-        }
-    }
-
-    /// Returns overrides with host MDM disabled and managed config loaded from
-    /// `managed_config_path`. System requirements are loaded from a sibling
-    /// `requirements.toml` fixture.
-    ///
-    /// This is intended for tests that supply an explicit managed config fixture.
-    pub fn with_managed_config_path_for_tests(managed_config_path: PathBuf) -> Self {
-        let system_requirements_path = managed_config_path.with_file_name("requirements.toml");
-        Self {
-            user_config_path: None,
-            user_config_profile: None,
-            managed_config_path: Some(managed_config_path),
-            system_requirements_path: Some(system_requirements_path),
-            ..Self::without_managed_config_for_tests()
+            ..Self::default()
         }
     }
 
@@ -219,14 +176,10 @@ impl ConfigLayerEntry {
     pub fn config_folder(&self) -> Option<AbsolutePathBuf> {
         match &self.name {
             ConfigLayerSource::PackagedDefaults { .. } => None,
-            ConfigLayerSource::Mdm { .. } => None,
             ConfigLayerSource::System { file } => file.parent(),
-            ConfigLayerSource::EnterpriseManaged { .. } => None,
             ConfigLayerSource::User { file, .. } => file.parent(),
             ConfigLayerSource::Project { dot_codex_folder } => Some(dot_codex_folder.clone()),
             ConfigLayerSource::SessionFlags => None,
-            ConfigLayerSource::LegacyManagedConfigTomlFromFile { .. } => None,
-            ConfigLayerSource::LegacyManagedConfigTomlFromMdm => None,
         }
     }
 
@@ -243,29 +196,11 @@ impl ConfigLayerEntry {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ConfigLayerStack {
-    /// Runtime-only EMA authority; it does not change the configuration's contents.
-    cloud_config_binding: Option<crate::CloudConfigBundleBinding>,
-    /// Cached TOML projection derived only from `requirements_toml`.
-    /// Construction validates provider definitions and reports serialization errors,
-    /// so `effective_config()` can replace complete entries without a fallible conversion.
-    model_provider_requirements: Option<TomlValue>,
     /// Layers are listed from lowest precedence (base) to highest (top), so
     /// later entries in the Vec override earlier ones.
     layers: Vec<ConfigLayerEntry>,
-
-    /// Constraints that must be enforced when deriving a [Config] from the
-    /// layers.
-    requirements: ConfigRequirements,
-
-    /// Raw requirements data as loaded from requirements.toml/MDM/legacy
-    /// sources. This preserves the original allow-lists so they can be
-    /// surfaced via APIs.
-    requirements_toml: ConfigRequirementsToml,
-
-    /// Whether execpolicy should skip `.rules` files from user and project config-layer folders.
-    ignore_user_and_project_exec_policy_rules: bool,
 
     /// Startup warnings discovered while building this stack.
     ///
@@ -275,89 +210,15 @@ pub struct ConfigLayerStack {
     pub(crate) is_projectless: bool,
 }
 
-impl PartialEq for ConfigLayerStack {
-    fn eq(&self, other: &Self) -> bool {
-        let Self {
-            cloud_config_binding: _,
-            model_provider_requirements,
-            layers,
-            requirements,
-            requirements_toml,
-            ignore_user_and_project_exec_policy_rules,
-            startup_warnings,
-            is_projectless,
-        } = self;
-        model_provider_requirements == &other.model_provider_requirements
-            && layers == &other.layers
-            && requirements == &other.requirements
-            && requirements_toml == &other.requirements_toml
-            && *ignore_user_and_project_exec_policy_rules
-                == other.ignore_user_and_project_exec_policy_rules
-            && startup_warnings == &other.startup_warnings
-            && is_projectless == &other.is_projectless
-    }
-}
-
 impl ConfigLayerStack {
-    pub fn new(
-        layers: Vec<ConfigLayerEntry>,
-        requirements: ConfigRequirements,
-        requirements_toml: ConfigRequirementsToml,
-    ) -> std::io::Result<Self> {
+    pub fn new(layers: Vec<ConfigLayerEntry>) -> std::io::Result<Self> {
         validate_enabled_config_layers(&layers)?;
         verify_layer_ordering(&layers)?;
-        let model_provider_requirements = Some(crate::model_provider_requirements::to_config(
-            &requirements_toml,
-        )?);
         Ok(Self {
-            cloud_config_binding: None,
-            model_provider_requirements,
             layers,
-            requirements,
-            requirements_toml,
-            ignore_user_and_project_exec_policy_rules: false,
             startup_warnings: None,
             is_projectless: false,
         })
-    }
-
-    pub fn with_user_and_project_exec_policy_rules_ignored(
-        mut self,
-        ignore_user_and_project_exec_policy_rules: bool,
-    ) -> Self {
-        self.ignore_user_and_project_exec_policy_rules = ignore_user_and_project_exec_policy_rules;
-        self
-    }
-
-    pub fn ignore_user_and_project_exec_policy_rules(&self) -> bool {
-        self.ignore_user_and_project_exec_policy_rules
-    }
-
-    pub fn with_cloud_config_binding(
-        mut self,
-        binding: Option<crate::CloudConfigBundleBinding>,
-    ) -> Self {
-        self.cloud_config_binding = binding;
-        self
-    }
-
-    pub fn cloud_config_binding(&self) -> Option<&crate::CloudConfigBundleBinding> {
-        self.cloud_config_binding.as_ref()
-    }
-
-    /// Retains session layers while adopting current MCP, plugin, and feature restrictions.
-    /// Rejected refreshes must not restore an earlier policy on the next user reload.
-    pub fn with_mcp_requirements_from(&self, incoming: &Self) -> Self {
-        let mut stack = self.clone();
-        stack.requirements.mcp_servers = incoming.requirements.mcp_servers.clone();
-        stack.requirements.plugins = incoming.requirements.plugins.clone();
-        stack.requirements.feature_requirements =
-            incoming.requirements.feature_requirements.clone();
-        stack.requirements_toml.mcp_servers = incoming.requirements_toml.mcp_servers.clone();
-        stack.requirements_toml.plugins = incoming.requirements_toml.plugins.clone();
-        stack.requirements_toml.feature_requirements =
-            incoming.requirements_toml.feature_requirements.clone();
-        stack
     }
 
     pub(crate) fn with_startup_warnings(mut self, startup_warnings: Vec<String>) -> Self {
@@ -377,7 +238,7 @@ impl ConfigLayerStack {
 
     /// Returns the active raw user config layer, if any.
     ///
-    /// This does not merge other config layers or apply any requirements. When
+    /// This does not merge other config layers. When
     /// a profile-v2 layer is active, this returns that profile layer rather than
     /// the base `$CODEX_HOME/config.toml` layer because the active layer is the
     /// writable target for profile-aware edits.
@@ -412,14 +273,6 @@ impl ConfigLayerStack {
             merge_toml_values(&mut merged, &layer.config);
         }
         Some(merged)
-    }
-
-    pub fn requirements(&self) -> &ConfigRequirements {
-        &self.requirements
-    }
-
-    pub fn requirements_toml(&self) -> &ConfigRequirementsToml {
-        &self.requirements_toml
     }
 
     /// Creates a new [ConfigLayerStack] using the specified values to inject one
@@ -475,12 +328,6 @@ impl ConfigLayerStack {
         }
         Ok(Self {
             layers,
-            cloud_config_binding: self.cloud_config_binding.clone(),
-            model_provider_requirements: self.model_provider_requirements.clone(),
-            requirements: self.requirements.clone(),
-            requirements_toml: self.requirements_toml.clone(),
-            ignore_user_and_project_exec_policy_rules: self
-                .ignore_user_and_project_exec_policy_rules,
             startup_warnings: self.startup_warnings.clone(),
             is_projectless: self.is_projectless,
         })
@@ -512,40 +359,21 @@ impl ConfigLayerStack {
         }
         Self {
             layers,
-            cloud_config_binding: self.cloud_config_binding.clone(),
-            model_provider_requirements: self.model_provider_requirements.clone(),
-            requirements: self.requirements.clone(),
-            requirements_toml: self.requirements_toml.clone(),
-            ignore_user_and_project_exec_policy_rules: self
-                .ignore_user_and_project_exec_policy_rules,
             startup_warnings: self.startup_warnings.clone(),
             is_projectless: self.is_projectless,
         }
     }
 
     /// Returns the merged config-layer view.
-    ///
-    /// Required provider definitions replace local entries before deserialization.
-    /// Selection and other requirements are applied when constructing the final config.
     pub fn effective_config(&self) -> TomlValue {
         let mut merged = TomlValue::Table(toml::map::Map::new());
         for layer in self.layers_low_to_high() {
             merge_toml_values(&mut merged, &layer.config);
         }
-        if let Some(requirements) = &self.model_provider_requirements {
-            crate::model_provider_requirements::apply(&mut merged, requirements);
-        }
         merged
     }
 
-    /// Required provider selection used when building the effective configuration.
-    pub fn required_model_provider(&self) -> Option<&str> {
-        self.requirements_toml.model_provider.as_deref()
-    }
-
     /// Returns field origins for the merged config-layer view.
-    ///
-    /// Requirement sources are tracked separately and are not included here.
     pub fn origins(&self) -> HashMap<String, ConfigLayerMetadata> {
         self.origins_with_path_filter(|_| true)
     }

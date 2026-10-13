@@ -41,8 +41,8 @@ async fn idle_mail_survives_eviction_and_preserves_followup_order() -> Result<()
         .with_model("gpt-5.6-sol")
         .with_extensions(Arc::new(extensions.build()))
         .with_config(|config| {
-            config.features.enable(Feature::Collab).unwrap();
-            config.features.enable(Feature::MultiAgentV2).unwrap();
+            config.features.enable(Feature::Collab);
+            config.features.enable(Feature::MultiAgentV2);
             config.multi_agent_v2.max_concurrent_threads_per_session = 2;
             config.multi_agent_v2.hide_spawn_agent_metadata = true;
         })

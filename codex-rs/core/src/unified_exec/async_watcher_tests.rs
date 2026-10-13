@@ -17,7 +17,6 @@ use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExecCommandOutputDeltaEvent;
 use codex_protocol::protocol::ExecOutputStream;
-use codex_sandboxing::SandboxType;
 
 use pretty_assertions::assert_eq;
 use tokio::time::Duration;
@@ -47,7 +46,7 @@ async fn streaming_output_harness() -> anyhow::Result<StreamingOutputHarness> {
         #[cfg(windows)]
         tty: false,
     });
-    let process = Arc::new(UnifiedExecProcess::from_spawned(spawned, SandboxType::None).await?);
+    let process = Arc::new(UnifiedExecProcess::from_spawned(spawned).await?);
     let (session, turn, rx_event) = make_session_and_context_with_rx().await;
     let context = UnifiedExecContext::new(
         session,
@@ -108,8 +107,6 @@ async fn completed_output_preserves_bytes_before_subscription(
         /*plugin_attribution*/ None,
         output_buffer,
         Instant::now(),
-        /*network_denial_monitor*/ None,
-        /*plugin_metrics_sidecar*/ None,
     );
     stdout_tx.send(late_output.to_vec())?;
     drop(stdout_tx);
@@ -279,84 +276,6 @@ async fn streaming_output_keeps_grace_as_fallback_without_close() -> anyhow::Res
         }
     );
     assert!(rx_event.try_recv().is_err());
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn exit_watcher_waits_for_late_network_denial_before_classifying_end() -> anyhow::Result<()> {
-    let StreamingOutputHarness {
-        process,
-        stdout_tx,
-        exit_tx,
-        output_buffer,
-        mut context,
-        rx_event,
-    } = streaming_output_harness().await?;
-    start_streaming_output(&process, &context);
-
-    tokio::time::pause();
-    let process_for_late_denial = Arc::clone(&process);
-    let (late_denial_armed_tx, late_denial_armed_rx) = tokio::sync::oneshot::channel();
-    let network_denial_monitor = tokio::spawn(async move {
-        let sleep = tokio::time::sleep(Duration::from_millis(10));
-        tokio::pin!(sleep);
-        late_denial_armed_tx.send(()).expect("arm late denial");
-        sleep.await;
-        process_for_late_denial.fail_and_terminate("LATE_DENIAL".to_string());
-    });
-    late_denial_armed_rx.await.expect("late denial armed");
-
-    #[allow(deprecated)]
-    let cwd = context.step_context.turn.cwd.clone().into();
-    let step = Arc::get_mut(&mut context.step_context).expect("unshared test step");
-    let model_info = Arc::make_mut(&mut Arc::make_mut(&mut step.settings).model_info);
-    model_info.truncation_policy = codex_protocol::openai_models::TruncationPolicyConfig {
-        mode: codex_protocol::openai_models::TruncationMode::Bytes,
-        limit: 4,
-    };
-    spawn_exit_watcher(
-        Arc::clone(&process),
-        &context,
-        vec!["proof".to_string()],
-        cwd,
-        /*process_id*/ 123,
-        /*plugin_attribution*/ None,
-        output_buffer,
-        Instant::now(),
-        Some(network_denial_monitor),
-        /*plugin_metrics_sidecar*/ None,
-    );
-
-    let exited_at = Instant::now();
-    exit_tx.send(0).expect("send exit");
-    drop(stdout_tx);
-
-    let event = rx_event.recv().await.expect("command end event");
-    let elapsed = Instant::now().saturating_duration_since(exited_at);
-    tokio::time::resume();
-    let EventMsg::ItemCompleted(completed) = event.msg else {
-        panic!("expected ItemCompleted");
-    };
-    let TurnItem::CommandExecution(item) = completed.item else {
-        panic!("expected CommandExecution");
-    };
-    assert_eq!(
-        (
-            item.status,
-            item.exit_code,
-            item.aggregated_output.as_deref()
-        ),
-        (
-            CommandExecutionStatus::Failed,
-            Some(-1),
-            Some("LATE_DENIAL")
-        )
-    );
-    assert!(
-        elapsed >= Duration::from_millis(10) && elapsed < TRAILING_OUTPUT_GRACE,
-        "completion should wait for denial without falling back to the output grace: {elapsed:?}"
-    );
 
     Ok(())
 }
