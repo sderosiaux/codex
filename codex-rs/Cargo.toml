@@ -154,7 +154,6 @@ codex-state = { path = "state" }
 codex-terminal-detection = { path = "terminal-detection" }
 codex-thread-store = { path = "thread-store" }
 codex-tools = { path = "tools" }
-codex-uds = { path = "uds" }
 codex-utils-absolute-path = { path = "utils/absolute-path" }
 codex-utils-audio = { path = "utils/audio" }
 codex-utils-cache = { path = "utils/cache" }

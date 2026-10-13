@@ -1700,7 +1700,6 @@ dependencies = [
  "codex-otel",
  "codex-protocol",
  "codex-shell-command",
- "codex-uds",
  "codex-utils-absolute-path",
  "codex-utils-home-dir",
  "codex-utils-path-uri",
@@ -2417,7 +2416,6 @@ name = "codex-uds"
 version = "0.0.0"
 dependencies = [
  "async-io",
- "libc",
  "tokio",
  "tokio-util",
  "uds_windows",
