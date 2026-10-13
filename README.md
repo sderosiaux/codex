@@ -49,7 +49,7 @@ Ctrl-C interrupts the current turn. The assistant's text goes to stdout and tool
 - Keep a separate `CODEX_HOME`. This build stores nothing about your sessions, but it reads `config.toml` from there (and warns about keys it no longer knows, like project trust levels, TUI settings and plugins) and rewrites the model cache and bundled system skills. It never touches the official daemon's `/tmp/codex-daemon-$UID` directory.
 - MCP elicitations that only ask for confirmation are accepted automatically. Forms are asked in the terminal, and declined when there is no terminal.
 - I've only run it end to end on macOS. Linux and Windows builds are untested.
-- The Bazel files, GitHub workflows, `docs/` and the npm wrapper come from upstream and aren't maintained here. Build with cargo.
+- The Bazel files and the npm wrapper come from upstream and aren't maintained here. Build with cargo.
 - There are no tests. Every change is checked by building and running real turns.
 
 Apache-2.0, same as upstream.
