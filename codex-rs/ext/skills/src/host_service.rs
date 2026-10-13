@@ -142,12 +142,7 @@ impl HostSkillsService {
     /// This path uses a cache keyed by the effective skill-relevant config state rather than just
     /// cwd so role-local and session-local skill overrides cannot bleed across sessions that happen
     /// to share a directory.
-    #[instrument(
-        name = "skills_for_config",
-        level = "info",
-        skip_all,
-        fields(otel.name = "skills_for_config")
-    )]
+    #[instrument(name = "skills_for_config", level = "info", skip_all)]
     pub async fn snapshot_for_config(
         &self,
         input: &HostSkillsLoadInput,

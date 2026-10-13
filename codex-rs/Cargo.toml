@@ -1,8 +1,6 @@
 [workspace]
 members = [
-    "aws-auth",
     "agent-message-board-client",
-    "agent-identity",
     "agent-roles",
     "async-utils",
     "apply-patch",
@@ -18,7 +16,6 @@ members = [
     "skills",
     "core",
     "core-api",
-    "diagnostics",
     "hooks",
     "history",
     "http-client",
@@ -39,11 +36,8 @@ members = [
     "protocol",
     "prompts",
     "rmcp-client",
-    "response-debug-context",
-    "otel",
     "tools",
     "websocket-client",
-    "workload-identity",
     "utils/absolute-path",
     "utils/audio",
     "utils/path-uri",
@@ -81,10 +75,8 @@ license = "Apache-2.0"
 
 [workspace.dependencies]
 # Internal
-codex-agent-identity = { path = "agent-identity" }
 codex-agent-roles = { path = "agent-roles" }
 codex-api = { path = "codex-api" }
-codex-aws-auth = { path = "aws-auth" }
 codex-apply-patch = { path = "apply-patch" }
 codex-arg0 = { path = "arg0" }
 codex-async-utils = { path = "async-utils" }
@@ -99,7 +91,6 @@ codex-agent-message-board-extension = { path = "ext/agent-message-board" }
 codex-context-fragments = { path = "context-fragments" }
 codex-core = { path = "core" }
 codex-core-api = { path = "core-api" }
-codex-diagnostics = { path = "diagnostics" }
 codex-file-system = { path = "file-system" }
 codex-exec-server = { path = "exec-server" }
 codex-extension-api = { path = "ext/extension-api" }
@@ -116,11 +107,9 @@ codex-web-search-extension = { path = "ext/web-search" }
 codex-mcp = { path = "codex-mcp" }
 codex-model-provider-info = { path = "model-provider-info" }
 codex-models-manager = { path = "models-manager" }
-codex-otel = { path = "otel" }
 codex-model-provider = { path = "model-provider" }
 codex-protocol = { path = "protocol" }
 codex-prompts = { path = "prompts" }
-codex-response-debug-context = { path = "response-debug-context" }
 codex-rmcp-client = { path = "rmcp-client" }
 codex-secrets = { path = "secrets" }
 codex-shell-command = { path = "shell-command" }
@@ -145,17 +134,10 @@ codex-utils-rustls-provider = { path = "utils/rustls-provider" }
 codex-utils-stream-parser = { path = "utils/stream-parser" }
 codex-utils-string = { path = "utils/string" }
 codex-utils-template = { path = "utils/template" }
-codex-workload-identity = { path = "workload-identity" }
 age = "0.12.1"
 anyhow = "1"
 arc-swap = "1.9.0"
 async-channel = "2.3.1"
-aws-config = "1"
-aws-credential-types = "1"
-aws-sigv4 = "1"
-aws-smithy-runtime-api = { version = "1", features = ["client", "http-1x"] }
-aws-smithy-types = { version = "1", features = ["http-body-1-x"] }
-aws-types = "1"
 base64 = "0.22.1"
 bitflags = "2.13.1"
 bm25 = "2.3.2"
@@ -164,13 +146,11 @@ caseless = "0.2.2"
 chardetng = "0.1.17"
 chrono = "0.4.43"
 clap = "4"
-crypto_box = { version = "0.9.1", features = ["seal"] }
 derive_more = "2"
 dirs = "6"
 dns-lookup = "3.0.1"
 dotenvy = "0.15.7"
 dunce = "1.0.4"
-ed25519-dalek = { version = "2.2.0", features = ["pkcs8"] }
 encoding_rs = "0.8.35"
 eventsource-stream = "0.2.3"
 futures = { version = "0.3", default-features = false }
@@ -187,7 +167,6 @@ image = { version = "^0.25.9", default-features = false }
 include_dir = "0.7.4"
 indexmap = "2.12.0"
 jsonptr = { version = "0.7.1", default-features = false }
-jsonwebtoken = "9.3.1"
 keyring = { version = "3.6", default-features = false }
 lazy_static = "1"
 libc = "0.2.182"
@@ -197,11 +176,6 @@ memchr = "2.7.6"
 mime_guess = "2.0.5"
 once_cell = "1.20.2"
 openssl-sys = "*"
-opentelemetry = "0.31.0"
-opentelemetry-appender-tracing = "0.31.0"
-opentelemetry-otlp = "0.31.0"
-opentelemetry-semantic-conventions = "0.31.0"
-opentelemetry_sdk = "0.31.0"
 os_info = "3.12.0"
 pathdiff = "0.2"
 portable-pty = "0.9.0"
@@ -254,7 +228,6 @@ tokio-util = "0.7.18"
 toml = "0.9.5"
 toml_edit = "0.24.0"
 tracing = "0.1.44"
-tracing-opentelemetry = "0.32.0"
 tracing-subscriber = "0.3.22"
 tonic = { version = "0.14.3", default-features = false, features = ["channel", "codegen"] }
 tonic-prost = "0.14.3"

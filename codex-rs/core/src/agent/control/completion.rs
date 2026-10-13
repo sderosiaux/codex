@@ -106,16 +106,6 @@ impl LocalAgentControl {
                 TurnStartOptions::default(),
             )
             .await;
-        if let Some(metrics) = codex_otel::global() {
-            let _ = metrics.counter(
-                "codex.multi_agent.result_delivery",
-                /*inc*/ 1,
-                &[(
-                    "outcome",
-                    if delivery.is_ok() { "queued" } else { "failed" },
-                )],
-            );
-        }
         if let Err(err) = delivery {
             debug!("failed to notify parent thread {parent_thread_id}: {err}");
         }

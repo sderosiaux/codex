@@ -6,7 +6,6 @@ use super::ResponsesWebsocketConnection;
 use super::connect_websocket;
 use super::merge_request_headers;
 use crate::ApiError;
-use crate::WebsocketTelemetry;
 use codex_websocket_client::WebSocketConnector;
 use http::HeaderMap;
 use std::sync::Arc;
@@ -27,7 +26,6 @@ impl ResponsesWebsocketClient {
         extra_headers: HeaderMap,
         default_headers: HeaderMap,
         turn_state: Option<Arc<OnceLock<String>>>,
-        telemetry: Option<Arc<dyn WebsocketTelemetry>>,
     ) -> Result<ResponsesWebsocketConnection, ApiError> {
         let ws_url = self
             .provider
@@ -43,7 +41,6 @@ impl ResponsesWebsocketClient {
             self.provider.stream_idle_timeout,
             server_reasoning_included,
             server_model,
-            telemetry,
         ))
     }
 }

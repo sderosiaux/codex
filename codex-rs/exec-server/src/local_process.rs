@@ -7,8 +7,6 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use crate::process_telemetry::ProcessTelemetry;
-use crate::process_telemetry::ProcessTelemetryEvent;
 use crate::rpc::HandlerError;
 use codex_protocol::config_types::EnvironmentVariablePattern;
 use codex_protocol::config_types::ShellEnvironmentPolicy;
@@ -16,12 +14,9 @@ use codex_protocol::shell_environment;
 use codex_protocol::shell_environment::CODEX_THREAD_ID_ENV_VAR;
 use codex_utils_pty::ExecCommandSession;
 use codex_utils_pty::ProcessSignal as PtyProcessSignal;
-use opentelemetry::trace::SpanContext;
-use opentelemetry::trace::TraceContextExt;
 use tokio::sync::Mutex;
 use tokio::sync::Notify;
 use tokio::sync::watch;
-use tracing::Instrument;
 use tracing::instrument::WithSubscriber;
 
 use crate::ExecBackend;
@@ -56,8 +51,6 @@ use crate::rpc::invalid_params;
 use crate::rpc::invalid_request;
 #[cfg(unix)]
 use crate::shell_snapshot::CapturePurpose;
-use crate::telemetry::ExecServerTelemetry;
-use crate::telemetry::ProcessMetricGuard;
 
 const RETAINED_OUTPUT_BYTES_PER_PROCESS: usize = 1024 * 1024;
 // Each process/read chunk needs four JSON values. Keep retained replay below the
@@ -82,7 +75,6 @@ struct RunningProcess {
     output_notify: Arc<Notify>,
     open_streams: usize,
     closed: bool,
-    metrics: Option<ProcessMetricGuard>,
     termination_requested: bool,
 }
 
@@ -128,7 +120,6 @@ struct Inner {
     processes: Mutex<HashMap<ProcessId, ProcessEntry>>,
     #[cfg(unix)]
     shell_snapshots: crate::shell_snapshot::ShellSnapshotCache,
-    telemetry: ExecServerTelemetry,
 }
 
 #[derive(Clone)]
@@ -145,18 +136,17 @@ struct LocalExecProcess {
 
 impl Default for LocalProcess {
     fn default() -> Self {
-        Self::new(ExecServerTelemetry)
+        Self::new()
     }
 }
 
 impl LocalProcess {
-    pub(crate) fn new(telemetry: ExecServerTelemetry) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             inner: Arc::new(Inner {
                 processes: Mutex::new(HashMap::new()),
                 #[cfg(unix)]
                 shell_snapshots: crate::shell_snapshot::ShellSnapshotCache::default(),
-                telemetry,
             }),
         }
     }
@@ -164,24 +154,7 @@ impl LocalProcess {
     async fn start_process(
         &self,
         params: ExecParams,
-        mut telemetry: ProcessTelemetry,
     ) -> Result<(ExecResponse, watch::Sender<u64>, ExecProcessEventLog), HandlerError> {
-        telemetry.launch_context = telemetry.launch_context.filter(SpanContext::is_valid);
-        let metadata = params.metadata.as_ref();
-        telemetry.thread_id = metadata
-            .and_then(|metadata| metadata.thread_id.as_ref())
-            .map(ToString::to_string);
-        // Correlation is controller-supplied, not authorization or arbitrary diagnostic text.
-        telemetry.tool_call_id = metadata
-            .and_then(|metadata| metadata.tool_call_id.as_ref())
-            .filter(|id| {
-                !id.is_empty()
-                    && id.len() <= 256
-                    && id
-                        .bytes()
-                        .all(|byte| byte.is_ascii_alphanumeric() || b"_-.:".contains(&byte))
-            })
-            .cloned();
         let process_id = params.process_id.clone();
         #[cfg(not(unix))]
         if params.shell_snapshot.is_some() {
@@ -196,12 +169,7 @@ impl LocalProcess {
         let snapshot_file = self
             .inner
             .shell_snapshots
-            .prepare(
-                &params,
-                &mut prepared,
-                &self.inner.telemetry,
-                CapturePurpose::Execution,
-            )
+            .prepare(&params, &mut prepared, CapturePurpose::Execution)
             .await?;
         if prepared.command.is_empty() {
             return Err(invalid_params("argv must not be empty".to_string()));
@@ -242,7 +210,6 @@ impl LocalProcess {
         let spawned = match spawned_result {
             Ok(spawned) => spawned,
             Err(err) => {
-                telemetry.log(ProcessTelemetryEvent::SpawnFailed);
                 let mut process_map = self.inner.processes.lock().await;
                 if matches!(
                     process_map.get(&process_id),
@@ -253,7 +220,6 @@ impl LocalProcess {
                 return Err(internal_error(err.to_string()));
             }
         };
-        let metrics = self.inner.telemetry.process_started(&process_id);
 
         let output_notify = Arc::new(Notify::new());
         let (wake_tx, _wake_rx) = watch::channel(0);
@@ -269,7 +235,6 @@ impl LocalProcess {
             ) {
                 drop(process_map);
                 spawned.session.terminate();
-                metrics.finish("terminated");
                 return Err(invalid_request(format!(
                     "process {process_id} start was cancelled"
                 )));
@@ -292,12 +257,10 @@ impl LocalProcess {
                     output_notify: Arc::clone(&output_notify),
                     open_streams: 2,
                     closed: false,
-                    metrics: Some(metrics),
                     termination_requested: false,
                 })),
             );
         }
-        telemetry.log(ProcessTelemetryEvent::Start);
         tokio::spawn(stream_output(
             process_id.clone(),
             if params.tty {
@@ -327,7 +290,6 @@ impl LocalProcess {
                 spawned.exit_rx,
                 Arc::clone(&self.inner),
                 output_notify,
-                telemetry,
             )
             .with_current_subscriber(),
         );
@@ -580,7 +542,7 @@ pub(crate) fn shell_environment_policy(env_policy: &ExecEnvPolicy) -> ShellEnvir
 impl LocalProcess {
     async fn start(&self, params: ExecParams) -> Result<StartedExecProcess, ExecServerError> {
         let (response, wake_tx, events) = self
-            .start_process(params, ProcessTelemetry::default())
+            .start_process(params)
             .await
             .map_err(map_handler_error)?;
         Ok(StartedExecProcess {
@@ -606,12 +568,7 @@ impl ExecBackend for LocalProcess {
                 prepare_exec_request(&params, child_env(&params)).map_err(map_handler_error)?;
             self.inner
                 .shell_snapshots
-                .prepare(
-                    &params,
-                    &mut prepared,
-                    &self.inner.telemetry,
-                    CapturePurpose::Prewarm,
-                )
+                .prepare(&params, &mut prepared, CapturePurpose::Prewarm)
                 .await
                 .map(|_| ())
                 .map_err(map_handler_error)
@@ -792,58 +749,28 @@ async fn stream_output(
     finish_output_stream(process_id, inner).await;
 }
 
-fn watch_exit(
+async fn watch_exit(
     process_id: ProcessId,
     exit_rx: tokio::sync::oneshot::Receiver<i32>,
     inner: Arc<Inner>,
     output_notify: Arc<Notify>,
-    telemetry: ProcessTelemetry,
-) -> impl std::future::Future<Output = ()> + Send {
-    // Set the copied OTEL parent before entering; never retain the RPC tracing span.
-    let process_span = tracing::info_span!(parent: None, "codex.exec_server.process");
-    if let Some(launch_context) = &telemetry.launch_context {
-        codex_otel::set_parent_from_context(
-            &process_span,
-            opentelemetry::Context::new().with_remote_span_context(launch_context.clone()),
-        );
+) {
+    let exit_code = exit_rx.await.unwrap_or(-1);
+    {
+        let mut processes = inner.processes.lock().await;
+        if let Some(ProcessEntry::Running(process)) = processes.get_mut(&process_id) {
+            let seq = process.next_seq;
+            process.next_seq += 1;
+            process.exit_code = Some(exit_code);
+            let _ = process.wake_tx.send(seq);
+            process
+                .events
+                .publish(ExecProcessEvent::Exited { seq, exit_code });
+        }
     }
-    async move {
-        let exit_code = exit_rx.await.unwrap_or(-1);
-        {
-            let mut processes = inner.processes.lock().await;
-            if let Some(ProcessEntry::Running(process)) = processes.get_mut(&process_id)
-                && let Some(metrics) = process.metrics.take()
-            {
-                metrics.finish(if process.termination_requested {
-                    "terminated"
-                } else if exit_code == 0 {
-                    "success"
-                } else {
-                    "error"
-                });
-            }
-        }
-        {
-            let mut processes = inner.processes.lock().await;
-            if let Some(ProcessEntry::Running(process)) = processes.get_mut(&process_id) {
-                let seq = process.next_seq;
-                process.next_seq += 1;
-                process.exit_code = Some(exit_code);
-                telemetry.log(ProcessTelemetryEvent::Exit {
-                    exit_code,
-                    termination_requested: process.termination_requested,
-                });
-                let _ = process.wake_tx.send(seq);
-                process
-                    .events
-                    .publish(ExecProcessEvent::Exited { seq, exit_code });
-            }
-        }
-        output_notify.notify_waiters();
+    output_notify.notify_waiters();
 
-        maybe_emit_closed(process_id, Arc::clone(&inner)).await;
-    }
-    .instrument(process_span)
+    maybe_emit_closed(process_id, Arc::clone(&inner)).await;
 }
 
 async fn finish_output_stream(process_id: ProcessId, inner: Arc<Inner>) {

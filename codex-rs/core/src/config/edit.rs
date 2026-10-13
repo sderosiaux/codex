@@ -17,7 +17,6 @@ use toml_edit::Item as TomlItem;
 use toml_edit::Table as TomlTable;
 use toml_edit::value;
 
-mod bedrock;
 mod document_helpers;
 
 /// Discrete config mutations supported by the persistence engine.

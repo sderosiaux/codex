@@ -20,7 +20,6 @@ use codex_hooks::Hooks;
 use codex_login::AuthManager;
 use codex_mcp::McpRuntime;
 use codex_models_manager::manager::SharedModelsManager;
-use codex_otel::SessionTelemetry;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_skills_extension::HostSkillsService;
 use codex_thread_store::LiveThread;
@@ -41,7 +40,6 @@ pub(crate) struct SessionServices {
     pub(crate) auth_manager: Arc<AuthManager>,
     pub(crate) models_manager: SharedModelsManager,
     pub(crate) git_root_discovery: Arc<GitRootDiscovery>,
-    pub(crate) session_telemetry: SessionTelemetry,
     pub(crate) runtime_handle: Handle,
     pub(crate) skills_service: Arc<HostSkillsService>,
     pub(crate) agents_md_manager: Arc<AgentsMdManager>,

@@ -25,7 +25,6 @@ use serde_json::Value as JsonValue;
 
 use crate::session::session::Session;
 use crate::tools::context::ToolPayload;
-use crate::tools::metadata_metrics;
 use crate::tools::router::ToolCall;
 use codex_protocol::ToolName;
 
@@ -181,7 +180,6 @@ impl ExecutedToolCalls {
         let retained = self.retained_direct_metadata_bytes.load(Ordering::Relaxed);
         let available = MAX_RETAINED_DIRECT_METADATA_BYTES.saturating_sub(retained);
         let mut bytes = executed_tool_call_metadata_bytes(item);
-        let original_bytes = bytes;
         if bytes > available {
             item.retain_tool_resource_access_or_omit_metadata(bytes - available);
             bytes = executed_tool_call_metadata_bytes(item);
@@ -196,23 +194,11 @@ impl ExecutedToolCalls {
         }
         if bytes > available {
             item.clear_executed_tool_calls();
-            metadata_metrics::record_shedding(
-                "direct_retained",
-                original_bytes,
-                executed_tool_call_metadata_bytes(item),
-                codex_otel::global().as_ref(),
-            );
             return;
         }
         // All Direct attachments share the recorder lock, including cloned handles.
         self.retained_direct_metadata_bytes
             .store(retained + bytes, Ordering::Relaxed);
-        metadata_metrics::record_shedding(
-            "direct_retained",
-            original_bytes,
-            bytes,
-            codex_otel::global().as_ref(),
-        );
     }
 }
 

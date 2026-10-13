@@ -6,17 +6,13 @@ use std::num::NonZeroU64;
 
 use crate::HooksToml;
 use crate::profile_toml::ConfigProfile;
-use crate::types::AnalyticsConfigToml;
 use crate::types::AuthCredentialsStoreMode;
 use crate::types::McpEnterpriseManagedAuthConfig;
 use crate::types::McpServerConfig;
 use crate::types::OAuthCredentialsStoreMode;
-use crate::types::OtelConfigToml;
 use crate::types::ShellEnvironmentPolicyToml;
 use crate::types::SkillsConfig;
 use codex_features::FeaturesToml;
-use codex_model_provider_info::AMAZON_BEDROCK_PROVIDER_ID;
-use codex_model_provider_info::AMAZON_BEDROCK_RUNTIME_PROVIDER_ID;
 use codex_model_provider_info::LEGACY_OLLAMA_CHAT_PROVIDER_ID;
 use codex_model_provider_info::LMSTUDIO_OSS_PROVIDER_ID;
 use codex_model_provider_info::ModelProviderInfo;
@@ -38,9 +34,7 @@ use serde::Deserializer;
 use serde::Serialize;
 use serde::de::Error as SerdeError;
 
-const RESERVED_MODEL_PROVIDER_IDS: [&str; 5] = [
-    AMAZON_BEDROCK_PROVIDER_ID,
-    AMAZON_BEDROCK_RUNTIME_PROVIDER_ID,
+const RESERVED_MODEL_PROVIDER_IDS: [&str; 3] = [
     OPENAI_PROVIDER_ID,
     OLLAMA_OSS_PROVIDER_ID,
     LMSTUDIO_OSS_PROVIDER_ID,
@@ -342,14 +336,6 @@ pub struct ConfigToml {
     #[serde(default)]
     pub project_root_markers: Option<Vec<String>>,
 
-    /// When `enabled` is `false`, disables OpenAI analytics across Codex product surfaces on this machine.
-    /// Custom OTLP metrics exporters are controlled by `otel.metrics_exporter`.
-    /// When unset, the default depends on the client.
-    pub analytics: Option<AnalyticsConfigToml>,
-
-    /// OTEL configuration.
-    pub otel: Option<OtelConfigToml>,
-
     pub experimental_compact_prompt_file: Option<AbsolutePathBuf>,
     /// Preferred OSS provider for local models, e.g. "lmstudio" or "ollama".
     pub oss_provider: Option<String>,
@@ -483,12 +469,7 @@ pub fn validate_reserved_model_provider_ids(
 ) -> Result<(), String> {
     let mut conflicts = model_providers
         .keys()
-        .filter(|key| {
-            !matches!(
-                key.as_str(),
-                AMAZON_BEDROCK_PROVIDER_ID | AMAZON_BEDROCK_RUNTIME_PROVIDER_ID
-            ) && RESERVED_MODEL_PROVIDER_IDS.contains(&key.as_str())
-        })
+        .filter(|key| RESERVED_MODEL_PROVIDER_IDS.contains(&key.as_str()))
         .map(|key| format!("`{key}`"))
         .collect::<Vec<_>>();
     conflicts.sort_unstable();
@@ -508,29 +489,11 @@ pub fn validate_model_providers(
 ) -> Result<(), String> {
     validate_reserved_model_provider_ids(model_providers)?;
     for (key, provider) in model_providers {
-        if matches!(
-            key.as_str(),
-            AMAZON_BEDROCK_PROVIDER_ID | AMAZON_BEDROCK_RUNTIME_PROVIDER_ID
-        ) {
-            provider
-                .validate_bedrock_override()
-                .map_err(|message| format!("model_providers.{key} {message}"))?;
-        } else {
-            if provider.aws.is_some() {
-                return Err(format!(
-                    "model_providers.{key}: provider aws is only supported for \
-`{AMAZON_BEDROCK_PROVIDER_ID}` or `{AMAZON_BEDROCK_RUNTIME_PROVIDER_ID}`"
-                ));
-            }
-            if provider.name.trim().is_empty() {
-                return Err(format!(
-                    "model_providers.{key}: provider name must not be empty"
-                ));
-            }
+        if provider.name.trim().is_empty() {
+            return Err(format!(
+                "model_providers.{key}: provider name must not be empty"
+            ));
         }
-        provider
-            .validate()
-            .map_err(|message| format!("model_providers.{key}: {message}"))?;
     }
     Ok(())
 }

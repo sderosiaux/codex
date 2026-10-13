@@ -29,7 +29,6 @@ mod service_error;
 mod startup_error;
 mod stdio_server_launcher;
 mod tool_input;
-mod trace_context;
 mod utils;
 pub use utils::CUSTOM_CA_ENV_KEYS;
 mod www_authenticate;

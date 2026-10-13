@@ -37,13 +37,6 @@ impl fmt::Debug for OAuthError {
     }
 }
 
-/// Preserve each caller's existing diagnostic-read contract.
-#[derive(Clone, Copy)]
-pub(crate) enum ErrorBodyLimit {
-    Unlimited,
-    Bytes(usize),
-}
-
 /// Sanitized token rejection. HTTP status survives even when its body cannot be read.
 #[derive(Debug)]
 pub(crate) struct TokenRejection {
@@ -54,11 +47,7 @@ pub(crate) struct TokenRejection {
 }
 
 impl TokenRejection {
-    pub(crate) async fn from_response(
-        mut response: HttpResponse,
-        limit: ErrorBodyLimit,
-        secrets: &[&str],
-    ) -> Self {
+    pub(crate) async fn from_response(response: HttpResponse, secrets: &[&str]) -> Self {
         let status = response.status();
         let request_id = ["x-request-id", "x-openai-request-id", "cf-ray"]
             .iter()
@@ -70,24 +59,7 @@ impl TokenRejection {
                     .take(/*n*/ 128)
                     .collect()
             });
-        let body = match limit {
-            ErrorBodyLimit::Unlimited => response.text().await,
-            ErrorBodyLimit::Bytes(limit) => {
-                let mut body = Vec::new();
-                loop {
-                    match response.chunk().await {
-                        Ok(Some(chunk)) if chunk.len() <= limit.saturating_sub(body.len()) => {
-                            body.extend_from_slice(&chunk);
-                        }
-                        Ok(None) => break Ok(String::from_utf8_lossy(&body).into_owned()),
-                        // Omit oversized bodies entirely so an echoed credential cannot be cut
-                        // into a prefix that evades the caller's diagnostic redaction.
-                        Ok(Some(_)) => break Ok(String::new()),
-                        Err(error) => break Err(error),
-                    }
-                }
-            }
-        };
+        let body = response.text().await;
         let (detail, body_read_error) = match body {
             Ok(body) => (TokenErrorDetail::parse(&body, secrets), None),
             Err(error) => (

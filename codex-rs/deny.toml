@@ -231,13 +231,9 @@ deny = [
         # Intentional exception: this standalone, privileged Responses API proxy owns its blocking
         # upstream HTTP transport independently of Codex.
         "codex-responses-api-proxy",
-        # Temporary migration exceptions.
-        "codex-otel",
         # Third-party crates that own their reqwest integration. These are not part of the
         # first-party migration count above.
         "oauth2",
-        "opentelemetry-http",
-        "opentelemetry-otlp",
         "rmcp",
         "sentry",
         "webrtc-sys-build",

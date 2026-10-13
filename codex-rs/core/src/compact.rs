@@ -627,7 +627,6 @@ async fn drain_to_completed(
         .stream(
             prompt,
             turn_context.model_info(),
-            &turn_context.session_telemetry,
             sess.reasoning_effort_for_request(
                 &turn_context.initial_settings,
                 RequestEffortUsage::Compaction,

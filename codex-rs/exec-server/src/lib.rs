@@ -8,7 +8,6 @@ mod local_process;
 mod no_follow;
 mod process;
 mod process_id;
-mod process_telemetry;
 mod protocol;
 mod regular_file;
 mod rpc;
@@ -18,7 +17,6 @@ mod shell_snapshot;
 mod shell_snapshot_file;
 #[cfg(unix)]
 mod shell_snapshot_process;
-mod telemetry;
 
 pub use codex_file_system::CopyOptions;
 pub use codex_file_system::CreateDirectoryOptions;

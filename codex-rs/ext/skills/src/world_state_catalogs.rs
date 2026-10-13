@@ -14,8 +14,7 @@ use crate::render::SkillCatalogRenderPolicy;
 use crate::render::SkillMetadataBudget;
 use crate::render::render_available_skills;
 use crate::render::skill_metadata_budget;
-use crate::render_observability::CatalogSurface;
-use crate::render_observability::record_catalog_render;
+use crate::render_observability::trace_catalog_budget_pressure;
 use crate::sources::SkillProviders;
 use crate::state::EmittedCatalogBudgetWarnings;
 use crate::state::HostSkillsCatalogInWorldState;
@@ -115,7 +114,6 @@ impl<'a> CatalogContext<'a> {
         let body = rendered
             .and_then(|rendered| rendered.into_fragment(self.include_usage))
             .map(|fragment| fragment.body());
-        let metrics = self.input.extension_metrics.clone();
         let warning_emitter = Arc::clone(&self.warning_emitter);
         let render_report = report.clone();
         let on_render: CatalogRenderCallback = Box::new(move || {
@@ -123,12 +121,7 @@ impl<'a> CatalogContext<'a> {
                 return;
             }
 
-            record_catalog_render(
-                metrics.as_deref(),
-                CatalogSurface::HostWorldState,
-                budget,
-                &render_report,
-            );
+            trace_catalog_budget_pressure(budget, &render_report);
             if let Some(message) = render_report.warning_message() {
                 warning_emitter(message);
             }

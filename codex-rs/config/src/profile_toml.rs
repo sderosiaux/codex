@@ -4,7 +4,6 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate::config_toml::ToolsToml;
-use crate::types::AnalyticsConfigToml;
 use crate::types::Personality;
 use codex_features::FeaturesToml;
 use codex_protocol::config_types::ReasoningSummary;
@@ -47,7 +46,6 @@ pub struct ConfigProfile {
     pub include_environment_context_time: Option<bool>,
     pub tools: Option<ToolsToml>,
     pub web_search: Option<WebSearchMode>,
-    pub analytics: Option<AnalyticsConfigToml>,
     /// Optional feature toggles scoped to this profile.
     #[serde(default)]
     // Injects known feature keys into the schema and forbids unknown keys.

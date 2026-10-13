@@ -32,20 +32,6 @@ use tracing::error;
 use tracing::field::Empty;
 use url::Url;
 
-mod telemetry;
-
-use telemetry::emit_mcp_call_metrics;
-use telemetry::mcp_call_metric_outcome;
-use telemetry::record_mcp_call_outcome_span_telemetry;
-
-const MCP_RESULT_TELEMETRY_META_KEY: &str = "codex/telemetry";
-const MCP_RESULT_TELEMETRY_SPAN_KEY: &str = "span";
-const MCP_RESULT_TELEMETRY_TARGET_ID_KEY: &str = "target_id";
-const MCP_RESULT_TELEMETRY_DID_TRIGGER_SERVER_USER_FLOW_KEY: &str = "did_trigger_server_user_flow";
-const MCP_RESULT_TELEMETRY_TARGET_ID_SPAN_ATTR: &str = "codex.mcp.target.id";
-const MCP_RESULT_TELEMETRY_SERVER_USER_FLOW_SPAN_ATTR: &str =
-    "codex.mcp.server_user_flow.triggered";
-const MCP_RESULT_TELEMETRY_TARGET_ID_MAX_CHARS: usize = 256;
 const MCP_TOOL_CALL_EVENT_RESULT_MAX_BYTES: usize = DEFAULT_OUTPUT_BYTES_CAP;
 
 /// Handles the specified tool call and dispatches the appropriate MCP tool-call
@@ -170,41 +156,36 @@ async fn execute_mcp_tool_call(
         .clone()
         .unwrap_or_else(|| JsonValue::Object(serde_json::Map::new()));
     let result = async {
-        let result = async {
-            let mut result = prepared_call
-                .call_with_preparation(/*requested_timeout*/ None, || async {
-                    let request_meta = build_mcp_tool_call_request_meta(step_context, call_id);
-                    let request_meta = with_mcp_tool_call_ids_meta(
-                        request_meta,
-                        &sess.thread_id.to_string(),
-                        &sess.session_id().to_string(),
-                        originating_call,
-                    );
-                    Ok((arguments_value.clone(), request_meta))
-                })
-                .await
-                .map_err(|error| format!("tool call error: {error:?}"))?;
-            let mcp_tool = McpToolContext::from_prepared_call(
-                &prepared_call,
-                turn_context.config.mcp_servers.get(&server),
-            );
-            process_mcp_tool_result(
-                sess,
-                turn_context,
-                call_id,
-                &mcp_tool,
-                &tool_input,
-                &mut result,
-            )
-            .await;
-            sanitize_mcp_tool_result_for_model(
-                &step_context.settings.model_info.input_modalities,
-                Ok(result),
-            )
-        }
+        let mut result = prepared_call
+            .call_with_preparation(/*requested_timeout*/ None, || async {
+                let request_meta = build_mcp_tool_call_request_meta(step_context, call_id);
+                let request_meta = with_mcp_tool_call_ids_meta(
+                    request_meta,
+                    &sess.thread_id.to_string(),
+                    &sess.session_id().to_string(),
+                    originating_call,
+                );
+                Ok((arguments_value.clone(), request_meta))
+            })
+            .await
+            .map_err(|error| format!("tool call error: {error:?}"))?;
+        let mcp_tool = McpToolContext::from_prepared_call(
+            &prepared_call,
+            turn_context.config.mcp_servers.get(&server),
+        );
+        process_mcp_tool_result(
+            sess,
+            turn_context,
+            call_id,
+            &mcp_tool,
+            &tool_input,
+            &mut result,
+        )
         .await;
-        record_mcp_result_span_telemetry(&Span::current(), &result);
-        result
+        sanitize_mcp_tool_result_for_model(
+            &step_context.settings.model_info.input_modalities,
+            Ok(result),
+        )
     }
     .instrument(mcp_tool_call_span(
         sess,
@@ -241,15 +222,6 @@ async fn execute_mcp_tool_call(
     )
     .await;
 
-    let outcome = mcp_call_metric_outcome(&result);
-    emit_mcp_call_metrics(
-        &step_context.session_telemetry,
-        &outcome,
-        &server,
-        &tool_name,
-        Some(duration),
-    );
-
     HandledMcpToolCall {
         result: CallToolResult::from_result(result),
         tool_input,
@@ -269,7 +241,6 @@ fn mcp_tool_call_span(
     };
     let span = tracing::info_span!(
         "mcp.tools.call",
-        otel.kind = "client",
         rpc.system = "jsonrpc",
         rpc.method = "tools/call",
         mcp.server.name = fields.server_name,
@@ -282,10 +253,6 @@ fn mcp_tool_call_span(
         turn.id = turn_context.sub_id.as_str(),
         server.address = Empty,
         server.port = Empty,
-        codex.mcp.target.id = Empty,
-        codex.mcp.server_user_flow.triggered = Empty,
-        error.type = Empty,
-        codex.mcp.error.code = Empty,
     );
     record_server_fields(&span, fields.server_origin);
     span
@@ -310,51 +277,6 @@ fn record_server_fields(span: &Span, url: Option<&str>) {
     }
     if let Some(port) = parsed.port_or_known_default() {
         span.record("server.port", port as i64);
-    }
-}
-
-fn record_mcp_result_span_telemetry(span: &Span, result: &Result<CallToolResult, String>) {
-    record_mcp_call_outcome_span_telemetry(span, result);
-
-    let Some(span_telemetry) = result
-        .as_ref()
-        .ok()
-        .and_then(|result| result.meta.as_ref())
-        .and_then(JsonValue::as_object)
-        .and_then(|meta| meta.get(MCP_RESULT_TELEMETRY_META_KEY))
-        .and_then(JsonValue::as_object)
-        .and_then(|telemetry| telemetry.get(MCP_RESULT_TELEMETRY_SPAN_KEY))
-        .and_then(JsonValue::as_object)
-    else {
-        return;
-    };
-
-    if let Some(target_id) = span_telemetry
-        .get(MCP_RESULT_TELEMETRY_TARGET_ID_KEY)
-        .and_then(JsonValue::as_str)
-        .filter(|target_id| !target_id.is_empty())
-    {
-        span.record(
-            MCP_RESULT_TELEMETRY_TARGET_ID_SPAN_ATTR,
-            truncate_str_to_char_boundary(target_id, MCP_RESULT_TELEMETRY_TARGET_ID_MAX_CHARS),
-        );
-    }
-
-    if let Some(did_trigger_server_user_flow) = span_telemetry
-        .get(MCP_RESULT_TELEMETRY_DID_TRIGGER_SERVER_USER_FLOW_KEY)
-        .and_then(JsonValue::as_bool)
-    {
-        span.record(
-            MCP_RESULT_TELEMETRY_SERVER_USER_FLOW_SPAN_ATTR,
-            did_trigger_server_user_flow,
-        );
-    }
-}
-
-fn truncate_str_to_char_boundary(value: &str, max_chars: usize) -> &str {
-    match value.char_indices().nth(max_chars) {
-        Some((index, _)) => &value[..index],
-        None => value,
     }
 }
 

@@ -7,7 +7,6 @@ use crate::error::ApiError;
 use crate::error::parse_flex_unavailable;
 use crate::rate_limits::parse_all_rate_limits;
 use crate::safety_buffering::treatment_from_headers;
-use crate::telemetry::SseTelemetry;
 use codex_client::ByteStream;
 use codex_client::StreamResponse;
 use codex_protocol::ResponseUsageMetadata;
@@ -23,7 +22,6 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tokio::time::Instant;
 use tokio::time::timeout;
 use tracing::debug;
 use tracing::trace;
@@ -37,7 +35,6 @@ const TRUSTED_ACCESS_FOR_CYBER_VERIFICATION: &str = "trusted_access_for_cyber";
 pub fn spawn_response_stream(
     stream_response: StreamResponse,
     idle_timeout: Duration,
-    telemetry: Option<Arc<dyn SseTelemetry>>,
     turn_state: Option<Arc<OnceLock<String>>>,
 ) -> ResponseStream {
     let rate_limit_snapshots = parse_all_rate_limits(&stream_response.headers);
@@ -90,7 +87,6 @@ pub fn spawn_response_stream(
             stream_response.bytes,
             tx_event,
             idle_timeout,
-            telemetry,
             safety_buffering_treatment,
         )
         .await;
@@ -509,7 +505,6 @@ async fn process_sse_with_treatment(
     stream: ByteStream,
     tx_event: mpsc::Sender<Result<ResponseEvent, ApiError>>,
     idle_timeout: Duration,
-    telemetry: Option<Arc<dyn SseTelemetry>>,
     safety_buffering_treatment: SafetyBufferingTreatment,
 ) {
     let mut stream = stream.eventsource();
@@ -517,15 +512,11 @@ async fn process_sse_with_treatment(
     let mut last_server_model: Option<String> = None;
 
     loop {
-        let start = Instant::now();
         let response = tokio::select! {
             biased;
             _ = tx_event.closed() => return,
             response = timeout(idle_timeout, stream.next()) => response,
         };
-        if let Some(t) = telemetry.as_ref() {
-            t.on_sse_poll(&response, start.elapsed());
-        }
         let sse = match response {
             Ok(Some(Ok(sse))) => sse,
             Ok(Some(Err(e))) => {

@@ -9,13 +9,11 @@ use super::*;
 use codex_mcp::McpStartupPolicy;
 use codex_mcp::PreparedMcpCall;
 use codex_mcp::ToolInfo;
-use codex_otel::auth_storage::AuthStorageOriginator;
 
 pub(super) struct McpDesiredState {
     pub(super) config: Arc<Config>,
     pub(super) auth: Option<CodexAuth>,
     pub(super) submit_id: String,
-    pub(super) originator: String,
     pub(super) session_source: SessionSource,
     pub(super) local_process_cwd: PathBuf,
 }
@@ -74,7 +72,6 @@ impl Session {
             config: Arc::new(config),
             auth,
             submit_id: self.next_internal_sub_id(),
-            originator: session_configuration.originator,
             session_source: session_configuration.session_source,
             local_process_cwd,
         }
@@ -103,15 +100,11 @@ impl Session {
             config: Arc::new(config),
             auth,
             submit_id: INITIAL_SUBMIT_ID.to_owned(),
-            originator: session_configuration.originator.clone(),
             session_source: session_configuration.session_source.clone(),
             local_process_cwd,
         };
         self.publish_mcp_runtime(&desired, mcp_config)
-            .instrument(info_span!(
-                "session_init.mcp_manager_init",
-                otel.name = "session_init.mcp_manager_init",
-            ))
+            .instrument(info_span!("session_init.mcp_manager_init",))
             .await;
 
         self.services.mcp_runtime.validate_required_servers().await
@@ -124,9 +117,7 @@ impl Session {
         mcp_config: McpConfig,
     ) {
         let input = self.build_mcp_runtime_input(desired, mcp_config);
-        AuthStorageOriginator::from_client_name(&desired.originator)
-            .scope(self.services.mcp_runtime.replace(input))
-            .await;
+        self.services.mcp_runtime.replace(input).await;
     }
 
     pub(super) fn build_mcp_runtime_input(

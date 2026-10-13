@@ -1,8 +1,6 @@
 //! Retains queue-only mail while local sessions are unloaded.
 //! Eviction transfers mail before releasing the recipient's residency guard.
 
-use crate::agent_communication::PENDING_MAILBOX_MESSAGES;
-use codex_diagnostics::GaugeGuard;
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result;
@@ -29,7 +27,6 @@ struct Mailbox {
 struct StoredMail {
     id: Option<String>,
     communication: InterAgentCommunication,
-    _diagnostics_guard: GaugeGuard,
 }
 
 impl Mailboxes {
@@ -50,7 +47,6 @@ impl Mailboxes {
             .extend(messages.into_iter().map(|communication| StoredMail {
                 id: id.clone(),
                 communication,
-                _diagnostics_guard: PENDING_MAILBOX_MESSAGES.track(),
             }));
         mailbox.state.send_replace(!mailbox.pending.is_empty());
         Ok(())

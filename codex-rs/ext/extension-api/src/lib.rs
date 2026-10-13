@@ -13,7 +13,6 @@ pub use tool_policy::ToolPolicy;
 
 pub use capabilities::ConversationHistorySnapshot;
 pub use capabilities::ExtensionEventSink;
-pub use capabilities::ExtensionMetrics;
 pub use capabilities::ExtensionWarning;
 pub use capabilities::NoopExtensionEventSink;
 pub use capabilities::NoopResponseItemInjector;

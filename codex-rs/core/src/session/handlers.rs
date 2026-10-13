@@ -1,7 +1,6 @@
 use super::Submission;
 use crate::WithTurnExtensionData;
 use async_channel::Receiver;
-use codex_otel::set_parent_from_w3c_trace_context;
 use tracing::Instrument;
 use tracing::info_span;
 
@@ -27,7 +26,6 @@ use codex_protocol::protocol::ReviewRequest;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::request_user_input::RequestUserInputResponse;
 
-use crate::context_manager::is_user_turn_boundary;
 use codex_protocol::dynamic_tools::DynamicToolResponse;
 use codex_protocol::mcp::RequestId as ProtocolRequestId;
 use codex_rmcp_client::ElicitationAction;
@@ -220,17 +218,6 @@ async fn emit_thread_stop_lifecycle(sess: &Session) {
 pub async fn shutdown(sess: &Arc<Session>, sub_id: String) -> bool {
     shutdown_session_runtime(sess).await;
     info!("Shutting down Codex instance");
-    let history = sess.clone_history().await;
-    let turn_count = history
-        .raw_items()
-        .filter(|item| is_user_turn_boundary(item))
-        .count();
-    sess.services.session_telemetry.counter(
-        "codex.conversation.turn.count",
-        i64::try_from(turn_count).unwrap_or(0),
-        &[],
-    );
-
     let event = Event {
         id: sub_id,
         msg: EventMsg::ShutdownComplete,
@@ -471,21 +458,9 @@ pub(super) async fn submission_loop(
 }
 
 pub(super) fn submission_dispatch_span(sub: &Submission) -> tracing::Span {
-    let op_name = sub.op.kind();
-    let span_name = format!("op.dispatch.{op_name}");
-    let dispatch_span = info_span!(
+    info_span!(
         "submission_dispatch",
-        otel.name = span_name.as_str(),
         submission.id = sub.id.as_str(),
-        codex.op = op_name
-    );
-    if let Some(trace) = sub.trace.as_ref()
-        && !set_parent_from_w3c_trace_context(&dispatch_span, trace)
-    {
-        warn!(
-            submission.id = sub.id.as_str(),
-            "ignoring invalid submission trace carrier"
-        );
-    }
-    dispatch_span
+        codex.op = sub.op.kind()
+    )
 }

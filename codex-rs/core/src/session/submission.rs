@@ -2,7 +2,6 @@
 
 use codex_extension_api::ExtensionDataInit;
 use codex_protocol::protocol::Op;
-use codex_protocol::protocol::W3cTraceContext;
 use tokio::sync::OwnedRwLockReadGuard;
 
 #[derive(Debug)]
@@ -12,7 +11,6 @@ pub(crate) struct Submission {
     /// Accepted with settings, never separately from the request that supplied them.
     pub turn_extension_init: Option<ExtensionDataInit>,
     /// Optional W3C trace carrier propagated across async submission handoffs.
-    pub trace: Option<W3cTraceContext>,
     pub parent_turn_id: Option<String>,
     pub root_turn_id: Option<String>,
     /// Keeps a V2 recipient resident until this submission is handled or dropped.

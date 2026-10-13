@@ -42,7 +42,6 @@ impl McpConnectionSet {
         }
         .instrument(info_span!(
             "session_init.required_mcp_wait",
-            otel.name = "session_init.required_mcp_wait",
             session_init.required_mcp_server_count = self.required_servers.len(),
         ))
         .await;

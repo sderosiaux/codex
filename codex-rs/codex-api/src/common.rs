@@ -8,7 +8,6 @@ use codex_protocol::protocol::ModelVerification;
 use codex_protocol::protocol::RateLimitSnapshot;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TurnModerationMetadataEvent;
-use codex_protocol::protocol::W3cTraceContext;
 use codex_protocol::turn_input::CyberAccessProgram;
 use futures::Stream;
 use serde::Deserialize;
@@ -22,9 +21,6 @@ use std::task::Context;
 use std::task::Poll;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
-
-pub const WS_REQUEST_HEADER_TRACEPARENT_CLIENT_METADATA_KEY: &str = "ws_request_header_traceparent";
-pub const WS_REQUEST_HEADER_TRACESTATE_CLIENT_METADATA_KEY: &str = "ws_request_header_tracestate";
 
 /// Explicit per-request access selection using the Responses API wire values.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
@@ -328,28 +324,6 @@ pub struct ResponseCreateWsRequest<'a> {
     pub client_metadata: Option<HashMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub access_programs: Option<AccessPrograms>,
-}
-
-pub fn response_create_client_metadata(
-    client_metadata: Option<HashMap<String, String>>,
-    trace: Option<&W3cTraceContext>,
-) -> Option<HashMap<String, String>> {
-    let mut client_metadata = client_metadata.unwrap_or_default();
-
-    if let Some(traceparent) = trace.and_then(|trace| trace.traceparent.as_deref()) {
-        client_metadata.insert(
-            WS_REQUEST_HEADER_TRACEPARENT_CLIENT_METADATA_KEY.to_string(),
-            traceparent.to_string(),
-        );
-    }
-    if let Some(tracestate) = trace.and_then(|trace| trace.tracestate.as_deref()) {
-        client_metadata.insert(
-            WS_REQUEST_HEADER_TRACESTATE_CLIENT_METADATA_KEY.to_string(),
-            tracestate.to_string(),
-        );
-    }
-
-    (!client_metadata.is_empty()).then_some(client_metadata)
 }
 
 #[derive(Debug, Serialize)]

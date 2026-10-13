@@ -388,7 +388,7 @@ async fn execute_verified_patch(
         action,
     };
     let mut runtime = ApplyPatchRuntime::new();
-    let result = runtime.run(&request, &tool_ctx).await;
+    let result = runtime.run(&request).await;
     let (result, delta) = match result {
         Ok(output) => (Ok(output.exec_output), Some(output.delta)),
         Err(error) => (Err(error), Some(runtime.committed_delta().clone())),

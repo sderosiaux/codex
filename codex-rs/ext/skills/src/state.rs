@@ -1,16 +1,9 @@
 use std::collections::HashSet;
-use std::sync::Arc;
 use std::sync::Mutex;
-
-use codex_extension_api::ExtensionMetrics;
 
 use crate::SkillsExtensionConfig;
 use crate::catalog::SkillCatalog;
 use crate::catalog::SkillCatalogEntry;
-
-pub(crate) struct SkillsSessionState {
-    pub(crate) extension_metrics: Option<Arc<dyn ExtensionMetrics>>,
-}
 
 /// Thread-owned skill configuration and caches; consumers can only read catalog snapshots.
 pub struct SkillsThreadState {

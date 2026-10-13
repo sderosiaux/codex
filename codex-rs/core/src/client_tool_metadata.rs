@@ -1,10 +1,10 @@
 //! Bounds optional tool observations using the actual outgoing Responses message.
 //! Only the wire copy changes; model-visible input and WebSocket continuation history stay intact.
 
-use crate::tools::metadata_metrics;
 use crate::utils::json::serialized_json_bytes;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::models::bound_executed_tool_calls_for_message;
+use codex_protocol::models::executed_tool_call_metadata_bytes;
 use serde::Serialize;
 
 const MAX_RESPONSE_MESSAGE_BYTES: usize = 15 * 1024 * 1024;
@@ -27,15 +27,20 @@ pub(super) fn bounded_input<T: Serialize>(
     if message_bytes <= MAX_RESPONSE_MESSAGE_BYTES {
         return None;
     }
-    let before = metadata_metrics::metadata_bytes(input);
+    let before = metadata_bytes(input);
     let mut bounded = input.to_vec();
     let overage = message_bytes - MAX_RESPONSE_MESSAGE_BYTES;
     bound_executed_tool_calls_for_message(&mut bounded, before.saturating_sub(overage));
-    let after = metadata_metrics::metadata_bytes(&bounded);
+    let after = metadata_bytes(&bounded);
     if before == after {
         return None;
     }
-    metadata_metrics::record_shedding("message", before, after, codex_otel::global().as_ref());
     // Ordinary content alone can exceed the soft limit. Preserve it and existing error handling.
     Some(bounded)
+}
+
+fn metadata_bytes(items: &[ResponseItem]) -> usize {
+    items.iter().fold(0_usize, |bytes, item| {
+        bytes.saturating_add(executed_tool_call_metadata_bytes(item))
+    })
 }

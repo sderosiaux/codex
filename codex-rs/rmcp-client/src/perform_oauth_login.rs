@@ -11,7 +11,6 @@ use anyhow::anyhow;
 use anyhow::bail;
 use codex_config::McpServerOAuthConfig;
 use codex_exec_server::HttpClient;
-use codex_otel::auth_storage::AuthStorageOriginator;
 use rmcp::transport::AuthorizationManager;
 use rmcp::transport::AuthorizationSession;
 use rmcp::transport::auth::AuthorizationMetadata;
@@ -855,7 +854,7 @@ impl OauthLoginFlow {
 
             let _ = tx.send(result);
         };
-        tokio::spawn(AuthStorageOriginator::current().scope(task));
+        tokio::spawn(task);
 
         rx
     }

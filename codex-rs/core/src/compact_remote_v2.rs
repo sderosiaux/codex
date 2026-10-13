@@ -212,7 +212,6 @@ async fn run_remote_compact_task_inner_impl(
             )
             .await;
             record_model_fallback(
-                &sess.services.session_telemetry,
                 turn_context.model_info().slug.as_str(),
                 fallback_turn_context.model_info().slug.as_str(),
                 compaction_metadata.reason(),
@@ -304,7 +303,6 @@ async fn run_remote_compaction_request_v2(
             .stream(
                 prompt,
                 turn_context.model_info(),
-                &turn_context.session_telemetry,
                 sess.reasoning_effort_for_request(
                     &turn_context.initial_settings,
                     RequestEffortUsage::Compaction,

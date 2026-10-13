@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use super::session::Session;
 use super::step_context::StepContext;
 use crate::context::TokenBudgetContext;
@@ -126,16 +124,12 @@ impl Session {
             String::new()
         };
         let mut world_state = WorldState::default();
-        let extension_metrics = super::extension_metrics::from_session_telemetry(
-            step_context.session_telemetry.clone(),
-        );
         if incremental_tools {
             let specs = step_context.tool_router.model_visible_specs();
             let definitions = codex_tools::create_tools_json_for_responses_lite(&specs)?;
             world_state.add_section(TopLevelToolsState::new(
                 model_messages.incremental_tools(),
                 definitions,
-                Some(Arc::clone(&extension_metrics)),
             )?);
             world_state.add_section(BaseInstructionsState(base_instructions));
         }
@@ -222,7 +216,6 @@ impl Session {
         {
             world_state.add_section(ToolsState::new(
                 step_context.tool_router.deferred_tool_namespaces(),
-                Arc::clone(&extension_metrics),
             ));
         }
         let environments = step_context.environments.selections();
@@ -234,7 +227,6 @@ impl Session {
                     turn_id: turn_context.sub_id.as_str(),
                     model_info: &step_context.settings.model_info,
                     environments: &environments,
-                    extension_metrics: Some(Arc::clone(&extension_metrics)),
                     session_store: &self.services.session_extension_data,
                     thread_store: &self.services.thread_extension_data,
                     turn_store: turn_context.extension_data.as_ref(),

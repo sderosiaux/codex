@@ -58,7 +58,7 @@ pub enum RetryOperation {
     RemoteCompactionV2,
 }
 
-/// Emits retry telemetry at the caller's source location without adding it to normal OTEL logs.
+/// Emits a retry trace event at the caller's source location.
 #[macro_export]
 macro_rules! record_retry {
     ($attempt:expr, $delay:expr, $operation:expr $(,)?) => {{
@@ -69,7 +69,6 @@ macro_rules! record_retry {
         };
 
         ::tracing::event!(
-            target: "codex_otel.trace_safe",
             ::tracing::Level::TRACE,
             event.name = "codex.retry",
             retry.attempt = $attempt,

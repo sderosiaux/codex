@@ -24,7 +24,6 @@ use codex_utils_path_uri::PathUri;
 use std::collections::HashMap;
 
 mod launch;
-mod snapshot_metrics;
 
 use launch::with_launch_failure_events;
 
@@ -67,8 +66,6 @@ async fn prepare_and_launch(
         .shell
         .as_ref()
         .unwrap_or(session_shell.as_ref());
-    let snapshot_metrics =
-        snapshot_metrics::SnapshotMetrics::start(req, &ctx.step_context.turn.config);
     // TODO(anp): Make shell snapshot lookup accept PathUri.
     let native_cwd = req
         .cwd
@@ -78,9 +75,6 @@ async fn prepare_and_launch(
         .turn_environment
         .shell_snapshot(&native_cwd, base_command, &ctx.step_context.turn.config)
         .await;
-    let snapshot_wait = snapshot_metrics
-        .as_ref()
-        .map(|metrics| metrics.started_at.elapsed());
     let shell_snapshot_location = shell_snapshot.as_ref().map(|snapshot| snapshot.path());
     #[allow(unused_mut)]
     let mut env = req.env.clone();
@@ -107,7 +101,7 @@ async fn prepare_and_launch(
     {
         command = command_with_path_prepends;
     }
-    let wrapped = maybe_wrap_shell_lc_with_snapshot(
+    command = maybe_wrap_shell_lc_with_snapshot(
         &command,
         shell,
         shell_snapshot_location.as_ref(),
@@ -115,14 +109,6 @@ async fn prepare_and_launch(
         &env,
         &runtime_path_prepends,
     );
-    let snapshot_used = wrapped != command;
-    command = wrapped;
-    if let Some(metrics) = snapshot_metrics
-        && let Some(wait) = snapshot_wait
-    {
-        let outcome = if snapshot_used { "used" } else { "fallback" };
-        metrics.record(&ctx.step_context.session_telemetry, wait, outcome);
-    }
     if req.shell_snapshot.is_some() {
         let exports =
             runtime_path_prepends.shell_exports_after_snapshot(&req.explicit_env_overrides);

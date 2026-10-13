@@ -46,9 +46,6 @@ pub trait ModelsEndpointClient: fmt::Debug + Send + Sync {
     /// Return `None` when identity is unavailable; cached catalog reuse is then disabled.
     fn identity(&self) -> Option<String>;
 
-    /// Returns whether this provider can authenticate command-scoped requests.
-    fn has_command_auth(&self) -> bool;
-
     /// Returns whether the currently resolved auth can use Codex backend-only models.
     fn uses_codex_backend(&self) -> ModelsEndpointFuture<'_, bool>;
 
@@ -651,15 +648,12 @@ impl OpenAiModelsManager {
     }
 
     fn supports_api_key_discovery(&self) -> bool {
-        self.endpoint_client.supports_api_key_models()
-            && !self.endpoint_client.has_command_auth()
-            && self.uses_api_key_auth()
+        self.endpoint_client.supports_api_key_models() && self.uses_api_key_auth()
     }
 
     // A runtime opt-out must hide catalogs fetched before the flag was disabled, too.
     fn api_key_discovery_disabled(&self) -> bool {
         self.uses_api_key_auth()
-            && !self.endpoint_client.has_command_auth()
             && (!self.endpoint_client.supports_api_key_models()
                 || !self.api_key_model_discovery_enabled.load(Ordering::SeqCst))
     }
@@ -673,9 +667,7 @@ impl OpenAiModelsManager {
     }
 
     async fn should_refresh_models(&self) -> bool {
-        self.endpoint_client.uses_codex_backend().await
-            || self.endpoint_client.has_command_auth()
-            || self.supports_api_key_discovery()
+        self.endpoint_client.uses_codex_backend().await || self.supports_api_key_discovery()
     }
 
     /// Publish only while the request identity still matches, including after async storage.
@@ -690,9 +682,7 @@ impl OpenAiModelsManager {
             .any(|model| model.visibility == ModelVisibility::List)
             && (self.supports_api_key_discovery()
                 || self.auth_manager.as_ref().is_some_and(|auth_manager| {
-                    auth_manager
-                        .auth_mode()
-                        .is_some_and(AuthMode::has_chatgpt_account)
+                    auth_manager.auth_mode() == Some(AuthMode::Chatgpt)
                 }));
         if !remote_only && let Some(mut models) = self.catalog_source.fallback_models() {
             for model in entry.models {
@@ -716,8 +706,6 @@ impl OpenAiModelsManager {
         let Some(cache) = self.cache.as_ref() else {
             return false;
         };
-        let _timer =
-            codex_otel::start_global_timer("codex.remote_models.load_cache.duration_ms", &[]);
         let client_version = crate::client_version_to_whole();
         info!(client_version, "models cache: evaluating cache eligibility");
         let Some(identity) = self.endpoint_client.identity() else {

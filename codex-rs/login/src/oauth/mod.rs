@@ -20,7 +20,6 @@ pub(crate) use client::RefreshTokenGrant;
 pub(crate) use client::TokenEncoding;
 pub(crate) use client::TokenEndpoint;
 pub(crate) use diagnostics::sanitize_url_for_logging;
-pub(crate) use error::ErrorBodyLimit;
 pub(crate) use error::OAuthError;
 pub(crate) use error::TokenErrorDetail;
 pub(crate) use error::TokenRejection;

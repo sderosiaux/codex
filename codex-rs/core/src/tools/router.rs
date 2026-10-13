@@ -9,27 +9,18 @@ use crate::tools::context::ToolPayload;
 use crate::tools::registry::AnyToolResult;
 use crate::tools::registry::RegisteredTool;
 use crate::tools::registry::ToolArgumentDiffConsumer;
-use crate::tools::registry::ToolExposure;
 use crate::tools::registry::ToolRegistry;
-use codex_otel::SessionTelemetry;
-use codex_otel::TOOL_REGISTRATIONS_METRIC;
-use codex_otel::TOOL_REGISTRATIONS_METRIC_BUCKETS;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::models::SearchToolCallParams;
 use codex_tools::ResponsesApiNamespaceTool;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
-use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::instrument;
 
 pub use crate::tools::context::ToolCallSource;
-
-const EXPOSURE_DIRECT: &str = "direct";
-const EXPOSURE_DEFERRED: &str = "deferred";
-const EXPOSURE_HIDDEN: &str = "hidden";
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ToolCall {
@@ -56,16 +47,6 @@ impl ToolCall {
             ToolCallSource::Direct
         }
     }
-}
-
-pub(crate) fn tool_log_payload<'a>(
-    payload: &'a ToolPayload,
-    source: &ToolCallSource,
-) -> Cow<'a, str> {
-    if matches!(source, ToolCallSource::DirectPlaintextMessage) {
-        return Cow::Borrowed("[plaintext arguments]");
-    }
-    payload.log_payload()
 }
 
 /// One finalized tool plan: its advertised surfaces and matching executable runtimes.
@@ -242,33 +223,5 @@ impl ToolRouter {
         self.registry
             .dispatch_any_with_state(invocation, Some(call_state))
             .await
-    }
-}
-
-/// Records the registered inventory once per sampling request, before transport retries.
-/// Registrations do not imply model visibility or reachability; hosted tools are excluded.
-pub(crate) fn record_registration_metrics(router: &ToolRouter, telemetry: &SessionTelemetry) {
-    let mut direct = 0usize;
-    let mut deferred = 0usize;
-    let mut hidden = 0usize;
-    for tool in router.registry.entries() {
-        match tool.exposure {
-            ToolExposure::Direct => direct += 1,
-            ToolExposure::Deferred => deferred += 1,
-            ToolExposure::Hidden => hidden += 1,
-        }
-    }
-
-    for (exposure, count) in [
-        (EXPOSURE_DIRECT, direct),
-        (EXPOSURE_DEFERRED, deferred),
-        (EXPOSURE_HIDDEN, hidden),
-    ] {
-        telemetry.histogram_with_boundaries(
-            TOOL_REGISTRATIONS_METRIC,
-            i64::try_from(count).unwrap_or(i64::MAX),
-            TOOL_REGISTRATIONS_METRIC_BUCKETS,
-            &[("exposure", exposure)],
-        );
     }
 }

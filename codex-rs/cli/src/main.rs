@@ -181,7 +181,7 @@ struct Host {
 impl Host {
     async fn start(config: &Config) -> anyhow::Result<Self> {
         let auth_manager =
-            AuthManager::shared_from_config(config, /*enable_codex_api_key_env*/ true).await?;
+            AuthManager::shared_from_config(config, /*enable_codex_api_key_env*/ true).await;
         let environment_manager = Arc::new(EnvironmentManager::new(config.http_client_factory()));
         let installation_id = resolve_installation_id(&config.codex_home).await?;
         let user_instructions_provider = Arc::new(CodexHomeUserInstructionsProvider::new(

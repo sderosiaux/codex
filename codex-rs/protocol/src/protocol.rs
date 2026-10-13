@@ -116,16 +116,6 @@ impl GitSha {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
-pub struct W3cTraceContext {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub traceparent: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub tracestate: Option<String>,
-}
-
 /// Supported sparse changes to one live task's current settings, regardless of
 /// task kind. Child sessions and consumers of frozen initial settings are unchanged.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -1285,10 +1275,6 @@ pub struct TurnStartedEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub root_turn_id: Option<String>,
-    // Persist for rollout consumers that correlate turns with telemetry traces.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub trace_id: Option<String>,
     /// Unix timestamp (in seconds) when the turn started.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(type = "number | null", optional)]

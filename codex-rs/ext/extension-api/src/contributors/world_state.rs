@@ -6,7 +6,6 @@ use codex_protocol::protocol::TurnEnvironmentSelection;
 use serde_json::Value;
 
 use crate::ExtensionData;
-use crate::ExtensionMetrics;
 
 /// Host state available while an extension contributes one sampling step's World State.
 pub struct WorldStateContributionInput<'a> {
@@ -15,8 +14,6 @@ pub struct WorldStateContributionInput<'a> {
     /// Resolved model metadata captured for this sampling step, retained across discovery.
     pub model_info: &'a ModelInfo,
     pub environments: &'a [TurnEnvironmentSelection],
-    /// Metrics bound to the captured model for this sampling step.
-    pub extension_metrics: Option<Arc<dyn ExtensionMetrics>>,
     pub session_store: &'a ExtensionData,
     pub thread_store: &'a ExtensionData,
     pub turn_store: &'a ExtensionData,

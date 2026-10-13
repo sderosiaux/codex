@@ -85,8 +85,6 @@ use toml::Value as TomlValue;
 
 mod auth_keyring;
 pub mod edit;
-mod metrics;
-mod otel;
 mod runtime_refresh;
 pub(crate) use runtime_refresh::RuntimeConfigRefresh;
 mod token_budget_startup;
@@ -95,7 +93,6 @@ pub use auth_keyring::resolve_bootstrap_auth_keyring_backend_kind;
 pub use codex_agent_roles::AgentRoleConfig;
 pub use codex_config::ConfigLoadOptions;
 pub use codex_config::LoaderOverrides;
-pub(crate) use metrics::emit_session_start_metrics;
 pub use token_budget_startup::TokenBudgetStartupConfig;
 
 const DEFAULT_IGNORE_LARGE_UNTRACKED_DIRS: i64 = 200;
@@ -463,14 +460,6 @@ pub struct Config {
 
     /// When `true`, suppress warnings about unstable (under development) features.
     pub suppress_unstable_features_warning: bool,
-
-    /// When `false`, disables OpenAI analytics across Codex product surfaces on this machine.
-    /// Custom OTLP metrics exporters are controlled by `otel.metrics_exporter`.
-    /// Voluntarily left as Optional because the default value might depend on the client.
-    pub analytics_enabled: Option<bool>,
-
-    /// OTEL configuration (exporter type, endpoint, headers, etc.).
-    pub otel: codex_config::types::OtelConfig,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -1939,9 +1928,10 @@ impl Config {
             .clone()
             .filter(|value| !value.is_empty());
 
-        let model_providers =
-            merge_configured_model_providers(built_in_model_providers(openai_base_url), cfg.model_providers)
-                .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidData, message))?;
+        let model_providers = merge_configured_model_providers(
+            built_in_model_providers(openai_base_url),
+            cfg.model_providers,
+        );
 
         let model_provider_id = model_provider
             .or(cfg.model_provider)
@@ -2164,7 +2154,6 @@ impl Config {
             .as_ref()
             .map(AbsolutePathBuf::to_path_buf)
             .unwrap_or_else(|| codex_home.join("log").to_path_buf());
-        let otel = otel::resolve_config(cfg.otel.unwrap_or_default(), &mut startup_warnings);
         let config = Self {
             model,
             service_tier,
@@ -2295,8 +2284,6 @@ impl Config {
             suppress_unstable_features_warning: cfg
                 .suppress_unstable_features_warning
                 .unwrap_or(false),
-            analytics_enabled: cfg.analytics.as_ref().and_then(|a| a.enabled),
-            otel,
         };
         Ok(config)
         })

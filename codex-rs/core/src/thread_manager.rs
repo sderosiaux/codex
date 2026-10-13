@@ -67,7 +67,6 @@ use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnEnvironmentSelection;
-use codex_protocol::protocol::W3cTraceContext;
 use codex_skills_extension::HostSkillsService;
 use codex_thread_store::StoredThread;
 use codex_thread_store::ThreadStore;
@@ -146,7 +145,6 @@ pub struct StartThreadOptions {
     pub thread_source: Option<ThreadSource>,
     pub dynamic_tools: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
     pub metrics_service_name: Option<String>,
-    pub parent_trace: Option<W3cTraceContext>,
     pub environments: Option<Vec<TurnEnvironmentSelection>>,
     /// Existing environment bindings captured by an internal caller.
     pub inherited_environments: Option<TurnEnvironmentSnapshot>,
@@ -172,7 +170,6 @@ impl StartThreadOptions {
             thread_source: None,
             dynamic_tools: Vec::new(),
             metrics_service_name: None,
-            parent_trace: None,
             environments: None,
             inherited_environments: None,
             user_instructions: None,
@@ -729,13 +726,7 @@ impl ThreadManagerState {
         };
         thread
             .io
-            .submit_with_trace(
-                op,
-                /*trace*/ None,
-                parent_turn_id,
-                root_turn_id,
-                residency_guard,
-            )
+            .submit_with_turn_ids(op, parent_turn_id, root_turn_id, residency_guard)
             .await
     }
 
@@ -1012,7 +1003,6 @@ impl ThreadManagerState {
             thread_source,
             dynamic_tools,
             metrics_service_name,
-            parent_trace,
             environments: environment_selections,
             inherited_environments: captured_environments,
             user_instructions: supplied_user_instructions,
@@ -1182,10 +1172,8 @@ impl ThreadManagerState {
             originator,
             agent_control,
             dynamic_tools,
-            metrics_service_name,
             inherited_environments,
             user_shell_override,
-            parent_trace,
             environment_selections,
             thread_extension_init,
             turn_extension_init,

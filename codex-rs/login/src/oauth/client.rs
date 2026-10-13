@@ -6,7 +6,6 @@ use std::time::Duration;
 use codex_http_client::HttpClient;
 use serde::de::DeserializeOwned;
 
-use crate::oauth::ErrorBodyLimit;
 use crate::oauth::OAuthError;
 use crate::oauth::PkceCodes;
 use crate::oauth::TokenRejection;
@@ -25,7 +24,6 @@ pub(crate) struct TokenEndpoint<'a> {
     pub client_id: &'a str,
     pub encoding: TokenEncoding,
     pub timeout: Option<Duration>,
-    pub error_body_limit: ErrorBodyLimit,
 }
 
 /// Parameters bound to an authorization attempt. Secrets deliberately have no Debug output.
@@ -115,8 +113,7 @@ impl<'a> OAuthClient<'a> {
             .map_err(|error| OAuthError::Transport(redact_error_url(error)))?;
         if !response.status().is_success() {
             return Err(OAuthError::Rejected(Box::new(
-                TokenRejection::from_response(response, self.endpoint.error_body_limit, secrets)
-                    .await,
+                TokenRejection::from_response(response, secrets).await,
             )));
         }
         response

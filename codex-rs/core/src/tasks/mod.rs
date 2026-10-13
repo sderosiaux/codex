@@ -8,7 +8,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
-use codex_diagnostics::Gauge;
 use codex_extension_api::ThreadIdleCause;
 use futures::future::BoxFuture;
 use tokio::select;
@@ -16,8 +15,6 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::AbortOnDropHandle;
 use tracing::Instrument;
-use tracing::Span;
-use tracing::field;
 use tracing::info_span;
 use tracing::trace;
 use tracing::trace_span;
@@ -36,16 +33,10 @@ use crate::state::ActiveTurn;
 use crate::state::RunningTask;
 use crate::state::TaskKind;
 use codex_context_fragments::RenderedFragment;
-use codex_otel::SessionTelemetry;
-use codex_otel::TURN_E2E_DURATION_METRIC;
-use codex_otel::TURN_TOOL_CALL_METRIC;
-use codex_otel::TURN_UNIFIED_EXEC_RUNNING_PROCESSES_METRIC;
-use codex_otel::auth_storage::AuthStorageOriginator;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::MultiAgentVersion;
-use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
@@ -60,8 +51,6 @@ pub(crate) use user_shell::UserShellCommandTask;
 pub(crate) use user_shell::execute_user_shell_command;
 
 pub(crate) const GRACEFULL_INTERRUPTION_TIMEOUT_MS: u64 = 100;
-const TASK_COMPACT_METRIC: &str = "codex.task.compact";
-static ACTIVE_TURNS: Gauge = Gauge::new("core.turns.active");
 
 pub(crate) type SessionTaskResult = CodexResult<Option<String>>;
 
@@ -108,22 +97,6 @@ pub(crate) fn interrupted_turn_history_marker(
     }
 }
 
-pub(crate) fn emit_compact_metric(
-    session_telemetry: &SessionTelemetry,
-    compact_type: &'static str,
-    manual: bool,
-) {
-    session_telemetry.counter(
-        TASK_COMPACT_METRIC,
-        /*inc*/ 1,
-        &[("type", compact_type), ("manual", bool_tag(manual))],
-    );
-}
-
-fn bool_tag(value: bool) -> &'static str {
-    if value { "true" } else { "false" }
-}
-
 /// Async task that drives a [`Session`] turn.
 ///
 /// Implementations encapsulate a specific Codex workflow (regular chat,
@@ -136,9 +109,6 @@ pub(crate) trait SessionTask: Send + Sync + 'static {
     /// Describes the type of work the task performs so the session can
     /// surface it in telemetry and UI.
     fn kind(&self) -> TaskKind;
-
-    /// Returns the tracing name for a spawned task span.
-    fn span_name(&self) -> &'static str;
 
     /// Executes the task until completion or cancellation.
     ///
@@ -177,8 +147,6 @@ pub(crate) trait SessionTask: Send + Sync + 'static {
 pub(crate) trait AnySessionTask: Send + Sync + 'static {
     fn kind(&self) -> TaskKind;
 
-    fn span_name(&self) -> &'static str;
-
     fn run(
         self: Arc<Self>,
         session: Arc<Session>,
@@ -196,10 +164,6 @@ where
 {
     fn kind(&self) -> TaskKind {
         SessionTask::kind(self)
-    }
-
-    fn span_name(&self) -> &'static str {
-        SessionTask::span_name(self)
     }
 
     fn run(
@@ -251,7 +215,6 @@ impl Session {
             .set_root_turn_id(turn_context.sub_id.clone());
         let task: Arc<dyn AnySessionTask> = Arc::new(task);
         let task_kind = task.kind();
-        let span_name = task.span_name();
         let started_at = Instant::now();
         let turn_started_at_unix_ms = turn_context
             .turn_timing_state
@@ -278,7 +241,6 @@ impl Session {
             turn.finishing = None;
             Arc::clone(&turn.turn_state)
         };
-        turn_state.lock().await.token_usage_at_turn_start = token_usage_at_turn_start.clone();
         self.input_queue
             .extend_pending_input_for_turn_state(turn_state.as_ref(), pending_items)
             .await;
@@ -307,20 +269,11 @@ impl Session {
         let reasoning_effort = turn_context.effective_reasoning_effort_for_tracing();
         let task_span = info_span!(
             "turn",
-            otel.name = span_name,
             thread.id = %self.thread_id,
             turn.id = %turn_context.sub_id,
             model = %turn_context.model_info().slug,
             codex.turn.reasoning_effort = %reasoning_effort,
-            codex.turn.token_usage.input_tokens = field::Empty,
-            codex.turn.token_usage.cached_input_tokens = field::Empty,
-            codex.turn.token_usage.cache_write_input_tokens = field::Empty,
-            codex.turn.token_usage.non_cached_input_tokens = field::Empty,
-            codex.turn.token_usage.output_tokens = field::Empty,
-            codex.turn.token_usage.reasoning_output_tokens = field::Empty,
-            codex.turn.token_usage.total_tokens = field::Empty,
         );
-        let storage_originator = AuthStorageOriginator::from_client_name(&turn_context.originator);
         let task_future = async move {
             let ctx_for_finish = Arc::clone(&ctx);
             let task_result = task_for_run
@@ -341,11 +294,7 @@ impl Session {
             done_clone.notify_waiters();
         }
         .instrument(task_span);
-        let handle = tokio::spawn(storage_originator.scope(task_future));
-        let timer = turn_context
-            .session_telemetry
-            .start_timer(TURN_E2E_DURATION_METRIC, &[])
-            .ok();
+        let handle = tokio::spawn(task_future);
         let running_task = RunningTask {
             done,
             handle: AbortOnDropHandle::new(handle),
@@ -354,8 +303,6 @@ impl Session {
             cancellation_token,
             turn_context: Arc::clone(&turn_context),
             _agent_execution_guard: agent_execution_guard,
-            _diagnostics_guard: ACTIVE_TURNS.track(),
-            _timer: timer,
         };
         turn.task = Some(running_task);
     }
@@ -574,14 +521,6 @@ impl Session {
             .input_queue
             .take_pending_input_for_turn_state(turn_state.as_ref())
             .await;
-        let (turn_tool_calls, token_usage_at_turn_start, token_usage_by_model) = {
-            let mut ts = turn_state.lock().await;
-            (
-                ts.tool_calls,
-                ts.token_usage_at_turn_start.clone(),
-                std::mem::take(&mut ts.token_usage_by_model),
-            )
-        };
         run_hooks_and_record_inputs(
             self,
             &turn_context,
@@ -590,72 +529,6 @@ impl Session {
         )
         .await;
         drop(finish_recording);
-        let turn_telemetry = &turn_context.session_telemetry;
-        // Emit token usage metrics.
-        {
-            turn_telemetry.histogram(
-                TURN_TOOL_CALL_METRIC,
-                i64::try_from(turn_tool_calls).unwrap_or(i64::MAX),
-                &[],
-            );
-            let total_token_usage = self.total_token_usage().await.unwrap_or_default();
-            let turn_token_usage = TokenUsage {
-                input_tokens: (total_token_usage.input_tokens
-                    - token_usage_at_turn_start.input_tokens)
-                    .max(0),
-                cached_input_tokens: (total_token_usage.cached_input_tokens
-                    - token_usage_at_turn_start.cached_input_tokens)
-                    .max(0),
-                cache_write_input_tokens: (total_token_usage.cache_write_input_tokens
-                    - token_usage_at_turn_start.cache_write_input_tokens)
-                    .max(0),
-                output_tokens: (total_token_usage.output_tokens
-                    - token_usage_at_turn_start.output_tokens)
-                    .max(0),
-                reasoning_output_tokens: (total_token_usage.reasoning_output_tokens
-                    - token_usage_at_turn_start.reasoning_output_tokens)
-                    .max(0),
-                total_tokens: (total_token_usage.total_tokens
-                    - token_usage_at_turn_start.total_tokens)
-                    .max(0),
-                codex_rollout_budget_units: None,
-            };
-            let current_span = Span::current();
-            current_span.record(
-                "codex.turn.token_usage.input_tokens",
-                turn_token_usage.input_tokens,
-            );
-            current_span.record(
-                "codex.turn.token_usage.cached_input_tokens",
-                turn_token_usage.cached_input(),
-            );
-            current_span.record(
-                "codex.turn.token_usage.cache_write_input_tokens",
-                turn_token_usage.cache_write_input_tokens,
-            );
-            current_span.record(
-                "codex.turn.token_usage.non_cached_input_tokens",
-                turn_token_usage.non_cached_input(),
-            );
-            current_span.record(
-                "codex.turn.token_usage.output_tokens",
-                turn_token_usage.output_tokens,
-            );
-            current_span.record(
-                "codex.turn.token_usage.reasoning_output_tokens",
-                turn_token_usage.reasoning_output_tokens,
-            );
-            current_span.record(
-                "codex.turn.token_usage.total_tokens",
-                turn_token_usage.total_tokens,
-            );
-            token_usage_by_model.emit(turn_telemetry);
-        }
-        turn_telemetry.counter(
-            TURN_UNIFIED_EXEC_RUNNING_PROCESSES_METRIC,
-            i64::try_from(self.list_background_terminals().await.len()).unwrap_or(i64::MAX),
-            &[],
-        );
         let started_at = turn_context.turn_timing_state.started_at_unix_secs().await;
         let (completed_at, duration_ms) =
             turn_context.turn_timing_state.complete_duration_ms().await;

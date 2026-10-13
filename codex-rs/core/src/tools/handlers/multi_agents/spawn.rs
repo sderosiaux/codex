@@ -7,12 +7,10 @@ use crate::agent::child_config::prepare_agent_spawn_config;
 use crate::agent::control::render_input_preview;
 use crate::agent::exceeds_thread_spawn_depth_limit;
 use crate::agent::next_thread_spawn_depth;
-use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent::types::SpawnAgentForkMode;
 use crate::agent::types::SpawnAgentOptions;
 use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
 use crate::tools::handlers::multi_agents_spec::create_spawn_agent_tool_v1;
-use codex_protocol::protocol::MultiAgentVersion;
 use codex_tools::ToolSpec;
 
 #[derive(Default)]
@@ -137,17 +135,7 @@ async fn handle_spawn_agent(
             },
         })
         .await
-        .map_err(|err| {
-            record_collab_spawn_failure(
-                &turn.session_telemetry,
-                &err,
-                &call_id,
-                &turn.sub_id,
-                fork_mode.as_ref(),
-                MultiAgentVersion::V1,
-            );
-            collab_spawn_error(err)
-        });
+        .map_err(collab_spawn_error);
     let (new_thread_id, status) = match &result {
         Ok((spawned_agent, _)) => (Some(spawned_agent.thread_id), spawned_agent.status.clone()),
         Err(_) => (None, AgentStatus::NotFound),
@@ -195,12 +183,6 @@ async fn handle_spawn_agent(
         .await;
     let (spawned_agent, _) = result?;
     let new_thread_id = spawned_agent.thread_id;
-    let role_tag = role_name.unwrap_or(DEFAULT_ROLE_NAME);
-    turn.session_telemetry.counter(
-        "codex.multi_agent.spawn",
-        /*inc*/ 1,
-        &[("role", role_tag), ("version", "v1")],
-    );
 
     Ok(SpawnAgentResult {
         agent_id: new_thread_id.to_string(),

@@ -369,9 +369,6 @@ async fn start_or_steer(
             session
                 .maybe_emit_model_warnings_for_turn(turn_context.as_ref())
                 .await;
-            if let SubmittedTurnInput::UserInput { content, .. } = &input {
-                turn_context.session_telemetry.user_prompt(content);
-            }
             let mut task_input = merge_additional_context_input(session, additional_context).await;
             if has_explicit_input {
                 task_input.push(pending_turn_input(session, input, origin).await);
@@ -518,9 +515,6 @@ async fn start_if_idle(
     let mut task_input = merge_additional_context_input(session, additional_context).await;
     match kind {
         TurnStartKind::User => {
-            if let SubmittedTurnInput::UserInput { content, .. } = &input {
-                turn_context.session_telemetry.user_prompt(content);
-            }
             task_input.push(pending_turn_input(session, input, origin).await);
         }
         TurnStartKind::Automatic | TurnStartKind::Recovery => {
@@ -724,20 +718,14 @@ impl Session {
         }
 
         let input = match input {
-            SubmittedTurnInput::UserInput { content, client_id } => {
-                active_task
-                    .turn_context
-                    .session_telemetry
-                    .user_prompt(content);
-                TurnInput::UserInput {
-                    content: std::mem::take(content),
-                    client_id: client_id.clone(),
-                    metadata: super::UserInputMetadata {
-                        acceptance_order: Some(self.reserve_user_input_order().await),
-                        origin,
-                    },
-                }
-            }
+            SubmittedTurnInput::UserInput { content, client_id } => TurnInput::UserInput {
+                content: std::mem::take(content),
+                client_id: client_id.clone(),
+                metadata: super::UserInputMetadata {
+                    acceptance_order: Some(self.reserve_user_input_order().await),
+                    origin,
+                },
+            },
             input => pending_turn_input(self, input.clone(), origin).await,
         };
         pending_input.push(input);

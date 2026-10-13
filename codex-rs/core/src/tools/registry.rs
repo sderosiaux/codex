@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::time::Duration;
 
 use crate::function_tool::FunctionCallError;
 use crate::function_tool::OrCancelToolExt;
@@ -21,7 +20,6 @@ use crate::tools::handlers::multi_agents_spec::MULTI_AGENT_V1_NAMESPACE;
 use crate::tools::hook_names::HookToolName;
 use crate::tools::lifecycle::notify_tool_finish;
 use crate::tools::lifecycle::notify_tool_start;
-use crate::tools::router::tool_log_payload;
 use crate::util::error_or_panic;
 use codex_extension_api::ToolCallOutcome;
 use codex_extension_api::ToolPolicy;
@@ -39,15 +37,13 @@ use indexmap::IndexMap;
 use indexmap::map::Entry;
 use serde_json::Value;
 
-pub(crate) type ToolTelemetryTags = Vec<(&'static str, String)>;
-
 pub use codex_tools::ToolExecutor;
 pub use codex_tools::ToolExposure;
 
 /// Typed runtime contract for locally executed tools.
 ///
 /// Implementers provide the shared `ToolExecutor` behavior plus optional
-/// core-owned metadata for hooks, telemetry, tool search, and argument diffs.
+/// core-owned metadata for hooks, tool search, and argument diffs.
 pub(crate) trait CoreToolRuntime: ToolExecutor<ToolInvocation> {
     /// The handler observes its cancellation token and must finish before dispatch is aborted.
     fn finishes_on_cancellation(&self) -> bool {
@@ -74,10 +70,6 @@ pub(crate) trait CoreToolRuntime: ToolExecutor<ToolInvocation> {
             payload,
             ToolPayload::Function { .. } | ToolPayload::ToolSearch { .. }
         )
-    }
-
-    fn telemetry_tags(&self, _invocation: &ToolInvocation) -> ToolTelemetryTags {
-        Vec::new()
     }
 
     fn post_tool_use_payload(
@@ -507,10 +499,6 @@ impl ToolRegistry {
         Some(tool.exposure != ToolExposure::Hidden && tool.runtime.supports_parallel_tool_calls())
     }
 
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "tool dispatch must keep active-turn accounting atomic"
-    )]
     pub(crate) async fn dispatch_any_with_state(
         &self,
         mut invocation: ToolInvocation,
@@ -518,68 +506,17 @@ impl ToolRegistry {
     ) -> Result<AnyToolResult, FunctionCallError> {
         let cancellation_token = invocation.cancellation_token.clone();
         let tool_name = invocation.tool_name.clone();
-        let call_id_owned = invocation.call_id.clone();
-        let otel = invocation.step_context.session_telemetry.clone();
-
-        {
-            let mut active = invocation
-                .session
-                .active_turn
-                .lock()
-                .or_cancel_tool(&cancellation_token)
-                .await?;
-            if let Some(active_turn) = active.as_mut() {
-                let mut turn_state = active_turn
-                    .turn_state
-                    .lock()
-                    .or_cancel_tool(&cancellation_token)
-                    .await?;
-                turn_state.tool_calls = turn_state.tool_calls.saturating_add(1);
-            }
-        }
 
         let tool = match self.tool(&tool_name) {
             Some(tool) => tool,
             None => {
                 let message = unsupported_tool_call_message(&invocation.payload, &tool_name);
-                let log_payload = tool_log_payload(&invocation.payload, &invocation.source);
-                otel.tool_result_with_tags(
-                    &tool_name,
-                    &call_id_owned,
-                    log_payload.as_ref(),
-                    Duration::ZERO,
-                    /*success*/ false,
-                    &message,
-                    /*extra_tags*/ &[],
-                    /*extra_trace_fields*/ &[],
-                );
                 let err = FunctionCallError::RespondToModel(message);
                 return Err(err);
             }
         };
-        let telemetry_tags = tool.telemetry_tags(&invocation);
-        let mut tool_result_tags = Vec::with_capacity(telemetry_tags.len() + 1);
-        let mut extra_trace_fields = Vec::new();
-        for (key, value) in &telemetry_tags {
-            if matches!(*key, "mcp_server" | "mcp_server_origin") {
-                extra_trace_fields.push((*key, value.as_str()));
-            } else {
-                tool_result_tags.push((*key, value.as_str()));
-            }
-        }
         if !tool.matches_kind(&invocation.payload) {
             let message = format!("tool {tool_name} invoked with incompatible payload");
-            let log_payload = tool_log_payload(&invocation.payload, &invocation.source);
-            otel.tool_result_with_tags(
-                &tool_name,
-                &call_id_owned,
-                log_payload.as_ref(),
-                Duration::ZERO,
-                /*success*/ false,
-                &message,
-                &tool_result_tags,
-                &extra_trace_fields,
-            );
             let err = FunctionCallError::Fatal(message);
             return Err(err);
         }
@@ -635,24 +572,7 @@ impl ToolRegistry {
                 .await?;
         }
 
-        let log_payload = tool_log_payload(&invocation.payload, &invocation.source);
-
-        let result = otel
-            .log_tool_result_with_tags(
-                &tool_name,
-                &call_id_owned,
-                log_payload.as_ref(),
-                &tool_result_tags,
-                &extra_trace_fields,
-                || handle_any_tool(tool.as_ref(), invocation.clone()),
-                |result| {
-                    (
-                        result.result.log_output(),
-                        result.result.success_for_logging(),
-                    )
-                },
-            )
-            .await;
+        let result = handle_any_tool(tool.as_ref(), invocation.clone()).await;
         let success = match &result {
             Ok(result) => result.result.success_for_logging(),
             Err(_) => false,

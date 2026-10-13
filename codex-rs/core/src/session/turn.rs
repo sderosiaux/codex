@@ -41,15 +41,12 @@ use crate::stream_events_utils::handle_output_item_done;
 use crate::stream_events_utils::last_assistant_message_from_item;
 use crate::stream_events_utils::raw_assistant_output_text_from_item;
 use crate::stream_events_utils::record_completed_response_item_with_finalized_facts;
-use crate::tasks::emit_compact_metric;
 use crate::tools::ToolRouter;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::parallel::ToolCallRuntime;
 use crate::tools::registry::ToolArgumentDiffConsumer;
-use crate::tools::router::record_registration_metrics;
 use crate::tools::spec_plan::build_tool_router;
 use crate::turn_diff_tracker::TurnDiffTracker;
-use crate::turn_timing::record_turn_ttft_metric;
 use crate::util::error_or_panic;
 use codex_async_utils::OrCancelExt;
 use codex_extension_api::ExtensionData;
@@ -100,7 +97,6 @@ use futures::stream::FuturesOrdered;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 use tracing::error;
-use tracing::field;
 use tracing::info;
 use tracing::instrument;
 use tracing::trace;
@@ -804,8 +800,7 @@ async fn build_skills(
         injected: injected_host_skills,
         warnings: host_skill_warnings,
     } = skills_snapshot.load_skill_prompts(&mentioned_skills).await;
-    emit_explicit_skill_invocations(sess, turn_context, &mentioned_skills, &injected_host_skills)
-        .await;
+    emit_explicit_skill_invocations(sess, turn_context, &injected_host_skills).await;
     for message in host_skill_warnings {
         sess.send_event(turn_context, EventMsg::Warning(WarningEvent { message }))
             .await;
@@ -865,15 +860,12 @@ async fn build_extension_turn_input_items(
         user_input: user_input.to_vec(),
         environments,
     };
-    let extension_metrics =
-        super::extension_metrics::from_session_telemetry(turn_context.session_telemetry.clone());
 
     let mut items = Vec::new();
     for contributor in contributors {
         let contributed_fragments = contributor
             .contribute(
                 input.clone(),
-                Some(Arc::clone(&extension_metrics)),
                 &sess.services.session_extension_data,
                 &sess.services.thread_extension_data,
                 turn_context.extension_data.as_ref(),
@@ -1056,11 +1048,6 @@ async fn run_auto_compact(
 
     match turn_context.provider.capabilities().remote_compaction {
         RemoteCompactionSupport::V2 => {
-            emit_compact_metric(
-                &sess.services.session_telemetry,
-                "remote_v2",
-                /*manual*/ false,
-            );
             run_inline_remote_auto_compact_task_v2(
                 Arc::clone(sess),
                 step_context,
@@ -1073,11 +1060,6 @@ async fn run_auto_compact(
             .await?;
         }
         RemoteCompactionSupport::Unsupported => {
-            emit_compact_metric(
-                &sess.services.session_telemetry,
-                "local",
-                /*manual*/ false,
-            );
             run_inline_auto_compact_task(
                 Arc::clone(sess),
                 Arc::clone(turn_context),
@@ -1158,7 +1140,6 @@ async fn run_sampling_request(
         Arc::clone(&turn_diff_tracker),
     );
     let max_retries = turn_context.provider.info().stream_max_retries();
-    record_registration_metrics(&step_context.tool_router, &step_context.session_telemetry);
     let mut retry_state = ResponsesStreamRetryState::default();
     let mut initial_input = Some(input);
     let mut original_input = None;
@@ -1809,7 +1790,6 @@ async fn try_run_sampling_request(
         .stream(
             prompt,
             &step_context.settings.model_info,
-            &step_context.session_telemetry,
             effort,
             step_context.settings.reasoning_summary,
             step_context.settings.service_tier.clone(),
@@ -1852,16 +1832,7 @@ async fn try_run_sampling_request(
         let handle_responses = trace_span!(
             parent: &receiving_span,
             "handle_responses",
-            otel.name = field::Empty,
-            tool_name = field::Empty,
-            from = field::Empty,
             codex.request.reasoning_effort = %reasoning_effort,
-            gen_ai.usage.input_tokens = field::Empty,
-            gen_ai.usage.cache_read.input_tokens = field::Empty,
-            gen_ai.usage.cache_write.input_tokens = field::Empty,
-            gen_ai.usage.output_tokens = field::Empty,
-            codex.usage.reasoning_output_tokens = field::Empty,
-            codex.usage.total_tokens = field::Empty,
         );
 
         let event = stream
@@ -1905,10 +1876,10 @@ async fn try_run_sampling_request(
             }
         };
 
-        sess.services
-            .session_telemetry
-            .record_responses(&handle_responses, &event);
-        record_turn_ttft_metric(&turn_context, &event).await;
+        turn_context
+            .turn_timing_state
+            .record_ttft_for_response_event(&event)
+            .await;
 
         match event {
             ResponseEvent::Created { response_id } => {
@@ -2023,7 +1994,6 @@ async fn try_run_sampling_request(
                 {
                     tracing::event!(
                         name: "codex.mailbox_preemption",
-                        target: "codex_otel.trace_safe",
                         tracing::Level::INFO,
                         event.name = "codex.mailbox_preemption",
                         conversation.id = %sess.thread_id,
@@ -2191,11 +2161,7 @@ async fn try_run_sampling_request(
                 )
                 .await;
                 let budget_result = sess
-                    .record_token_usage_info(
-                        &turn_context,
-                        &step_context.settings,
-                        token_usage.as_ref(),
-                    )
+                    .record_token_usage_info(&turn_context, token_usage.as_ref())
                     .await;
                 should_emit_token_count = true;
                 should_emit_turn_diff = true;

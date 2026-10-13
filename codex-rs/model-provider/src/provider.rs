@@ -10,7 +10,6 @@ use codex_api::SharedAuthProvider;
 use codex_api::TransportError;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
-use codex_login::GatewayAuthManager;
 use codex_login::WorkspaceRoutingRequest;
 use codex_login::default_client::ClientRedirectPolicy;
 use codex_model_provider_info::ModelProviderInfo;
@@ -24,13 +23,7 @@ use codex_protocol::openai_models::ModelsResponse;
 
 use crate::ProviderCapabilities;
 use crate::ResolvedResponsesProvider;
-use crate::amazon_bedrock::AmazonBedrockModelProvider;
-use crate::auth::ProviderAuthScope;
-use crate::auth::ResolvedProviderAuth;
-use crate::auth::auth_manager_for_provider;
 use crate::auth::resolve_provider_auth;
-use crate::auth::resolve_provider_auth_for_scope;
-use crate::combined_auth::compose_auth;
 use crate::models_endpoint::OpenAiModelsEndpoint;
 use crate::workspace_routing::WorkspaceRoutingContext;
 
@@ -61,7 +54,6 @@ pub struct ProviderAuthRecoveryMessages {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderAccountError {
     MissingChatgptAccountDetails,
-    UnsupportedBedrockApiKeyAuth,
 }
 
 impl fmt::Display for ProviderAccountError {
@@ -69,12 +61,6 @@ impl fmt::Display for ProviderAccountError {
         match self {
             Self::MissingChatgptAccountDetails => {
                 write!(f, "plan type is required for chatgpt authentication")
-            }
-            Self::UnsupportedBedrockApiKeyAuth => {
-                write!(
-                    f,
-                    "Bedrock API key auth is only supported by the Amazon Bedrock model provider"
-                )
             }
         }
     }
@@ -134,12 +120,6 @@ pub trait ModelProvider: fmt::Debug + Send + Sync {
     /// to think through whether Codex should have a unified provider-specific auth
     /// manager throughout the codebase; that is a larger refactor than this change.
     fn auth_manager(&self) -> Option<Arc<AuthManager>>;
-
-    /// Returns the gateway credential manager shared with inference and model discovery.
-    /// Hosts use this handle for explicit login; configured setup failures remain errors.
-    fn gateway_auth_manager(&self) -> std::io::Result<Option<Arc<GatewayAuthManager>>> {
-        Ok(None)
-    }
 
     /// Returns whether this transport failure can be recovered by provider-scoped authentication.
     ///
@@ -243,21 +223,6 @@ pub trait ModelProvider: fmt::Debug + Send + Sync {
         })
     }
 
-    /// Returns request credentials, optionally scoped to a Codex session task.
-    fn api_auth_for_scope(
-        &self,
-        scope: ProviderAuthScope,
-    ) -> ModelProviderFuture<'_, codex_protocol::error::Result<ResolvedProviderAuth>> {
-        Box::pin(async move {
-            if !provider_uses_first_party_auth_path(self.info()) {
-                return self.api_auth().await.map(ResolvedProviderAuth::new);
-            }
-            let auth = self.auth().await;
-            resolve_provider_auth_for_scope(self.auth_manager(), auth.as_ref(), self.info(), scope)
-                .await
-        })
-    }
-
     /// Creates the model manager implementation appropriate for this provider.
     fn models_manager(
         &self,
@@ -304,8 +269,6 @@ fn provider_uses_first_party_auth_path(provider: &ModelProviderInfo) -> bool {
     provider.requires_openai_auth
         && provider.env_key.is_none()
         && provider.experimental_bearer_token.is_none()
-        && provider.auth.is_none()
-        && provider.aws.is_none()
 }
 
 /// Creates the default runtime model provider for configured provider metadata.
@@ -313,33 +276,14 @@ pub fn create_model_provider(
     provider_info: ModelProviderInfo,
     auth_manager: Option<Arc<AuthManager>>,
 ) -> SharedModelProvider {
-    if provider_info.is_amazon_bedrock() {
-        return Arc::new(AmazonBedrockModelProvider::new(provider_info, auth_manager));
-    }
-    let gateway_auth_manager = provider_info.gateway_oauth.as_ref().map(|config| {
-        provider_info.validate()?;
-        let manager = auth_manager
-            .as_ref()
-            .ok_or_else(|| "gateway_oauth requires auth runtime configuration".to_string())?;
-        crate::shared_state::process_shared_state()
-            .gateway_auth(config, &manager.runtime_config())
-            .map_err(|_| "failed to create provider OAuth HTTP client".to_string())
-    });
-    let auth_manager = auth_manager_for_provider(auth_manager, &provider_info);
-    Arc::new(ConfiguredModelProvider::new(
-        provider_info,
-        auth_manager,
-        gateway_auth_manager,
-    ))
+    Arc::new(ConfiguredModelProvider::new(provider_info, auth_manager))
 }
 
-/// Runtime model provider that orchestrates primary and gateway credentials.
+/// Runtime model provider for OpenAI and OpenAI-compatible endpoints.
 #[derive(Clone, Debug)]
 struct ConfiguredModelProvider {
     info: ModelProviderInfo,
     auth_manager: Option<Arc<AuthManager>>,
-    // Construct eagerly; report setup failures when auth is requested because the factory is infallible.
-    gateway_auth_manager: Option<Result<Arc<GatewayAuthManager>, String>>,
 }
 
 enum ModelsCacheConfig {
@@ -349,16 +293,8 @@ enum ModelsCacheConfig {
 }
 
 impl ConfiguredModelProvider {
-    fn new(
-        info: ModelProviderInfo,
-        auth_manager: Option<Arc<AuthManager>>,
-        gateway_auth_manager: Option<Result<Arc<GatewayAuthManager>, String>>,
-    ) -> Self {
-        Self {
-            info,
-            auth_manager,
-            gateway_auth_manager,
-        }
+    fn new(info: ModelProviderInfo, auth_manager: Option<Arc<AuthManager>>) -> Self {
+        Self { info, auth_manager }
     }
 
     fn create_models_manager(
@@ -375,7 +311,6 @@ impl ConfiguredModelProvider {
         let endpoint = Arc::new(OpenAiModelsEndpoint::new(
             self.info.clone(),
             self.auth_manager.clone(),
-            self.gateway_auth_manager.clone(),
         ));
         let auth_manager = self.auth_manager.clone();
         let manager = match cache {
@@ -422,13 +357,6 @@ impl ModelProvider for ConfiguredModelProvider {
         self.auth_manager.clone()
     }
 
-    fn gateway_auth_manager(&self) -> std::io::Result<Option<Arc<GatewayAuthManager>>> {
-        self.gateway_auth_manager
-            .clone()
-            .transpose()
-            .map_err(std::io::Error::other)
-    }
-
     fn supports_attestation(&self) -> bool {
         self.auth_manager
             .as_ref()
@@ -445,44 +373,6 @@ impl ModelProvider for ConfiguredModelProvider {
         })
     }
 
-    fn api_auth(
-        &self,
-    ) -> ModelProviderFuture<'_, codex_protocol::error::Result<SharedAuthProvider>> {
-        Box::pin(async move {
-            let auth = self.auth().await;
-            let primary = resolve_provider_auth(auth.as_ref(), &self.info)?;
-            Ok(compose_auth(
-                &self.info,
-                self.gateway_auth_manager.as_ref(),
-                ResolvedProviderAuth::new(primary),
-            )
-            .await?
-            .auth)
-        })
-    }
-
-    fn api_auth_for_scope(
-        &self,
-        scope: ProviderAuthScope,
-    ) -> ModelProviderFuture<'_, codex_protocol::error::Result<ResolvedProviderAuth>> {
-        Box::pin(async move {
-            let resolved = if provider_uses_first_party_auth_path(&self.info) {
-                let auth = self.auth().await;
-                resolve_provider_auth_for_scope(
-                    self.auth_manager.clone(),
-                    auth.as_ref(),
-                    &self.info,
-                    scope,
-                )
-                .await?
-            } else {
-                let auth = self.auth().await;
-                ResolvedProviderAuth::new(resolve_provider_auth(auth.as_ref(), &self.info)?)
-            };
-            compose_auth(&self.info, self.gateway_auth_manager.as_ref(), resolved).await
-        })
-    }
-
     fn account_state(&self) -> ProviderAccountResult {
         let account = if self.info.requires_openai_auth {
             self.auth_manager
@@ -492,21 +382,11 @@ impl ModelProvider for ConfiguredModelProvider {
                     if auth_manager.refresh_failure_for_auth(&auth).is_some() {
                         return None;
                     }
-                    if matches!(auth, CodexAuth::Headers(_)) {
-                        return None;
-                    }
                     Some(auth)
                 })
                 .map(|auth| match &auth {
                     CodexAuth::ApiKey(_) => Ok(ProviderAccount::ApiKey),
-                    CodexAuth::BedrockApiKey(_) | CodexAuth::BedrockAccessKeys(_) => {
-                        Err(ProviderAccountError::UnsupportedBedrockApiKeyAuth)
-                    }
-                    CodexAuth::Chatgpt(_)
-                    | CodexAuth::ChatgptAuthTokens(_)
-                    | CodexAuth::Headers(_)
-                    | CodexAuth::AgentIdentity(_)
-                    | CodexAuth::PersonalAccessToken(_) => {
+                    CodexAuth::Chatgpt(_) => {
                         let email = auth.get_account_email();
                         let plan_type = auth.account_plan_type();
 

@@ -44,7 +44,7 @@ mod windows;
 /// endpoint details.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClientRouteClass {
-    /// Login, token refresh/revoke, PAT, and agent identity auth traffic.
+    /// Login and token refresh/revoke auth traffic.
     Auth,
     /// First-party API traffic that is not part of the auth flow.
     Api,

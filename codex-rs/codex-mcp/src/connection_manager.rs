@@ -5,8 +5,6 @@
 //! events, keeps server metadata, and aggregates tools and resources across
 //! running RMCP clients.
 
-#[path = "connection_manager/catalog_telemetry.rs"]
-mod catalog_telemetry;
 #[path = "connection_manager/required.rs"]
 mod required;
 #[path = "connection_manager/resources.rs"]
@@ -55,9 +53,6 @@ use anyhow::anyhow;
 use anyhow::bail;
 use codex_config::McpServerTransportConfig;
 use codex_config::McpStartupReadiness;
-use codex_diagnostics::Gauge;
-use codex_diagnostics::GaugeGuard;
-use codex_otel::auth_storage::AuthStorageOriginator;
 use codex_protocol::mcp::CallToolResult;
 use codex_protocol::mcp::McpServerInfo;
 use codex_protocol::protocol::Event;
@@ -72,15 +67,12 @@ use tokio::sync::watch;
 use tokio::task::JoinSet;
 use tracing::warn;
 
-static LIVE_CONNECTIONS: Gauge = Gauge::new("mcp.connections.live");
-
 pub(crate) struct McpServerConnection {
     identity: Option<McpServerConnectionIdentity>,
     client: AsyncManagedClient,
     // Startup-only budget; changing it must not replace a ready connection.
     startup_timeout: Duration,
     startup_trigger: Option<watch::Sender<bool>>,
-    _diagnostics_guard: GaugeGuard,
 }
 
 impl McpServerConnection {
@@ -498,7 +490,6 @@ impl McpConnectionSet {
                         client: async_managed_client.clone(),
                         startup_timeout,
                         startup_trigger,
-                        _diagnostics_guard: LIVE_CONNECTIONS.track(),
                     }),
                     protocol_mode,
                     startup_readiness: configured_config.startup_readiness,
@@ -611,7 +602,6 @@ impl McpConnectionSet {
 
                 (server_name, outcome)
             };
-            let startup = AuthStorageOriginator::current().scope(startup);
             if defer_startup {
                 // Dormant servers must not hold the initial startup summary open.
                 tokio::spawn(startup);
@@ -723,18 +713,15 @@ impl McpConnectionSet {
             return Vec::new();
         }
 
-        let originator = AuthStorageOriginator::current();
         match tokio::task::spawn_blocking(move || {
-            originator.sync_scope(|| {
-                candidates
-                    .into_iter()
-                    .filter_map(|(server_name, identity, config)| {
-                        identity
-                            .oauth_credentials_changed(&server_name, &config)
-                            .then_some(server_name)
-                    })
-                    .collect()
-            })
+            candidates
+                .into_iter()
+                .filter_map(|(server_name, identity, config)| {
+                    identity
+                        .oauth_credentials_changed(&server_name, &config)
+                        .then_some(server_name)
+                })
+                .collect()
         })
         .await
         {

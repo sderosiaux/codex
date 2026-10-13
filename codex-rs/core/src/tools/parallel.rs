@@ -157,7 +157,6 @@ impl ToolCallRuntime {
 
         let dispatch_span = trace_span!(
             "dispatch_tool_call",
-            otel.name = %call.tool_name,
             tool_name = %call.tool_name,
             thread.id = %session.thread_id,
             call_id = call.call_id.as_str(),
@@ -395,7 +394,6 @@ impl ToolCallTimingGuard {
             ($dispatch_duration_ms:expr, $handler_duration_ms:expr, $total_duration_ms:expr) => {
                 info!(
                     event.name = "codex.tool_call",
-                    trace_id = %codex_otel::current_span_trace_id().unwrap_or_default(),
                     conversation.id = %self.conversation_id,
                     turn_id = %self.turn_id,
                     tool_name = %self.tool_name,

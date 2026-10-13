@@ -89,7 +89,6 @@ pub(crate) async fn handle_response_stream_error(
         .enabled(Feature::UnboundedConnectionRetries)
         && matches!(request, ResponsesStreamRequest::Sampling)
         && matches!(err.details(), CodexErrorDetails::ConnectionFailed(_))
-        && !turn_context.provider.info().is_amazon_bedrock()
     {
         let retry_delay = retry_state.connection_retry_delay;
         warn!(
@@ -109,12 +108,7 @@ pub(crate) async fn handle_response_stream_error(
         return Ok(());
     }
 
-    if retry_state.retries >= max_retries
-        && client_session.try_switch_fallback_transport(
-            &turn_context.session_telemetry,
-            turn_context.model_info(),
-        )
-    {
+    if retry_state.retries >= max_retries && client_session.try_switch_fallback_transport() {
         // Changing transport must not bypass the server's retry deadline.
         if let Some(retry_after) = retry_after {
             tokio::time::sleep_until(retry_after.deadline()).await;

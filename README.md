@@ -18,16 +18,16 @@ I run Codex in full-access mode all the time. In that mode the sandbox, the appr
 
 Security: sandboxing (Seatbelt, Landlock/bubblewrap, Windows), approval policies and prompts, guardian auto-review, exec-policy rules, the network proxy and its destination allowlists, project trust, permission profiles, managed requirements and cloud config, process hardening, the shell-snapshot credential broker, dangerous-command detection.
 
-Everything around the loop: the TUI, app-server and its SDKs, cloud tasks, realtime voice, code mode, plugins and marketplaces, ChatGPT apps, session storage (rollouts, SQLite state, resume, memories), remote execution environments, analytics, feedback upload, rollout tracing, TUI and desktop settings.
+Everything around the loop: the TUI, app-server and its SDKs, cloud tasks, realtime voice, code mode, plugins and marketplaces, ChatGPT apps, session storage (rollouts, SQLite state, resume, memories), remote execution environments, telemetry (OpenTelemetry, metrics, analytics), non-OpenAI auth (Bedrock, workload and agent identity), feedback upload, rollout tracing, TUI and desktop settings.
 
-All tests are gone too. Rust went from 2.05M lines (1.06M production, 0.99M tests) to about 190k, and the workspace from about 160 crates to about 65.
+All tests are gone too. Rust went from 2.05M lines (1.06M production, 0.99M tests) to about 172k, and the workspace from about 160 crates to about 60.
 
 ## Running it
 
 ```shell
 cd codex-rs
 cargo build -p codex-cli
-mkdir -p ~/.codex-loop && cp ~/.codex/auth.json ~/.codex-loop/   # or export CODEX_API_KEY
+mkdir -p ~/.codex-loop && cp ~/.codex/auth.json ~/.codex-loop/   # ChatGPT login, or export CODEX_API_KEY
 CODEX_HOME=~/.codex-loop ./target/debug/codex "make the failing test pass"
 ```
 

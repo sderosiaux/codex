@@ -1,7 +1,6 @@
 use super::mcp_refresh::McpRefreshInvalidationGuard;
 use super::*;
 use crate::environment_selection::TurnEnvironmentSnapshot;
-use codex_otel::auth_storage::AuthStorageOriginator;
 
 impl Session {
     pub(crate) async fn runtime_mcp_config(&self, config: &Config) -> McpConfig {
@@ -106,14 +105,11 @@ impl Session {
         turn_context: &TurnContext,
         required_servers: &[String],
     ) -> Arc<codex_mcp::McpBinding> {
-        let recovered_oauth_servers =
-            AuthStorageOriginator::from_client_name(&turn_context.originator)
-                .scope(
-                    self.services
-                        .mcp_runtime
-                        .updated_oauth_credentials_after_auth_failure(),
-                )
-                .await;
+        let recovered_oauth_servers = self
+            .services
+            .mcp_runtime
+            .updated_oauth_credentials_after_auth_failure()
+            .await;
         if !recovered_oauth_servers.is_empty()
             && let Ok(_refresh) = self.mcp_refresh.acquire().await
             && self

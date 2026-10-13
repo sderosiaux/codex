@@ -9,12 +9,9 @@ use crate::session::session::Session;
 use crate::session::startup_prewarm::PrewarmInput;
 use crate::session::step_settings::StepSettingsUpdate;
 use crate::thread_startup_metadata::ThreadStartupMetadata;
-use codex_diagnostics::Gauge;
-use codex_diagnostics::GaugeGuard;
 use codex_extension_api::ConversationHistorySnapshot;
 use codex_extension_api::ThreadIdleCause;
 use codex_features::Feature;
-use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::Personality;
@@ -36,7 +33,6 @@ use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TokenUsageInfo;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::protocol::TurnEnvironmentSelections;
-use codex_protocol::protocol::W3cTraceContext;
 use codex_protocol::turn_input::StartIfIdleSubmission;
 use codex_protocol::turn_input::SteerSubmission;
 use codex_protocol::turn_input::TurnInputMode;
@@ -53,8 +49,6 @@ use tokio::sync::RwLock;
 use tokio::sync::oneshot;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
-
-static LIVE_THREADS: Gauge = Gauge::new("core.threads.live");
 
 #[derive(Clone, Debug)]
 pub struct ThreadConfigSnapshot {
@@ -123,7 +117,6 @@ pub struct CodexThread {
     pub(crate) session_source: SessionSource,
     startup_metadata: ThreadStartupMetadata,
     out_of_band_elicitations: Mutex<OutOfBandElicitations>,
-    _diagnostics_guard: GaugeGuard,
 }
 
 #[derive(Default)]
@@ -156,17 +149,11 @@ impl CodexThread {
             session_source,
             startup_metadata,
             out_of_band_elicitations: Mutex::new(OutOfBandElicitations::default()),
-            _diagnostics_guard: LIVE_THREADS.track(),
         }
     }
 
     pub async fn submit(&self, op: Op) -> CodexResult<String> {
         self.io.submit(op).await
-    }
-
-    /// Returns the session telemetry handle for thread-scoped production instrumentation.
-    pub fn session_telemetry(&self) -> SessionTelemetry {
-        self.session.services.session_telemetry.clone()
     }
 
     /// Schedule the same background model warmup used at startup for an idle thread.
@@ -267,19 +254,6 @@ impl CodexThread {
 
     pub async fn emit_thread_idle_lifecycle_if_idle(&self, cause: ThreadIdleCause) {
         self.session.emit_thread_idle_lifecycle_if_idle(cause).await;
-    }
-
-    pub async fn submit_with_trace(
-        &self,
-        op: Op,
-        trace: Option<W3cTraceContext>,
-    ) -> CodexResult<String> {
-        self.io
-            .submit_with_trace(
-                op, trace, /*parent_turn_id*/ None, /*root_turn_id*/ None,
-                /*residency_guard*/ None,
-            )
-            .await
     }
 
     /// Submits turn input without requiring the caller to inspect thread state.

@@ -17,7 +17,6 @@ workspace = true
 codex-config = { workspace = true }
 codex-exec-server = { workspace = true }
 codex-extension-api = { workspace = true }
-codex-otel = { workspace = true }
 codex-protocol = { workspace = true }
 codex-skills = { workspace = true }
 codex-utils-absolute-path = { workspace = true }

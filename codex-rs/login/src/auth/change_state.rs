@@ -16,7 +16,7 @@ pub(super) fn same_owner(previous: Option<&CodexAuth>, current: Option<&CodexAut
     let (Some(previous), Some(current)) = (previous, current) else {
         return false;
     };
-    if previous.api_auth_mode() != current.api_auth_mode() {
+    if previous.auth_mode() != current.auth_mode() {
         return false;
     }
     let (Some(user), Some(workspace)) = (previous.get_chatgpt_user_id(), previous.get_account_id())

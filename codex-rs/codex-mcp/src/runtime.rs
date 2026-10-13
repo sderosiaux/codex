@@ -514,9 +514,3 @@ impl McpRuntimeContext {
         )
     }
 }
-
-pub(crate) fn emit_duration(metric: &str, duration: Duration, tags: &[(&str, &str)]) {
-    if let Some(metrics) = codex_otel::global() {
-        let _ = metrics.record_duration(metric, duration, tags);
-    }
-}

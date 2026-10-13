@@ -37,7 +37,6 @@ use crate::oauth::AuthorizationCodeGrant;
 use crate::oauth::AuthorizationRequest;
 use crate::oauth::CallbackError;
 use crate::oauth::CallbackParameters;
-use crate::oauth::ErrorBodyLimit;
 use crate::oauth::OAuthClient;
 use crate::oauth::OAuthError;
 use crate::oauth::TokenEncoding;
@@ -61,7 +60,6 @@ use codex_http_client::HttpClient;
 use codex_http_client::HttpClientBuilder;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::OutboundProxyPolicy;
-use codex_otel::auth_storage::AuthStorageOriginator;
 use codex_protocol::auth::AuthMode;
 use codex_utils_template::Template;
 use serde_json::Value as JsonValue;
@@ -313,7 +311,7 @@ pub fn run_login_server(opts: ServerOptions) -> io::Result<LoginServer> {
             server.unblock();
             result
         };
-        tokio::spawn(AuthStorageOriginator::current().scope(task))
+        tokio::spawn(task)
     };
 
     Ok(LoginServer {
@@ -815,7 +813,6 @@ async fn send_code_exchange_request(
             client_id,
             encoding: TokenEncoding::Form,
             timeout: None,
-            error_body_limit: ErrorBodyLimit::Unlimited,
         },
     );
     let result = oauth
@@ -841,41 +838,31 @@ pub(crate) async fn persist_tokens_async(
 ) -> io::Result<()> {
     // Reuse existing synchronous logic but run it off the async runtime.
     let codex_home = codex_home.to_path_buf();
-    // Blocking tasks don't inherit task-local context.
-    // Preserve the initiating client for credential-storage metrics.
-    let originator = AuthStorageOriginator::current();
-
     let persist_task = tokio::task::spawn_blocking(move || {
-        originator.sync_scope(|| {
-            let mut tokens = TokenData {
-                id_token: parse_chatgpt_jwt_claims(&id_token).map_err(io::Error::other)?,
-                access_token,
-                refresh_token,
-                account_id: None,
-            };
-            if let Some(acc) = jwt_auth_claims(&id_token)
-                .get("chatgpt_account_id")
-                .and_then(|v| v.as_str())
-            {
-                tokens.account_id = Some(acc.to_string());
-            }
-            let auth = AuthDotJson {
-                auth_mode: Some(AuthMode::Chatgpt),
-                openai_api_key: api_key,
-                tokens: Some(tokens),
-                last_refresh: Some(Utc::now()),
-                agent_identity: None,
-                personal_access_token: None,
-                bedrock_api_key: None,
-                bedrock_access_keys: None,
-            };
-            save_auth(
-                &codex_home,
-                &auth,
-                auth_credentials_store_mode,
-                keyring_backend_kind,
-            )
-        })
+        let mut tokens = TokenData {
+            id_token: parse_chatgpt_jwt_claims(&id_token).map_err(io::Error::other)?,
+            access_token,
+            refresh_token,
+            account_id: None,
+        };
+        if let Some(acc) = jwt_auth_claims(&id_token)
+            .get("chatgpt_account_id")
+            .and_then(|v| v.as_str())
+        {
+            tokens.account_id = Some(acc.to_string());
+        }
+        let auth = AuthDotJson {
+            auth_mode: Some(AuthMode::Chatgpt),
+            openai_api_key: api_key,
+            tokens: Some(tokens),
+            last_refresh: Some(Utc::now()),
+        };
+        save_auth(
+            &codex_home,
+            &auth,
+            auth_credentials_store_mode,
+            keyring_backend_kind,
+        )
     });
 
     persist_task

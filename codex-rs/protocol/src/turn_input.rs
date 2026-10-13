@@ -6,7 +6,6 @@ use crate::protocol::AdditionalContextEntry;
 use crate::protocol::InterAgentCommunication;
 use crate::protocol::NonSteerableTurnKind;
 use crate::protocol::ThreadSettingsOverrides;
-use crate::protocol::W3cTraceContext;
 use crate::user_input::UserInput;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -55,7 +54,6 @@ pub struct TurnInputRequest {
     pub start: TurnStartOptions,
     pub additional_context: BTreeMap<String, AdditionalContextEntry>,
     pub responsesapi_client_metadata: Option<HashMap<String, String>>,
-    pub trace: Option<W3cTraceContext>,
 }
 
 /// Attribution retained across recovery, sleep, and model-context compaction.
@@ -90,7 +88,6 @@ impl TurnInputRequest {
             start: TurnStartOptions::default(),
             additional_context: BTreeMap::new(),
             responsesapi_client_metadata: None,
-            trace: None,
         }
     }
 
@@ -134,12 +131,6 @@ impl TurnInputRequest {
         responsesapi_client_metadata: Option<HashMap<String, String>>,
     ) -> Self {
         self.responsesapi_client_metadata = responsesapi_client_metadata;
-        self
-    }
-
-    /// Trace context used when this request crosses the session loop.
-    pub fn with_trace(mut self, trace: Option<W3cTraceContext>) -> Self {
-        self.trace = trace;
         self
     }
 }

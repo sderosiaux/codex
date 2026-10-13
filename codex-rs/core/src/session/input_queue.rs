@@ -1,9 +1,7 @@
 use crate::agent::api::AgentControl;
-use crate::agent_communication::PENDING_MAILBOX_MESSAGES;
 use crate::state::ActiveTurn;
 use crate::state::MailboxDeliveryPhase;
 use crate::state::TurnState;
-use codex_diagnostics::GaugeGuard;
 use codex_history::ResponseItemEnvelope;
 use codex_protocol::ThreadId;
 use codex_protocol::models::ResponseItem;
@@ -101,7 +99,6 @@ pub(crate) struct InputQueue {
 pub(crate) struct PendingMailboxCommunication {
     pub(crate) communication: InterAgentCommunication,
     start_options: TurnStartOptions,
-    _diagnostics_guard: GaugeGuard,
 }
 
 impl InputQueue {
@@ -141,7 +138,6 @@ impl InputQueue {
                     .map(|communication| PendingMailboxCommunication {
                         communication,
                         start_options: TurnStartOptions::default(),
-                        _diagnostics_guard: PENDING_MAILBOX_MESSAGES.track(),
                     }),
             );
         }
@@ -213,7 +209,6 @@ impl InputQueue {
         pending.push_back(PendingMailboxCommunication {
             communication,
             start_options,
-            _diagnostics_guard: PENDING_MAILBOX_MESSAGES.track(),
         });
         self.activity_tx.send_replace(InputQueueActivity::Mailbox);
     }

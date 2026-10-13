@@ -7,7 +7,6 @@ pub(crate) mod handlers;
 pub(crate) mod hook_names;
 pub(crate) mod hosted_spec;
 pub(crate) mod lifecycle;
-pub(crate) mod metadata_metrics;
 mod multi_agent_tool;
 pub(crate) mod parallel;
 pub(crate) mod registry;

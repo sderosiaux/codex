@@ -93,7 +93,6 @@ pub(crate) use skills::skills_load_input_from_config;
 mod stream_events_utils;
 mod unified_exec;
 pub use client::X_RESPONSESAPI_INCLUDE_TIMING_METRICS_HEADER;
-pub use codex_protocol::config_types::ModelProviderAuthInfo;
 mod event_mapping;
 pub use codex_prompts as review_prompts;
 mod thread_manager;
@@ -154,7 +153,6 @@ pub use current_time::TimeProvider;
 pub use event_mapping::parse_turn_item;
 pub use installation_id::resolve_installation_id;
 pub mod compact;
-pub mod otel_init;
 
 // Captured environment bindings can be passed back to ThreadManager by internal reviewers.
 pub use environment_selection::TurnEnvironmentSnapshot;

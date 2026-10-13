@@ -5,7 +5,6 @@ use crate::agent::child_config::SpawnConfigOptions;
 use crate::agent::child_config::SpawnConfigVersion;
 use crate::agent::child_config::prepare_agent_spawn_config;
 use crate::agent::next_thread_spawn_depth;
-use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent::types::MessageDeliveryMode;
 use crate::agent::types::SpawnAgentForkMode;
 use crate::agent::types::SpawnAgentOptions;
@@ -165,17 +164,7 @@ async fn handle_spawn_agent(
             },
         })
         .await
-        .map_err(|err| {
-            record_collab_spawn_failure(
-                &turn.session_telemetry,
-                &err,
-                &call_id,
-                &turn.sub_id,
-                fork_mode.as_ref(),
-                MultiAgentVersion::V2,
-            );
-            collab_spawn_error(err)
-        })?;
+        .map_err(collab_spawn_error)?;
     let new_thread_id = spawned_agent.thread_id;
     let agent_status = spawned_agent.status;
     let nickname = agent_snapshot
@@ -195,12 +184,6 @@ async fn handle_spawn_agent(
         },
     )
     .await;
-    let role_tag = role_name.unwrap_or(DEFAULT_ROLE_NAME);
-    turn.session_telemetry.counter(
-        "codex.multi_agent.spawn",
-        /*inc*/ 1,
-        &[("role", role_tag), ("version", "v2")],
-    );
     let task_name = String::from(new_agent_path);
 
     let hide_agent_metadata = turn.config.multi_agent_v2.hide_spawn_agent_metadata;

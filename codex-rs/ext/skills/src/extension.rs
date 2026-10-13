@@ -8,7 +8,6 @@ use codex_extension_api::ContextualUserFragment;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionEventSink;
 use codex_extension_api::ExtensionFuture;
-use codex_extension_api::ExtensionMetrics;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_extension_api::ExtensionWarning;
 use codex_extension_api::PromptFragment;
@@ -35,21 +34,17 @@ use crate::render::MAX_SKILL_NAME_BYTES;
 use crate::render::MAX_SKILL_PATH_BYTES;
 use crate::render::SkillCatalogRenderPolicy;
 use crate::render::SkillMetadataBudget;
-use crate::render::SkillRenderReport;
 use crate::render::render_available_skills;
 use crate::render::skill_metadata_budget;
 use crate::render::truncate_main_prompt_contents;
 use crate::render::truncate_utf8_to_bytes;
-use crate::render_observability::CatalogSurface;
-use crate::render_observability::record_catalog_render;
+use crate::render_observability::trace_catalog_budget_pressure;
 use crate::selection::collect_explicit_skill_mentions;
 use crate::sources::SkillProviders;
 use crate::state::HostSkillsCatalogInWorldState;
 use crate::state::HostSkillsStepState;
-use crate::state::SkillsSessionState;
 use crate::state::SkillsThreadState;
 use crate::state::SkillsTurnState;
-use crate::telemetry::SkillTelemetry;
 use crate::warnings::bounded_warnings;
 use crate::world_state_catalogs::CatalogContext;
 
@@ -66,16 +61,12 @@ struct RenderedCatalog {
 }
 
 fn render_catalog(
-    extension_metrics: Option<&dyn ExtensionMetrics>,
-    catalog_surface: CatalogSurface,
     catalog: &SkillCatalog,
     include_skills_usage_instructions: bool,
     policy: SkillCatalogRenderPolicy,
     budget: SkillMetadataBudget,
 ) -> RenderedCatalog {
     render_prepared_catalog(
-        extension_metrics,
-        catalog_surface,
         include_skills_usage_instructions,
         budget,
         render_available_skills(catalog, policy, budget),
@@ -83,22 +74,14 @@ fn render_catalog(
 }
 
 fn render_prepared_catalog(
-    extension_metrics: Option<&dyn ExtensionMetrics>,
-    catalog_surface: CatalogSurface,
     include_skills_usage_instructions: bool,
     budget: SkillMetadataBudget,
     rendered: Option<AvailableSkillsRender>,
 ) -> RenderedCatalog {
     let Some(rendered) = rendered else {
-        record_catalog_render(
-            extension_metrics,
-            catalog_surface,
-            budget,
-            &SkillRenderReport::default(),
-        );
         return RenderedCatalog::default();
     };
-    record_catalog_render(extension_metrics, catalog_surface, budget, &rendered.report);
+    trace_catalog_budget_pressure(budget, &rendered.report);
     let warning_message = rendered.report.warning_message();
     let fragment = rendered.into_fragment(include_skills_usage_instructions);
     RenderedCatalog {
@@ -113,9 +96,6 @@ where
 {
     fn on_thread_start<'a>(&'a self, input: ThreadStartInput<'a, C>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
-            input.session_store.insert(SkillsSessionState {
-                extension_metrics: input.extension_metrics.clone(),
-            });
             input
                 .thread_store
                 .insert(SkillsThreadState::new((self.config_from_host)(
@@ -151,7 +131,7 @@ where
 {
     fn contribute_thread_context<'a>(
         &'a self,
-        session_store: &'a ExtensionData,
+        _session_store: &'a ExtensionData,
         thread_store: &'a ExtensionData,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<PromptFragment>> + Send + 'a>> {
         Box::pin(async move {
@@ -176,12 +156,7 @@ where
             let include_usage = thread_store
                 .get::<ModelInfo>()
                 .is_some_and(|model_info| model_info.include_skills_usage_instructions);
-            let extension_metrics = session_store
-                .get::<SkillsSessionState>()
-                .and_then(|state| state.extension_metrics.clone());
             let rendered = render_catalog(
-                extension_metrics.as_deref(),
-                CatalogSurface::ThreadContext,
                 &catalog,
                 include_usage,
                 SkillCatalogRenderPolicy::ExtensionCompatible,
@@ -234,7 +209,6 @@ where
     fn contribute<'a>(
         &'a self,
         input: TurnInputContext<'a>,
-        extension_metrics: Option<Arc<dyn ExtensionMetrics>>,
         _session_store: &'a ExtensionData,
         thread_store: &'a ExtensionData,
         turn_store: &'a ExtensionData,
@@ -272,8 +246,6 @@ where
                 let metadata_budget =
                     skill_metadata_budget(context_window, config.max_context_tokens);
                 let rendered = render_catalog(
-                    extension_metrics.as_deref(),
-                    CatalogSurface::TurnInput,
                     &catalog,
                     include_usage,
                     SkillCatalogRenderPolicy::ExtensionCompatible,
@@ -399,7 +371,6 @@ pub fn install_with_providers<C>(
         config_from_host: Arc::new(config_from_host),
     });
     registry.thread_lifecycle_contributor(extension.clone());
-    registry.turn_lifecycle_contributor(Arc::new(SkillTelemetry));
     registry.config_contributor(extension.clone());
     registry.prompt_contributor(extension.clone());
     registry.turn_input_contributor(extension.clone());

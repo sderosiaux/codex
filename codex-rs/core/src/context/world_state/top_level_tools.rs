@@ -2,7 +2,6 @@
 //! Missing state starts a fresh catalog; this section does not migrate legacy history.
 //! One developer notice precedes each incremental namespace batch; catalog hashes are unchanged.
 //! Whole namespace removals subsume their members in the removal notice.
-//! Metrics count rendered tool redefinitions, excluding namespace headers and initial catalogs.
 
 use super::PreviousSectionState;
 use super::SectionTransition;
@@ -11,8 +10,6 @@ use super::WorldStateSection;
 use super::WorldStateUpdate;
 use crate::context::ContextualUserFragment;
 use crate::context::DeveloperInstructions;
-use codex_extension_api::ExtensionMetrics;
-use codex_otel::TOOL_INCREMENTAL_UPDATES_METRIC;
 use codex_prompts::ResolvedIncrementalToolMessages;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::Result;
@@ -21,18 +18,12 @@ use codex_protocol::models::ResponseItem;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
-use std::sync::Arc;
-
-const ACTION_ADDED: &str = "added";
-const ACTION_REMOVED: &str = "removed";
-const ACTION_SCHEMA_CHANGED: &str = "schema_changed";
 
 /// The exact serialized Responses Lite declarations visible in one captured step.
 pub(crate) struct TopLevelToolsState {
     messages: ResolvedIncrementalToolMessages,
     definitions: Vec<Value>,
     hashes: BTreeMap<String, WorldStateHash>,
-    metrics: Option<Arc<dyn ExtensionMetrics>>,
 }
 
 impl TopLevelToolsState {
@@ -43,7 +34,6 @@ impl TopLevelToolsState {
     pub(crate) fn new(
         messages: ResolvedIncrementalToolMessages,
         definitions: Vec<Value>,
-        metrics: Option<Arc<dyn ExtensionMetrics>>,
     ) -> Result<Self> {
         let mut hashes = BTreeMap::new();
         let mut insert_hash = |name: String, definition: &Value| -> Result<()> {
@@ -71,7 +61,6 @@ impl TopLevelToolsState {
             messages,
             definitions,
             hashes,
-            metrics,
         })
     }
 }
@@ -88,50 +77,6 @@ fn definition_name(definition: &Value) -> &str {
         .unwrap_or_else(|| definition["type"].as_str().expect("serialized tool type"))
 }
 
-/// Accumulates callable changes during rendering without retaining tool definitions.
-#[derive(Default)]
-struct ToolUpdateMetrics {
-    count_added: usize,
-    count_removed: usize,
-    count_schema_changed: usize,
-}
-
-impl ToolUpdateMetrics {
-    fn count_changed_tool(
-        &mut self,
-        name: &str,
-        previous: Option<&BTreeMap<String, WorldStateHash>>,
-    ) {
-        if let Some(previous) = previous {
-            if previous.contains_key(name) {
-                // The existing hash covers the entire definition, including descriptions.
-                self.count_schema_changed += 1;
-            } else {
-                self.count_added += 1;
-            }
-        }
-    }
-
-    fn record(self, metrics: Option<&dyn ExtensionMetrics>) {
-        let Some(metrics) = metrics else {
-            return;
-        };
-        for (action, count) in [
-            (ACTION_ADDED, self.count_added),
-            (ACTION_REMOVED, self.count_removed),
-            (ACTION_SCHEMA_CHANGED, self.count_schema_changed),
-        ] {
-            if count > 0 {
-                metrics.counter(
-                    TOOL_INCREMENTAL_UPDATES_METRIC,
-                    i64::try_from(count).unwrap_or(i64::MAX),
-                    &[("action", action)],
-                );
-            }
-        }
-    }
-}
-
 impl WorldStateSection for TopLevelToolsState {
     const ID: &'static str = "top_level_tools";
     type Snapshot = BTreeMap<String, WorldStateHash>;
@@ -146,14 +91,12 @@ impl WorldStateSection for TopLevelToolsState {
         };
         let changed =
             |name: &str| previous.and_then(|previous| previous.get(name)) != self.hashes.get(name);
-        let mut counts = ToolUpdateMetrics::default();
         let mut namespace_updates = Vec::new();
         let mut tools = Vec::new();
         for definition in &self.definitions {
             let name = definition_name(definition);
             let Some(members) = definition["tools"].as_array() else {
                 if changed(name) {
-                    counts.count_changed_tool(name, previous);
                     tools.push(definition.clone());
                 }
                 continue;
@@ -162,7 +105,6 @@ impl WorldStateSection for TopLevelToolsState {
             for tool in members {
                 let tool_name = format!("{name}.{}", definition_name(tool));
                 if changed(&tool_name) {
-                    counts.count_changed_tool(&tool_name, previous);
                     changed_members.push(tool.clone());
                 }
             }
@@ -225,10 +167,6 @@ impl WorldStateSection for TopLevelToolsState {
                 .keys()
                 .filter(|key| !self.hashes.contains_key(*key))
                 .filter(|key| !namespaces.contains(key.as_str()))
-                .inspect(|_| {
-                    // Count members even when the notice collapses their removed namespace.
-                    counts.count_removed += 1;
-                })
                 .filter(|key| {
                     !key.split_once('.')
                         .is_some_and(|(namespace, _)| namespaces.contains(namespace))
@@ -246,7 +184,6 @@ impl WorldStateSection for TopLevelToolsState {
                 );
             }
         }
-        counts.record(self.metrics.as_deref());
         // Persist the empty map too: it is a known empty catalog, not missing state.
         (Some(self.hashes.clone()), updates)
     }

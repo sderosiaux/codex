@@ -147,7 +147,6 @@ pub(crate) struct NewTurnContextOptions {
 #[derive(Debug)]
 pub struct TurnContext {
     pub(crate) sub_id: String,
-    pub(crate) trace_id: Option<String>,
     /// Turn-scoped configuration. Read step-specific settings such as service tier from the
     /// corresponding `StepContext` instead.
     pub config: Arc<Config>,
@@ -161,8 +160,6 @@ pub struct TurnContext {
     pub(crate) initial_settings: Arc<ResolvedStepSettings>,
     /// Settings for the next step; environments are owned by `ThreadEnvironments`.
     pub(super) next_step_settings: ArcSwap<ResolvedStepSettings>,
-    /// Turn-wide telemetry; model-attributed step work should use `StepContext::session_telemetry`.
-    pub(crate) session_telemetry: SessionTelemetry,
     pub(crate) provider: SharedModelProvider,
     pub(crate) session_source: SessionSource,
     pub(crate) history_mode: ThreadHistoryMode,
@@ -226,13 +223,11 @@ impl TurnContext {
         available_models: Vec<ModelPreset>,
         turn_metadata_state: Arc<TurnMetadataState>,
     ) -> Self {
-        let session_telemetry = step_settings.telemetry(&self.session_telemetry);
         let extension_data = Arc::new(codex_extension_api::ExtensionData::new(sub_id.clone()));
         extension_data.insert(self.skills_snapshot().as_ref().clone());
 
         Self {
             sub_id,
-            trace_id: current_span_trace_id(),
             configured_token_budget: config.token_budget.clone(),
             use_model_token_budget_defaults: config.features.enabled(Feature::TokenBudget)
                 && !has_explicit_settings(&config),
@@ -240,7 +235,6 @@ impl TurnContext {
             auth_manager: self.auth_manager.clone(),
             initial_settings: Arc::clone(&step_settings),
             next_step_settings: ArcSwap::from(step_settings),
-            session_telemetry,
             provider: self.provider.clone(),
             session_source: self.session_source.clone(),
             history_mode: self.history_mode,
@@ -390,18 +384,15 @@ impl TurnContext {
             &config.features,
         ));
         config.service_tier = step_settings.service_tier.clone();
-        let session_telemetry = step_settings.telemetry(&self.session_telemetry);
 
         Self {
             sub_id: self.sub_id.clone(),
-            trace_id: self.trace_id.clone(),
             config: Arc::new(config),
             configured_token_budget: self.configured_token_budget.clone(),
             use_model_token_budget_defaults: self.use_model_token_budget_defaults,
             auth_manager: self.auth_manager.clone(),
             initial_settings: Arc::clone(&step_settings),
             next_step_settings: ArcSwap::from(step_settings),
-            session_telemetry,
             provider: self.provider.clone(),
             session_source: self.session_source.clone(),
             history_mode: self.history_mode,
@@ -518,7 +509,6 @@ impl Session {
         thread_id: ThreadId,
         session_id: SessionId,
         auth_manager: Option<Arc<AuthManager>>,
-        session_telemetry: &SessionTelemetry,
         provider: SharedModelProvider,
         session_configuration: &SessionConfiguration,
         multi_agent_version: MultiAgentVersion,
@@ -531,7 +521,6 @@ impl Session {
         skills_snapshot: HostSkillsSnapshot,
     ) -> TurnContext {
         let model_info = &step_settings.model_info;
-        let session_telemetry_for_context = step_settings.telemetry(session_telemetry);
         let session_source = session_configuration.session_source.clone();
         let available_models = models_manager.try_list_models().unwrap_or_default();
 
@@ -573,14 +562,12 @@ impl Session {
         extension_data.insert(skills_snapshot);
         TurnContext {
             sub_id,
-            trace_id: current_span_trace_id(),
             config: per_turn_config,
             configured_token_budget,
             use_model_token_budget_defaults,
             auth_manager,
             initial_settings: Arc::clone(&step_settings),
             next_step_settings: ArcSwap::from(step_settings),
-            session_telemetry: session_telemetry_for_context,
             provider,
             session_source,
             history_mode: session_configuration.history_mode,
@@ -778,7 +765,6 @@ impl Session {
             self.thread_id(),
             self.session_id(),
             Some(Arc::clone(&self.services.auth_manager)),
-            &self.services.session_telemetry,
             session_configuration.provider.clone(),
             &session_configuration,
             multi_agent_version,

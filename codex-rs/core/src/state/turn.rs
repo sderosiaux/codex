@@ -7,18 +7,15 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::AbortOnDropHandle;
 
-use codex_diagnostics::GaugeGuard;
 use codex_protocol::dynamic_tools::DynamicToolResponse;
 use codex_protocol::request_user_input::RequestUserInputResponse;
 use tokio::sync::oneshot;
 
-use super::TurnTokenUsage;
 use crate::agent::types::AgentExecutionGuard;
 use crate::session::TurnInputQueue;
 use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
 use crate::tasks::AnySessionTask;
-use codex_protocol::protocol::TokenUsage;
 
 /// Metadata about the currently running turn.
 pub(crate) struct ActiveTurn {
@@ -75,9 +72,7 @@ pub(crate) struct RunningTask {
     pub(crate) handle: AbortOnDropHandle<()>,
     pub(crate) turn_context: Arc<TurnContext>,
     pub(crate) _agent_execution_guard: Option<AgentExecutionGuard>,
-    pub(crate) _diagnostics_guard: GaugeGuard,
     // Timer recorded when the task drops to capture the full turn duration.
-    pub(crate) _timer: Option<codex_otel::Timer>,
 }
 
 /// Mutable state for a single turn.
@@ -87,9 +82,6 @@ pub(crate) struct TurnState {
     pending_dynamic_tools: HashMap<String, oneshot::Sender<DynamicToolResponse>>,
     pub(crate) pending_input: TurnInputQueue,
     mailbox_delivery_phase: MailboxDeliveryPhase,
-    pub(crate) tool_calls: u64,
-    pub(crate) token_usage_at_turn_start: TokenUsage,
-    pub(crate) token_usage_by_model: TurnTokenUsage,
     /// The last step captured for execution or selected from a speculative fallback.
     /// Remains absent until a step is captured; standalone local compaction has no step.
     pub(crate) last_known_step_context: Option<Arc<StepContext>>,

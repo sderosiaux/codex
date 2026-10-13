@@ -1,7 +1,5 @@
 use super::residency::is_v2_resident_session_source;
 use super::spawn_guard::PendingSpawn;
-use super::spawn_telemetry::SpawnMeasurements;
-use super::spawn_telemetry::record_spawn_success;
 use super::*;
 use crate::agent::child_config::build_agent_resume_config;
 use crate::agent::role::apply_role_to_config;
@@ -33,7 +31,6 @@ use codex_history::ResponseItemEnvelope;
 use codex_prompts::ResolvedModelMessages;
 use codex_protocol::error::AgentErrorContext;
 use codex_protocol::protocol::EnvironmentConfigState;
-use std::time::Instant;
 
 const AGENT_NAMES: &str = include_str!("../../../assets/agent/agent_names.txt");
 
@@ -417,7 +414,6 @@ impl LocalAgentControl {
         options: SpawnAgentOptions,
     ) -> CodexResult<(LiveAgent, ThreadConfigSnapshot)> {
         let membership = self.runtime.admit_start()?;
-        let spawn_started_at = Instant::now();
         let state = self.runtime.upgrade()?;
         // Resolve the parent before inheriting settings or copying attachments.
         // Recovering it later from history only repairs the child's metadata.
@@ -442,22 +438,18 @@ impl LocalAgentControl {
             && session_source
                 .as_ref()
                 .is_some_and(is_v2_resident_session_source);
-        let (residency_slot, residency_reservation) = if spawn_uses_v2_residency {
-            let residency_reservation_started_at = Instant::now();
-            let residency_slot = self
-                .reserve_v2_residency_slot(
+        let residency_slot = if spawn_uses_v2_residency {
+            Some(
+                self.reserve_v2_residency_slot(
                     &state,
                     &config,
                     &membership,
                     /*protected_thread_id*/ None,
                 )
-                .await?;
-            (
-                Some(residency_slot),
-                Some(residency_reservation_started_at.elapsed()),
+                .await?,
             )
         } else {
-            (None, None)
+            None
         };
         let reservation_max_threads = if spawn_uses_v2_residency {
             None
@@ -510,9 +502,8 @@ impl LocalAgentControl {
             inherited_environments,
             ..StartThreadOptions::new(config.clone())
         };
-        let fork_context = match (session_source, options.fork_mode.as_ref()) {
+        match (session_source, options.fork_mode.as_ref()) {
             (Some(session_source), Some(_)) => {
-                let fork_context_started_at = Instant::now();
                 let (initial_history, history_mode) = self
                     .prepare_forked_history(
                         &state,
@@ -525,7 +516,6 @@ impl LocalAgentControl {
                     .map_err(|err| err.with_agent_context(AgentErrorContext::ForkHistory))?;
                 start_options.initial_history = initial_history;
                 start_options.history_mode = history_mode;
-                Some(fork_context_started_at.elapsed())
             }
             (Some(_), None) => {
                 if let Some(parent_thread_id) = parent_thread_id
@@ -542,16 +532,13 @@ impl LocalAgentControl {
                         start_options.dynamic_tools = parent_thread.session.dynamic_tools().await;
                     }
                 }
-                None
             }
-            (None, _) => None,
-        };
-        let child_create_started_at = Instant::now();
+            (None, _) => {}
+        }
         let new_thread = state
             .spawn_child_thread(start_options, self.clone(), parent_thread_id)
             .await
             .map_err(|err| err.with_agent_context(AgentErrorContext::ChildStartup))?;
-        let child_create = child_create_started_at.elapsed();
         agent_metadata.agent_id = Some(new_thread.thread_id);
         let pending_spawn = PendingSpawn::new(Arc::clone(&state), new_thread.thread_id, membership);
 
@@ -581,7 +568,6 @@ impl LocalAgentControl {
             cyber_access_program: options.cyber_access_program,
             ..Default::default()
         };
-        let input_admission_started_at = Instant::now();
         match initial_input {
             SpawnInitialInput::UserInput(input) => {
                 self.send_input(new_thread.thread_id, input, start_options)
@@ -600,7 +586,6 @@ impl LocalAgentControl {
                 .map_err(|err| err.with_agent_context(AgentErrorContext::InputAdmission))?;
             }
         }
-        let input_admission = input_admission_started_at.elapsed();
         reservation.commit(agent_metadata.clone());
         if let Some(residency_slot) = residency_slot {
             residency_slot.commit(new_thread.thread_id);
@@ -634,20 +619,6 @@ impl LocalAgentControl {
             Some(config) => config,
             None => new_thread.thread.config_snapshot().await,
         };
-        let session_telemetry = new_thread.thread.session_telemetry();
-        record_spawn_success(
-            &session_telemetry,
-            options.fork_mode.as_ref(),
-            multi_agent_version,
-            SpawnMeasurements {
-                history_mode: config.history_mode,
-                residency_reservation,
-                fork_context,
-                child_create,
-                input_admission,
-                total: spawn_started_at.elapsed(),
-            },
-        );
         Ok((agent, config))
     }
 

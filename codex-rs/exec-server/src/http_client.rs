@@ -205,15 +205,13 @@ impl RouteAwareHttpRequestRunner {
 
         let request_span = tracing::info_span!(
             "codex.exec_server.http_request",
-            otel.kind = "client",
             http.request.method = method.as_str(),
             server.address = url.host_str().unwrap_or_default(),
             server.port = u64::from(url.port_or_known_default().unwrap_or_default()),
             http.response.status_code = tracing::field::Empty,
             error.type = tracing::field::Empty,
         );
-        let mut headers = Self::build_headers(params.headers)?;
-        codex_otel::inject_span_w3c_trace_headers(&request_span, &mut headers);
+        let headers = Self::build_headers(params.headers)?;
         let mut request = self.client.request(method.clone(), url).headers(headers);
         if let Some(body) = params.body {
             request = request.body(body.into_inner());

@@ -19,14 +19,12 @@ use std::sync::Mutex as StdMutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
-use std::time::Instant;
 
 use crate::client_tool_catalog::ClientToolCatalog;
 use crate::elicitation::ElicitationRequestManager;
 use crate::openai_docs_source_attribution::maybe_with_openai_docs_source_attribution;
 use crate::pagination::collect_paginated_with_limit;
 use crate::runtime::McpRuntimeContext;
-use crate::runtime::emit_duration;
 use crate::server::EffectiveMcpServer;
 use crate::tool_catalog_cache::McpToolCatalogCacheContext;
 use crate::tool_catalog_cache::McpToolCatalogFetchTicket;
@@ -43,7 +41,6 @@ use codex_config::McpServerTransportConfig;
 use codex_config::types::AuthKeyringBackendKind;
 use codex_config::types::OAuthCredentialsStoreMode;
 use codex_login::AuthChangeState;
-use codex_otel::auth_storage::AuthStorageOriginator;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::mcp::McpServerInfo;
 use codex_protocol::protocol::Event;
@@ -63,7 +60,6 @@ use rmcp::model::ElicitationCapability;
 use rmcp::model::Implementation;
 use rmcp::model::InitializeRequestParams;
 use rmcp::model::ProtocolVersion;
-use rmcp::model::ServerPeerInfo;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::AbortOnDropHandle;
@@ -75,9 +71,6 @@ use tracing::warn;
 /// not use it. Its `cacheable: false` property disables sharing tool definitions across connections.
 const MCP_TOOL_CATALOG_CACHE_CAPABILITY: &str = "codex/tool-catalog-cache";
 const MCP_TOOL_CATALOG_CACHEABLE_PROPERTY: &str = "cacheable";
-pub(crate) const MCP_TOOLS_LIST_DURATION_METRIC: &str = "codex.mcp.tools.list.duration_ms";
-pub(crate) const MCP_TOOLS_FETCH_UNCACHED_DURATION_METRIC: &str =
-    "codex.mcp.tools.fetch_uncached.duration_ms";
 pub(crate) const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) const DEFAULT_TOOL_TIMEOUT: Duration = Duration::from_secs(300);
 
@@ -103,7 +96,6 @@ pub(crate) type ManagedClientFuture =
 
 #[derive(Clone)]
 struct ManagedClientStartup {
-    originator: AuthStorageOriginator,
     server_name: String,
     server: EffectiveMcpServer,
     store_mode: OAuthCredentialsStoreMode,
@@ -132,7 +124,6 @@ impl ManagedClientStartup {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         let Self {
-            originator,
             server_name,
             server,
             store_mode,
@@ -221,11 +212,7 @@ impl ManagedClientStartup {
             startup_complete.store(true, Ordering::Release);
             outcome
         };
-        originator
-            .scope(Box::pin(startup))
-            .in_current_span()
-            .boxed()
-            .shared()
+        startup.in_current_span().boxed().shared()
     }
 }
 
@@ -265,7 +252,6 @@ impl AsyncManagedClient {
         let startup_complete = Arc::new(AtomicBool::new(false));
         let server_capabilities = Arc::new(StdMutex::new(None));
         let startup = Arc::new(ManagedClientStartup {
-            originator: AuthStorageOriginator::current(),
             server_name,
             server,
             store_mode,
@@ -393,7 +379,6 @@ pub(crate) async fn list_tools_for_client_uncached(
     catalog_item_limit: usize,
     server_instructions: Option<&str>,
 ) -> Result<Vec<ToolInfo>> {
-    let fetch_start = Instant::now();
     let tools = collect_paginated_with_limit("tools/list", timeout, catalog_item_limit, |params| {
         let client = Arc::clone(client);
         async move {
@@ -405,11 +390,6 @@ pub(crate) async fn list_tools_for_client_uncached(
     .into_iter()
     .map(|tool| tool_info_from_listed_tool(server_name, server_instructions, tool))
     .collect();
-    emit_duration(
-        MCP_TOOLS_FETCH_UNCACHED_DURATION_METRIC,
-        fetch_start.elapsed(),
-        &[],
-    );
     Ok(tools)
 }
 
@@ -500,12 +480,10 @@ async fn start_server_task(
             );
     }
 
-    let started_at = Instant::now();
     let initialize_result = client
         .initialize(params, startup_timeout, send_elicitation)
-        .await;
-    record_protocol_discovery_metrics(client.protocol_mode(), started_at, &initialize_result);
-    let initialize_result = initialize_result.map_err(StartupOutcomeError::from)?;
+        .await
+        .map_err(StartupOutcomeError::from)?;
     *server_capabilities
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) =
@@ -532,7 +510,6 @@ async fn start_server_task(
     {
         cache_context.disable();
     }
-    let list_start = Instant::now();
     let server_info =
         mcp_server_info_from_implementation(&server_name, initialize_result.server_info);
     let tools = list_tools_for_client_uncached(
@@ -551,13 +528,6 @@ async fn start_server_task(
     ) {
         cache_context.publish_if_newest(fetch_ticket, &client_tools);
     }
-    if tool_catalog_cache_context.is_some() {
-        emit_duration(
-            MCP_TOOLS_LIST_DURATION_METRIC,
-            list_start.elapsed(),
-            &[("cache", "miss")],
-        );
-    }
     let managed = ManagedClient {
         _auth_change_notifications: auth_change_notifications,
         client: Arc::clone(&client),
@@ -567,33 +537,6 @@ async fn start_server_task(
     };
 
     Ok(managed)
-}
-
-fn record_protocol_discovery_metrics(
-    mode: McpProtocolMode,
-    started_at: Instant,
-    result: &Result<ServerPeerInfo>,
-) {
-    let Some(metrics) = codex_otel::global() else {
-        return;
-    };
-
-    let mode = match mode {
-        McpProtocolMode::Legacy => "legacy",
-        McpProtocolMode::V20260728 => "auto",
-    };
-    let outcome = match result {
-        Ok(result) if result.protocol_version == ProtocolVersion::V_2026_07_28 => "modern",
-        Ok(_) => "legacy",
-        Err(_) => "failure",
-    };
-    let tags = [("mode", mode), ("outcome", outcome)];
-    let _ = metrics.counter("codex.mcp.protocol_discovery", /*inc*/ 1, &tags);
-    let _ = metrics.record_duration(
-        "codex.mcp.protocol_discovery.duration_ms",
-        started_at.elapsed(),
-        &tags,
-    );
 }
 
 pub(crate) fn mcp_initialize_request_params(

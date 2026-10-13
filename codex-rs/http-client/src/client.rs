@@ -1,15 +1,9 @@
 //! Selects direct or routed HTTP execution and owns transport diagnostics.
 
 use http::HeaderMap;
-use http::HeaderName;
-use http::HeaderValue;
-use opentelemetry::global;
-use opentelemetry::propagation::Injector;
 use reqwest::IntoUrl;
 use reqwest::Method;
 use std::sync::Arc;
-use tracing::Span;
-use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::RequestBuilder;
 use crate::RouteAwareClientPool;
@@ -165,7 +159,6 @@ impl TransportClient {
         mut request: reqwest::Request,
     ) -> Result<reqwest::Response, reqwest::Error> {
         apply_default_headers(request.headers_mut(), &self.default_headers);
-        request.headers_mut().extend(trace_headers());
         self.inner.execute(request).await
     }
 
@@ -212,28 +205,4 @@ pub(crate) enum RequestLogging {
     #[default]
     Enabled,
     Disabled,
-}
-
-struct HeaderMapInjector<'a>(&'a mut HeaderMap);
-
-impl<'a> Injector for HeaderMapInjector<'a> {
-    fn set(&mut self, key: &str, value: String) {
-        if let (Ok(name), Ok(val)) = (
-            HeaderName::from_bytes(key.as_bytes()),
-            HeaderValue::from_str(&value),
-        ) {
-            self.0.insert(name, val);
-        }
-    }
-}
-
-pub(crate) fn trace_headers() -> HeaderMap {
-    let mut headers = HeaderMap::new();
-    global::get_text_map_propagator(|prop| {
-        prop.inject_context(
-            &Span::current().context(),
-            &mut HeaderMapInjector(&mut headers),
-        );
-    });
-    headers
 }

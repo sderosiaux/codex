@@ -67,16 +67,11 @@ use codex_hooks::Hooks;
 use codex_hooks::HooksConfig;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
-use codex_login::auth_env_telemetry::collect_auth_env_telemetry;
 use codex_mcp::McpRuntime;
 use codex_mcp::McpRuntimeContext;
 use codex_mcp::McpRuntimeInput;
 use codex_models_manager::manager::RefreshStrategy;
 use codex_models_manager::manager::SharedModelsManager;
-use codex_otel::auth_storage::AuthStorageOriginator;
-use codex_otel::current_span_trace_id;
-use codex_otel::current_span_w3c_trace_context;
-use codex_otel::set_parent_from_w3c_trace_context;
 use codex_prompts::render_model_instructions;
 use codex_protocol::ResponseUsageMetadata;
 use codex_protocol::ThreadId;
@@ -113,12 +108,10 @@ use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnContextItem;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::protocol::TurnStartedEvent;
-use codex_protocol::protocol::W3cTraceContext;
 use codex_protocol::protocol::WorldStateItem;
 use codex_protocol::request_user_input::RequestUserInputArgs;
 use codex_protocol::request_user_input::RequestUserInputResponse;
 use codex_rmcp_client::ElicitationResponse;
-use codex_terminal_detection::user_agent;
 use codex_thread_store::CreateThreadParams;
 use codex_thread_store::LiveThread;
 use codex_thread_store::LiveThreadInitGuard;
@@ -169,7 +162,6 @@ mod config_refresh;
 pub(crate) mod context_window;
 mod environment;
 mod extension_interruption;
-pub(crate) mod extension_metrics;
 mod handlers;
 mod inject;
 mod reasoning_effort;
@@ -223,9 +215,7 @@ use crate::state::SessionState;
 use crate::state::TaskKind;
 use crate::tasks::ReviewTask;
 use crate::turn_timing::TurnTimingState;
-use crate::turn_timing::record_turn_ttfm_metric;
 use crate::unified_exec::UnifiedExecProcessManager;
-use codex_git_utils::get_git_repo_root;
 use codex_history::CodexHarnessMetadata;
 use codex_history::CompactedItem;
 use codex_history::CompactionResumeMetadata;
@@ -234,9 +224,6 @@ pub(crate) use codex_history::PreviousTurnSettings;
 use codex_history::ResponseItemEnvelope;
 use codex_mcp::McpConfig;
 use codex_mcp::effective_mcp_servers;
-use codex_otel::SessionTelemetry;
-use codex_otel::THREAD_STARTED_METRIC;
-use codex_otel::TelemetryAuthMode;
 use codex_protocol::ResponseItemId;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
@@ -321,10 +308,8 @@ pub(crate) struct SessionSpawnArgs {
     pub(crate) originator: String,
     pub(crate) agent_control: AgentControlInit,
     pub(crate) dynamic_tools: Vec<DynamicToolSpec>,
-    pub(crate) metrics_service_name: Option<String>,
     pub(crate) inherited_environments: Option<TurnEnvironmentSnapshot>,
     pub(crate) user_shell_override: Option<shell::Shell>,
-    pub(crate) parent_trace: Option<W3cTraceContext>,
     pub(crate) environment_selections: Vec<TurnEnvironmentSelection>,
     pub(crate) thread_extension_init: ExtensionDataInit,
     pub(crate) turn_extension_init: ExtensionDataInit,
@@ -369,26 +354,7 @@ impl Session {
     ) -> BoxFuture<'static, CodexResult<(Arc<Self>, SessionIo)>> {
         let tree_shutdown = args.agent_control.runtime().shutdown.clone();
         Box::pin(async move {
-            let parent_trace = match args.parent_trace {
-                Some(trace) => {
-                    if codex_otel::context_from_w3c_trace_context(&trace).is_some() {
-                        Some(trace)
-                    } else {
-                        warn!("ignoring invalid thread spawn trace carrier");
-                        None
-                    }
-                }
-                None => None,
-            };
-            let thread_spawn_span = info_span!("thread_spawn", otel.name = "thread_spawn");
-            if let Some(trace) = parent_trace.as_ref() {
-                let _ = set_parent_from_w3c_trace_context(&thread_spawn_span, trace);
-            }
-            let spawn = Self::spawn_internal(SessionSpawnArgs {
-                parent_trace,
-                ..args
-            })
-            .instrument(thread_spawn_span);
+            let spawn = Self::spawn_internal(args).instrument(info_span!("thread_spawn"));
             tokio::select! {
                 biased;
                 _ = tree_shutdown.cancelled() => Err(CodexErr::TurnAborted),
@@ -421,10 +387,8 @@ impl Session {
             originator,
             agent_control,
             dynamic_tools,
-            metrics_service_name,
             user_shell_override,
             inherited_environments,
-            parent_trace: _,
             environment_selections,
             thread_extension_init,
             turn_extension_init,
@@ -587,7 +551,6 @@ impl Session {
         );
         let service_tier =
             get_service_tier(config.service_tier.clone(), &config.features, &model_info);
-        let storage_originator = AuthStorageOriginator::from_client_name(&originator);
         let session_configuration = SessionConfiguration {
             turn_extension_init,
             provider: create_model_provider(
@@ -610,7 +573,6 @@ impl Session {
             runtime_workspace_roots: config.workspace_roots.clone(),
             codex_home: config.codex_home.clone(),
             original_config_do_not_use: Arc::clone(&config),
-            metrics_service_name,
             app_server_client_name: None,
             app_server_client_version: None,
             session_source,
@@ -680,14 +642,14 @@ impl Session {
             .as_ref()
             .and_then(|startup| startup.session_teardown(thread_id));
         let session_for_loop = Arc::clone(&session);
-        let session_loop_handle = tokio::spawn(Box::pin(storage_originator.scope(async move {
+        let session_loop_handle = tokio::spawn(Box::pin(async move {
             submission_loop(session_for_loop, configured_config, rx_sub)
                 .instrument(info_span!("session_loop", thread_id = %thread_id))
                 .await;
             if let Some(tree_teardown) = tree_teardown {
                 tree_teardown.complete();
             }
-        })));
+        }));
         let io = SessionIo {
             tx_sub,
             rx_event,
@@ -709,17 +671,16 @@ impl SessionIo {
         &self,
         op: impl Into<WithTurnExtensionData<Op>>,
     ) -> CodexResult<String> {
-        self.submit_with_trace(
-            op, /*trace*/ None, /*parent_turn_id*/ None, /*root_turn_id*/ None,
+        self.submit_with_turn_ids(
+            op, /*parent_turn_id*/ None, /*root_turn_id*/ None,
             /*residency_guard*/ None,
         )
         .await
     }
 
-    pub(crate) async fn submit_with_trace(
+    pub(crate) async fn submit_with_turn_ids(
         &self,
         op: impl Into<WithTurnExtensionData<Op>>,
-        trace: Option<W3cTraceContext>,
         parent_turn_id: Option<String>,
         root_turn_id: Option<String>,
         residency_guard: Option<tokio::sync::OwnedRwLockReadGuard<()>>,
@@ -733,7 +694,6 @@ impl SessionIo {
             id: id.clone(),
             op,
             turn_extension_init,
-            trace,
             parent_turn_id,
             root_turn_id,
             residency_guard,
@@ -743,10 +703,7 @@ impl SessionIo {
     }
 
     /// Use sparingly: prefer `submit()` so submission IDs are generated consistently.
-    pub(crate) async fn submit_with_id(&self, mut sub: Submission) -> CodexResult<()> {
-        if sub.trace.is_none() {
-            sub.trace = current_span_w3c_trace_context();
-        }
+    pub(crate) async fn submit_with_id(&self, sub: Submission) -> CodexResult<()> {
         self.tx_sub
             .send(sub)
             .await
@@ -766,10 +723,9 @@ impl SessionIo {
         let id = new_submission_id();
         let (reply_tx, reply_rx) = oneshot::channel();
         let WithTurnExtensionData {
-            mut request,
+            request,
             turn_extension_init,
         } = request.into();
-        let trace = request.trace.take();
         self.submit_with_id(Submission {
             id,
             op: Op::TurnInput {
@@ -777,7 +733,6 @@ impl SessionIo {
                 mode,
                 reply: reply_tx,
             },
-            trace,
             turn_extension_init,
             parent_turn_id: None,
             root_turn_id: None,
@@ -1535,7 +1490,6 @@ impl Session {
             turn_attribution: (task_kind == TaskKind::Regular).then(|| turn_context.attribution()),
             turn_id: turn_context.sub_id.clone(),
             root_turn_id: Some(turn_context.root_turn_id()),
-            trace_id: turn_context.trace_id.clone(),
             started_at: turn_context.turn_timing_state.started_at_unix_secs().await,
             model_context_window: turn_context.model_context_window(),
             collaboration_mode_kind: turn_context.mode(),
@@ -1671,7 +1625,6 @@ impl Session {
         turn_context: &TurnContext,
         item: TurnItem,
     ) {
-        record_turn_ttfm_metric(turn_context, &item).await;
         for contributor in self.services.extensions.turn_lifecycle_contributors() {
             contributor
                 .on_item_completed(
@@ -2196,7 +2149,6 @@ impl Session {
             turn_context.use_model_token_budget_defaults,
             settings.model_info.as_ref(),
         );
-        let session_telemetry = settings.telemetry(&turn_context.session_telemetry);
         // Keep both preparation futures off caller stacks while they are live together.
         let load_agents_md = Box::pin(async {
             let (loaded_agents_md, warnings) = self
@@ -2250,7 +2202,6 @@ impl Session {
                 .then(CancellationToken::new),
             settings,
             token_budget,
-            session_telemetry,
             turn: turn_context,
             environments,
             extension_data,
@@ -2988,7 +2939,7 @@ impl Session {
         token_usage: Option<&TokenUsage>,
     ) -> CodexResult<()> {
         let result = self
-            .record_token_usage_info(turn_context, &turn_context.initial_settings, token_usage)
+            .record_token_usage_info(turn_context, token_usage)
             .await;
         self.send_token_count_event(turn_context).await;
         result
@@ -3031,7 +2982,6 @@ impl Session {
     pub(crate) async fn record_token_usage_info(
         &self,
         turn_context: &TurnContext,
-        settings: &ResolvedStepSettings,
         token_usage: Option<&TokenUsage>,
     ) -> CodexResult<()> {
         if let Some(token_usage) = token_usage {
@@ -3047,17 +2997,6 @@ impl Session {
                 }
                 state.token_info()
             };
-            let turn_state = self
-                .input_queue
-                .turn_state_for_sub_id(&self.active_turn, &turn_context.sub_id)
-                .await;
-            if let Some(turn_state) = turn_state {
-                turn_state.lock().await.token_usage_by_model.record(
-                    settings.selected_collaboration_mode().model(),
-                    settings.telemetry(&turn_context.session_telemetry),
-                    token_usage,
-                );
-            }
             let budget_result = self.record_rollout_budget_usage(token_usage).await;
             if let Some(token_info) = token_info.as_ref() {
                 for contributor in self.services.extensions.token_usage_contributors() {

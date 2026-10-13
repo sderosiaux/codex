@@ -72,10 +72,6 @@ impl SessionTask for UserShellCommandTask {
         TaskKind::Regular
     }
 
-    fn span_name(&self) -> &'static str {
-        "session_task.user_shell"
-    }
-
     async fn run(
         self: Arc<Self>,
         session: Arc<Session>,
@@ -104,11 +100,6 @@ pub(crate) async fn execute_user_shell_command(
     cancellation_token: CancellationToken,
     mode: UserShellCommandMode,
 ) {
-    session
-        .services
-        .session_telemetry
-        .counter("codex.task.user_shell", /*inc*/ 1, &[]);
-
     if mode == UserShellCommandMode::StandaloneTurn {
         // Auxiliary mode runs within an existing active turn. That turn already
         // emitted TurnStarted, so emitting another TurnStarted here would create

@@ -70,17 +70,6 @@
       },
       "type": "object"
     },
-    "AnalyticsConfigToml": {
-      "additionalProperties": false,
-      "description": "Analytics settings loaded from config.toml. Fields are optional so we can apply defaults.",
-      "properties": {
-        "enabled": {
-          "description": "When `false`, disables OpenAI analytics across Codex product surfaces in this profile. Custom OTLP metrics exporters remain enabled; set `otel.metrics_exporter = \"none\"` to disable them.",
-          "type": "boolean"
-        }
-      },
-      "type": "object"
-    },
     "AuthCredentialsStoreMode": {
       "description": "Determine where Codex should store CLI auth credentials.",
       "oneOf": [
@@ -133,64 +122,6 @@
         }
       ]
     },
-    "AwsAuthRefreshConfig": {
-      "additionalProperties": false,
-      "description": "Command used to refresh AWS credentials for a model provider.",
-      "properties": {
-        "args": {
-          "default": [],
-          "description": "Arguments passed to the refresh command.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "command": {
-          "description": "Executable to invoke directly, without a shell.",
-          "type": "string"
-        },
-        "timeout_ms": {
-          "default": 300000,
-          "description": "Maximum time to wait for the refresh command to complete.",
-          "format": "uint64",
-          "minimum": 1.0,
-          "type": "integer"
-        }
-      },
-      "required": [
-        "command"
-      ],
-      "type": "object"
-    },
-    "AwsCredentialExportConfig": {
-      "additionalProperties": false,
-      "description": "Command used to export AWS signing credentials for a model provider.",
-      "properties": {
-        "args": {
-          "default": [],
-          "description": "Arguments passed to the credential export command.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "command": {
-          "description": "Executable to invoke directly, without a shell.",
-          "type": "string"
-        },
-        "timeout_ms": {
-          "default": 30000,
-          "description": "Maximum time to wait for the credential export command to complete.",
-          "format": "uint64",
-          "minimum": 1.0,
-          "type": "integer"
-        }
-      },
-      "required": [
-        "command"
-      ],
-      "type": "object"
-    },
     "BundledSkillsConfig": {
       "additionalProperties": false,
       "properties": {
@@ -205,9 +136,6 @@
       "additionalProperties": false,
       "description": "Collection of common configuration options that a user can define as a unit in `config.toml`.",
       "properties": {
-        "analytics": {
-          "$ref": "#/definitions/AnalyticsConfigToml"
-        },
         "chatgpt_base_url": {
           "type": "string"
         },
@@ -403,9 +331,6 @@
               "type": "boolean"
             },
             "unified_image_budget": {
-              "type": "boolean"
-            },
-            "use_agent_identity": {
               "type": "boolean"
             },
             "use_xaa": {
@@ -654,91 +579,6 @@
         "api"
       ],
       "type": "string"
-    },
-    "GatewayOAuthConfig": {
-      "additionalProperties": false,
-      "properties": {
-        "authorization_url": {
-          "type": "string"
-        },
-        "client_id": {
-          "type": "string"
-        },
-        "delivery": {
-          "$ref": "#/definitions/GatewayOAuthDelivery"
-        },
-        "redirect_port": {
-          "format": "uint16",
-          "minimum": 0.0,
-          "type": "integer"
-        },
-        "resource": {
-          "type": "string"
-        },
-        "scopes": {
-          "default": [],
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "token_url": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "authorization_url",
-        "client_id",
-        "delivery",
-        "token_url"
-      ],
-      "type": "object"
-    },
-    "GatewayOAuthDelivery": {
-      "oneOf": [
-        {
-          "additionalProperties": false,
-          "properties": {
-            "kind": {
-              "enum": [
-                "header"
-              ],
-              "type": "string"
-            },
-            "name": {
-              "type": "string"
-            },
-            "scheme": {
-              "default": "Bearer",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "name"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "kind": {
-              "enum": [
-                "cookie"
-              ],
-              "type": "string"
-            },
-            "name": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "name"
-          ],
-          "type": "object"
-        }
-      ]
     },
     "GhostSnapshotToml": {
       "additionalProperties": false,
@@ -1139,81 +979,6 @@
         }
       ]
     },
-    "ModelProviderAuthInfo": {
-      "additionalProperties": false,
-      "description": "Configuration for obtaining a provider bearer token from a command.",
-      "properties": {
-        "args": {
-          "default": [],
-          "description": "Command arguments.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "command": {
-          "description": "Command to execute. Bare names are resolved via `PATH`; paths are resolved against `cwd`.",
-          "type": "string"
-        },
-        "cwd": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/AbsolutePathBuf"
-            }
-          ],
-          "description": "Working directory used when running the token command."
-        },
-        "refresh_interval_ms": {
-          "default": 300000,
-          "description": "Maximum age for the cached token before rerunning the command. Set to `0` to disable proactive refresh and only rerun after a 401 retry path.",
-          "format": "uint64",
-          "minimum": 0.0,
-          "type": "integer"
-        },
-        "timeout_ms": {
-          "default": 5000,
-          "description": "Maximum time to wait for the token command to exit successfully.",
-          "format": "uint64",
-          "minimum": 1.0,
-          "type": "integer"
-        }
-      },
-      "required": [
-        "command"
-      ],
-      "type": "object"
-    },
-    "ModelProviderAwsAuthInfo": {
-      "additionalProperties": false,
-      "description": "AWS SigV4 auth configuration for a model provider.",
-      "properties": {
-        "auth_refresh": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/AwsAuthRefreshConfig"
-            }
-          ],
-          "description": "Optional command used to reauthenticate after a refreshable AWS auth failure."
-        },
-        "credential_export": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/AwsCredentialExportConfig"
-            }
-          ],
-          "description": "Optional command whose exported credentials replace the AWS SDK credential chain."
-        },
-        "profile": {
-          "description": "AWS profile name to use. When unset, the AWS SDK default chain decides.",
-          "type": "string"
-        },
-        "region": {
-          "description": "AWS region to use for provider-specific endpoints.",
-          "type": "string"
-        }
-      },
-      "type": "object"
-    },
     "ModelProviderCapabilities": {
       "additionalProperties": false,
       "description": "Overrides for the optional API features supported by a custom provider.",
@@ -1237,22 +1002,6 @@
       "additionalProperties": false,
       "description": "Serializable representation of a provider definition.",
       "properties": {
-        "auth": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/ModelProviderAuthInfo"
-            }
-          ],
-          "description": "Command-backed bearer-token configuration for this provider."
-        },
-        "aws": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/ModelProviderAwsAuthInfo"
-            }
-          ],
-          "description": "AWS SigV4 auth configuration for this provider."
-        },
         "base_url": {
           "description": "Base URL for the provider's OpenAI-compatible API.",
           "type": "string"
@@ -1283,14 +1032,6 @@
         "experimental_bearer_token": {
           "description": "Value to use with `Authorization: Bearer <token>` header. Use of this config is discouraged in favor of `env_key` for security reasons, but this may be necessary when using this programmatically.",
           "type": "string"
-        },
-        "gateway_oauth": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/GatewayOAuthConfig"
-            }
-          ],
-          "description": "Secondary OAuth credentials required by the provider's gateway."
         },
         "http_headers": {
           "additionalProperties": {
@@ -1492,198 +1233,6 @@
           "type": "string"
         }
       ]
-    },
-    "OtelConfigToml": {
-      "additionalProperties": false,
-      "description": "OTEL settings loaded from config.toml. Fields are optional so we can apply defaults.",
-      "properties": {
-        "environment": {
-          "description": "Mark traces with environment (dev, staging, prod, test). Defaults to dev.",
-          "type": "string"
-        },
-        "exporter": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/OtelExporterKind"
-            }
-          ],
-          "description": "Optional log exporter"
-        },
-        "log_agent_responses": {
-          "description": "Opt in to logging final main-agent and spawned-subagent responses to an OTLP log exporter. Defaults to false. Response text can be sensitive and is capped at 64 KiB.",
-          "type": "boolean"
-        },
-        "log_user_prompt": {
-          "description": "Log user prompt in traces",
-          "type": "boolean"
-        },
-        "metrics_exporter": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/OtelExporterKind"
-            }
-          ],
-          "description": "Metrics exporter. Defaults to `statsig`, which follows `analytics.enabled`. Custom OTLP exporters are independent of `analytics.enabled`; `none` disables metrics export."
-        },
-        "span_attributes": {
-          "additionalProperties": {
-            "type": "string"
-          },
-          "description": "Attributes to add to every exported trace span.",
-          "type": "object"
-        },
-        "tool_result": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/ToolResultLogConfig"
-            }
-          ],
-          "default": {
-            "max_bytes": 2048
-          },
-          "description": "Byte limit for tool-result log output; independent of model-visible output."
-        },
-        "trace_exporter": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/OtelExporterKind"
-            }
-          ],
-          "description": "Optional trace exporter"
-        },
-        "tracestate": {
-          "additionalProperties": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "type": "object"
-          },
-          "description": "Semicolon-separated `key:value` fields to upsert into W3C tracestate members.",
-          "type": "object"
-        }
-      },
-      "type": "object"
-    },
-    "OtelExporterKind": {
-      "description": "Which OTEL exporter to use.",
-      "oneOf": [
-        {
-          "enum": [
-            "none",
-            "statsig"
-          ],
-          "type": "string"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "otlp-http": {
-              "additionalProperties": false,
-              "properties": {
-                "endpoint": {
-                  "type": "string"
-                },
-                "headers": {
-                  "additionalProperties": {
-                    "type": "string"
-                  },
-                  "default": {},
-                  "type": "object"
-                },
-                "protocol": {
-                  "$ref": "#/definitions/OtelHttpProtocol"
-                },
-                "tls": {
-                  "allOf": [
-                    {
-                      "$ref": "#/definitions/OtelTlsConfig"
-                    }
-                  ],
-                  "default": null
-                }
-              },
-              "required": [
-                "endpoint",
-                "protocol"
-              ],
-              "type": "object"
-            }
-          },
-          "required": [
-            "otlp-http"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "otlp-grpc": {
-              "additionalProperties": false,
-              "properties": {
-                "endpoint": {
-                  "type": "string"
-                },
-                "headers": {
-                  "additionalProperties": {
-                    "type": "string"
-                  },
-                  "default": {},
-                  "type": "object"
-                },
-                "tls": {
-                  "allOf": [
-                    {
-                      "$ref": "#/definitions/OtelTlsConfig"
-                    }
-                  ],
-                  "default": null
-                }
-              },
-              "required": [
-                "endpoint"
-              ],
-              "type": "object"
-            }
-          },
-          "required": [
-            "otlp-grpc"
-          ],
-          "type": "object"
-        }
-      ]
-    },
-    "OtelHttpProtocol": {
-      "oneOf": [
-        {
-          "description": "Binary payload",
-          "enum": [
-            "binary"
-          ],
-          "type": "string"
-        },
-        {
-          "description": "JSON payload",
-          "enum": [
-            "json"
-          ],
-          "type": "string"
-        }
-      ]
-    },
-    "OtelTlsConfig": {
-      "additionalProperties": false,
-      "properties": {
-        "ca-certificate": {
-          "$ref": "#/definitions/AbsolutePathBuf"
-        },
-        "client-certificate": {
-          "$ref": "#/definitions/AbsolutePathBuf"
-        },
-        "client-private-key": {
-          "$ref": "#/definitions/AbsolutePathBuf"
-        }
-      },
-      "type": "object"
     },
     "Personality": {
       "description": "Deprecated: `friendly` and `pragmatic` no longer select a style.",
@@ -2204,19 +1753,6 @@
       },
       "type": "object"
     },
-    "ToolResultLogConfig": {
-      "description": "Limit for the text included in `codex.tool_result` log records. This does not affect model-visible output. Raising it can expose more tool data to logs.",
-      "properties": {
-        "max_bytes": {
-          "default": 2048,
-          "description": "Maximum UTF-8 bytes before the truncation notice. Defaults to 2048.",
-          "format": "uint",
-          "minimum": 0.0,
-          "type": "integer"
-        }
-      },
-      "type": "object"
-    },
     "ToolsToml": {
       "additionalProperties": false,
       "properties": {
@@ -2335,14 +1871,6 @@
     "allow_login_shell": {
       "description": "Whether the model may request a login shell for shell-based tools. Default to `true`\n\nIf `true`, the model may request a login shell (`login = true`), and omitting `login` defaults to using a login shell. If `false`, the model can never use a login shell: `login = true` requests are rejected, and omitting `login` defaults to a non-login shell.",
       "type": "boolean"
-    },
-    "analytics": {
-      "allOf": [
-        {
-          "$ref": "#/definitions/AnalyticsConfigToml"
-        }
-      ],
-      "description": "When `enabled` is `false`, disables OpenAI analytics across Codex product surfaces on this machine. Custom OTLP metrics exporters are controlled by `otel.metrics_exporter`. When unset, the default depends on the client."
     },
     "background_terminal_max_timeout": {
       "description": "Maximum poll window for background terminal output (`write_stdin`), in milliseconds. Default: `300000` (5 minutes).",
@@ -2566,9 +2094,6 @@
         "unified_image_budget": {
           "type": "boolean"
         },
-        "use_agent_identity": {
-          "type": "boolean"
-        },
         "use_xaa": {
           "type": "boolean"
         },
@@ -2787,14 +2312,6 @@
     "oss_provider": {
       "description": "Preferred OSS provider for local models, e.g. \"lmstudio\" or \"ollama\".",
       "type": "string"
-    },
-    "otel": {
-      "allOf": [
-        {
-          "$ref": "#/definitions/OtelConfigToml"
-        }
-      ],
-      "description": "OTEL configuration."
     },
     "personality": {
       "allOf": [

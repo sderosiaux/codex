@@ -12,7 +12,6 @@ use crate::tools::router::ToolRouter;
 use codex_extension_api::ExtensionData;
 use codex_file_system::EnvironmentAccess;
 use codex_mcp::McpBinding;
-use codex_otel::SessionTelemetry;
 use codex_protocol::items::ModelInvocationContext;
 use codex_protocol::protocol::TurnContextItem;
 use tokio_util::sync::CancellationToken;
@@ -26,8 +25,6 @@ pub(crate) struct StepContext {
     pub(crate) settings: Arc<ResolvedStepSettings>,
     /// Frozen turn preferences resolved against this step's captured model.
     pub(crate) token_budget: Option<TokenBudgetConfig>,
-    /// Telemetry context tagged with this sampling request's model.
-    pub(crate) session_telemetry: SessionTelemetry,
     pub(crate) environments: TurnEnvironmentSnapshot,
     /// Keeps the extension inputs used to build this step's tools for its World State as well.
     pub(crate) extension_data: ExtensionData,

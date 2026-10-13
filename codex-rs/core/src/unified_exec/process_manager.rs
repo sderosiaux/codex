@@ -751,7 +751,6 @@ impl UnifiedExecProcessManager {
             let params = exec_server_params_for_request(process_id, request, tool_ctx, tty);
             tracing::event!(
                 name: "codex.unified_exec.process_start_requested",
-                target: "codex_otel.trace_safe",
                 tracing::Level::INFO,
                 event.name = "codex.unified_exec.process_start_requested",
                 unified_exec_process_id = process_id,

@@ -8,7 +8,6 @@ use codex_tools::ToolName;
 pub(crate) fn received(thread_id: ThreadId, tool_name: &ToolName, call_id: &str, turn_id: &str) {
     tracing::event!(
         name: "codex.tool_call_received",
-        target: "codex_otel.trace_safe",
         tracing::Level::INFO,
         event.name = "codex.tool_call_received",
         conversation.id = %thread_id,
@@ -27,7 +26,6 @@ pub(crate) fn result_ready(
 ) {
     tracing::event!(
         name: "codex.tool_result_ready",
-        target: "codex_otel.trace_safe",
         tracing::Level::INFO,
         event.name = "codex.tool_result_ready",
         conversation.id = %thread_id,

@@ -51,7 +51,6 @@ use rmcp::transport::streamable_http_client::StreamableHttpError;
 use rmcp::transport::streamable_http_client::StreamableHttpPostResponse;
 use sse_stream::Sse;
 use sse_stream::SseStream;
-use tracing::Instrument;
 
 use crate::bounded_stdio_transport::MAX_MCP_STDIO_LINE_BYTES;
 use crate::http_client_redirect::SameOriginRedirectHttpClient;
@@ -195,22 +194,18 @@ impl StreamableHttpClient for StreamableHttpClientAdapter {
         };
 
         let body = serde_json::to_value(&message).map_err(StreamableHttpError::Deserialize)?;
-        let request_span = crate::trace_context::request_span(&body);
         let body = serde_json::to_vec(&body).map_err(StreamableHttpError::Deserialize)?;
         let has_authorization_header = headers.contains_key(AUTHORIZATION);
-        let request = self
-            .http_client
-            .http_request_stream(HttpRequestParams {
-                method: "POST".to_string(),
-                url: uri.to_string(),
-                headers: protocol_headers(&headers),
-                body: Some(body.into()),
-                timeout_ms,
-                redirect_policy,
-                request_id: "buffered-request".to_string(),
-                stream_response: true,
-            })
-            .instrument(request_span);
+        let request = self.http_client.http_request_stream(HttpRequestParams {
+            method: "POST".to_string(),
+            url: uri.to_string(),
+            headers: protocol_headers(&headers),
+            body: Some(body.into()),
+            timeout_ms,
+            redirect_policy,
+            request_id: "buffered-request".to_string(),
+            stream_response: true,
+        });
         let response = request.await;
         let (response, mut body_stream) = match response {
             Ok(response) => response,

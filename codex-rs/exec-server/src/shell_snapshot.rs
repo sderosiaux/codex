@@ -1,6 +1,5 @@
 //! Cache captured shell state in executor memory. Replay through a per-launch
 //! unnamed reader when the shell can open it; otherwise retain env replay.
-//! Command metrics exclude prewarm and measure lookup/capture wait before replay.
 //! File replay admits larger shell state while environment replay keeps its launch budget.
 
 use std::collections::HashMap;
@@ -37,7 +36,6 @@ use crate::protocol::ShellSnapshotRequest;
 use crate::rpc::internal_error;
 use crate::rpc::invalid_params;
 use crate::shell_snapshot_process::SnapshotCapture;
-use crate::telemetry::ExecServerTelemetry;
 
 const MAX_CACHED_SNAPSHOTS: usize = 16;
 const MAX_SNAPSHOT_BYTES: usize = 512 * 1024;
@@ -92,7 +90,6 @@ impl ShellSnapshotCache {
         name = "codex.exec_server.process_prepare_shell_snapshot",
         skip_all,
         fields(
-            process.id = crate::process_telemetry::trace_process_id(params.process_id.as_str()),
             snapshot_requested = params.shell_snapshot.is_some(),
         ),
     )]
@@ -100,7 +97,6 @@ impl ShellSnapshotCache {
         &self,
         params: &ExecParams,
         prepared: &mut PreparedExecRequest,
-        telemetry: &ExecServerTelemetry,
         purpose: CapturePurpose,
     ) -> Result<Option<File>, HandlerError> {
         let Some(request) = params.shell_snapshot.as_ref() else {
@@ -131,8 +127,7 @@ impl ShellSnapshotCache {
             }
         };
 
-        let wait_started_at = std::time::Instant::now();
-        let (snapshot, attempt) = {
+        let snapshot = {
             let mut entries = self.entries.lock().await;
             let position = entries.iter().position(|entry| {
                 &entry.request == request
@@ -152,9 +147,8 @@ impl ShellSnapshotCache {
                     entry.snapshot = Arc::new(OnceCell::new());
                 }
                 let snapshot = Arc::clone(&entry.snapshot);
-                let attempt = entry.attempts;
                 entries.push_back(entry);
-                Some((snapshot, attempt))
+                Some(snapshot)
             });
             if let Some(snapshot) = cached {
                 snapshot
@@ -172,23 +166,11 @@ impl ShellSnapshotCache {
                     entries.pop_front();
                 }
 
-                (snapshot, 1)
+                snapshot
             }
-        };
-        let mut availability = match snapshot.get() {
-            Some(Ok(snapshot)) if snapshot.prewarmed => "prewarm_ready",
-            Some(Ok(_)) => "cache_hit",
-            Some(Err(_)) => "unavailable",
-            None => "capture_pending",
         };
         let capture = async {
             let prewarmed = purpose == CapturePurpose::Prewarm;
-            let attempt = attempt.to_string();
-            let purpose = match purpose {
-                CapturePurpose::Execution => "execution",
-                CapturePurpose::Prewarm => "prewarm",
-            };
-            let started_at = std::time::Instant::now();
             let result =
                 capture_snapshot(params, prepared, shell_type)
                     .await
@@ -196,22 +178,12 @@ impl ShellSnapshotCache {
                         snapshot.prewarmed = prewarmed;
                         snapshot
                     });
-            telemetry.shell_snapshot_captured(
-                started_at.elapsed(),
-                result.as_ref().map(|_| ()).map_err(|(reason, _)| *reason),
-                &[
-                    ("purpose", purpose),
-                    ("attempt", &attempt),
-                    ("shell", request.shell.name.as_str()),
-                ],
-            );
             result.map_err(|(_, error)| error)
         };
         let snapshot = match purpose {
             CapturePurpose::Execution => {
                 snapshot
                     .get_or_init(|| async {
-                        availability = "on_demand";
                         capture.await.map_err(|err| {
                             tracing::warn!("failed to capture shell snapshot: {err:?}");
                             Instant::now() + SNAPSHOT_RETRY_BACKOFF
@@ -227,17 +199,12 @@ impl ShellSnapshotCache {
                     .await?
             }
         };
-        let wait = wait_started_at.elapsed();
         if purpose == CapturePurpose::Prewarm {
             return Ok(None);
         }
         let Ok(snapshot) = snapshot else {
-            telemetry.shell_snapshot_command(wait, availability, "fallback");
             return Ok(None);
         };
-        if availability == "capture_pending" && snapshot.prewarmed {
-            availability = "prewarm_pending";
-        }
 
         // POSIX sh cannot portably close arbitrary descriptors above 9. Keep its
         // existing replay until the launcher supports remapping child descriptors.
@@ -254,7 +221,6 @@ impl ShellSnapshotCache {
                         ?error,
                         "cannot prepare shell snapshot transport; using normal startup"
                     );
-                    telemetry.shell_snapshot_command(wait, availability, "fallback");
                     return Ok(None);
                 }
             }
@@ -322,16 +288,11 @@ impl ShellSnapshotCache {
             params.argv[2]
         );
 
-        telemetry.shell_snapshot_command(wait, availability, "used");
         Ok(reader)
     }
 }
 
-#[tracing::instrument(
-    name = "codex.exec_server.process_capture_shell_snapshot",
-    skip_all,
-    fields(process.id = crate::process_telemetry::trace_process_id(params.process_id.as_str())),
-)]
+#[tracing::instrument(name = "codex.exec_server.process_capture_shell_snapshot", skip_all)]
 async fn capture_snapshot(
     params: &ExecParams,
     prepared: &PreparedExecRequest,

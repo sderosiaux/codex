@@ -3,7 +3,6 @@
 use codex_features::Features;
 use codex_models_manager::ModelsManagerConfig;
 use codex_models_manager::manager::ModelsManager;
-use codex_otel::SessionTelemetry;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary;
@@ -108,13 +107,6 @@ impl ResolvedStepSettings {
                 Arc::new(selected.resolve_model_info(models_manager, overrides).await)
             };
         Self::new(Arc::new(selected), model_info, features)
-    }
-
-    pub(super) fn telemetry(&self, base: &SessionTelemetry) -> SessionTelemetry {
-        base.clone().with_model(
-            self.selected.collaboration_mode.model(),
-            &self.model_info.slug,
-        )
     }
 }
 

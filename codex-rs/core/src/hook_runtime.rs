@@ -1,6 +1,5 @@
 use std::future::Future;
 use std::sync::Arc;
-use std::time::Duration;
 
 use codex_hooks::InterruptRequest;
 use codex_hooks::PostToolUseOutcome;
@@ -14,10 +13,6 @@ use codex_hooks::StopOutcome;
 use codex_hooks::SubagentHookContext;
 use codex_hooks::UserPromptSubmitOutcome;
 use codex_hooks::UserPromptSubmitRequest;
-use codex_hooks::hook_execution_mode_label;
-use codex_hooks::hook_handler_type_label;
-use codex_otel::HOOK_RUN_DURATION_METRIC;
-use codex_otel::HOOK_RUN_METRIC;
 use codex_protocol::items::FunctionCallOutputItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::items::UserMessageItem;
@@ -26,12 +21,9 @@ use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::HookCompletedEvent;
-use codex_protocol::protocol::HookEventName;
 use codex_protocol::protocol::HookExecutionMode;
 use codex_protocol::protocol::HookOutputEntryKind;
-use codex_protocol::protocol::HookRunStatus;
 use codex_protocol::protocol::HookRunSummary;
-use codex_protocol::protocol::HookSource;
 use codex_protocol::protocol::HookStartedEvent;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
@@ -728,68 +720,11 @@ pub(crate) async fn emit_hook_completed_events(
     completed_events: Vec<HookCompletedEvent>,
 ) {
     for completed in completed_events {
-        emit_hook_completed_metrics(turn_context, &completed);
         if should_emit_hook_notification(&completed.run) {
             sess.send_event(turn_context, EventMsg::HookCompleted(completed))
                 .await;
         }
     }
-}
-
-fn emit_hook_completed_metrics(turn_context: &TurnContext, completed: &HookCompletedEvent) {
-    let tags = hook_run_metric_tags(&completed.run);
-    turn_context
-        .session_telemetry
-        .counter(HOOK_RUN_METRIC, /*inc*/ 1, &tags);
-    if let Some(duration_ms) = completed.run.duration_ms
-        && let Ok(duration_ms) = u64::try_from(duration_ms)
-    {
-        turn_context.session_telemetry.record_duration(
-            HOOK_RUN_DURATION_METRIC,
-            Duration::from_millis(duration_ms),
-            &tags,
-        );
-    }
-}
-
-fn hook_run_metric_tags(run: &HookRunSummary) -> [(&'static str, &'static str); 5] {
-    let hook_name = match run.event_name {
-        HookEventName::PreToolUse => "PreToolUse",
-        HookEventName::PostToolUse => "PostToolUse",
-        HookEventName::PreCompact => "PreCompact",
-        HookEventName::PostCompact => "PostCompact",
-        HookEventName::SessionStart => "SessionStart",
-        HookEventName::SessionEnd => "SessionEnd",
-        HookEventName::UserPromptSubmit => "UserPromptSubmit",
-        HookEventName::SubagentStart => "SubagentStart",
-        HookEventName::SubagentStop => "SubagentStop",
-        HookEventName::Stop => "Stop",
-        HookEventName::Interrupt => "Interrupt",
-    };
-    let hook_source = match run.source {
-        HookSource::System => "system",
-        HookSource::User => "user",
-        HookSource::Project => "project",
-        HookSource::SessionFlags => "session_flags",
-        HookSource::Unknown => "unknown",
-    };
-    let status = match run.status {
-        HookRunStatus::Running => "running",
-        HookRunStatus::Completed => "completed",
-        HookRunStatus::Failed => "failed",
-        HookRunStatus::Blocked => "blocked",
-        HookRunStatus::Stopped => "stopped",
-    };
-    [
-        ("hook_name", hook_name),
-        ("source", hook_source),
-        ("status", status),
-        ("handler_type", hook_handler_type_label(run.handler_type)),
-        (
-            "execution_mode",
-            hook_execution_mode_label(run.execution_mode),
-        ),
-    ]
 }
 
 /// Claude-compatible hook input: Codex never asks for permission, so every

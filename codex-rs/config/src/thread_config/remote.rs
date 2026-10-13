@@ -1,12 +1,9 @@
 use std::collections::BTreeMap;
 use std::collections::HashMap;
-use std::num::NonZeroU64;
 use std::time::Duration;
 
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::WireApi;
-use codex_protocol::config_types::ModelProviderAuthInfo;
-use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_redacted_string::RedactedString;
 
 use super::SessionThreadConfig;
@@ -177,12 +174,6 @@ fn model_provider_from_proto(
         env_key: provider.env_key,
         env_key_instructions: provider.env_key_instructions,
         experimental_bearer_token: provider.experimental_bearer_token.map(Into::into),
-        auth: provider
-            .auth
-            .map(model_provider_auth_from_proto)
-            .transpose()?,
-        gateway_oauth: None,
-        aws: None,
         wire_api,
         query_params: provider.query_params.map(redacted_string_map),
         http_headers: provider.http_headers.map(redacted_string_map),
@@ -198,27 +189,6 @@ fn model_provider_from_proto(
         include_internal_metadata: false,
     };
     Ok((id, info))
-}
-
-fn model_provider_auth_from_proto(
-    auth: proto::ModelProviderAuthInfo,
-) -> Result<ModelProviderAuthInfo, ThreadConfigLoadError> {
-    let timeout_ms = NonZeroU64::new(auth.timeout_ms)
-        .ok_or_else(|| parse_error("remote thread config returned zero auth timeout_ms"))?;
-    let cwd = AbsolutePathBuf::from_absolute_path_checked(&auth.cwd).map_err(|err| {
-        parse_error(format!(
-            "remote thread config returned invalid auth cwd {:?}: {err}",
-            auth.cwd
-        ))
-    })?;
-
-    Ok(ModelProviderAuthInfo {
-        command: auth.command,
-        args: auth.args.into_iter().map(RedactedString::from).collect(),
-        timeout_ms,
-        refresh_interval_ms: auth.refresh_interval_ms,
-        cwd,
-    })
 }
 
 fn redacted_string_map(map: proto::StringMap) -> HashMap<String, RedactedString> {

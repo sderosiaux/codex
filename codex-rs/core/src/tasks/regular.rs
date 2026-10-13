@@ -32,10 +32,6 @@ impl SessionTask for RegularTask {
         TaskKind::Regular
     }
 
-    fn span_name(&self) -> &'static str {
-        "session_task.turn"
-    }
-
     async fn run(
         self: Arc<Self>,
         sess: Arc<Session>,
@@ -86,7 +82,7 @@ impl SessionTask for RegularTask {
                     .await;
                 return Ok(None);
             }
-            SessionStartupPrewarmResolution::Unavailable { .. } => None,
+            SessionStartupPrewarmResolution::Unavailable => None,
             SessionStartupPrewarmResolution::Ready(prewarmed_client_session) => {
                 Some(*prewarmed_client_session)
             }

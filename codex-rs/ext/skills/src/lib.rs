@@ -18,7 +18,6 @@ mod render_observability;
 mod selection;
 mod sources;
 mod state;
-mod telemetry;
 mod warnings;
 mod world_state;
 mod world_state_catalogs;
@@ -40,7 +39,6 @@ pub use provider::SkillProvider;
 pub use sources::SkillProviderSource;
 pub use sources::SkillProviders;
 pub use state::SkillsThreadState;
-pub use telemetry::record_skill_turn_usage;
 
 /// Recognizes persisted explicit skill prompts without exposing their fragment implementation.
 pub fn is_skill_prompt_fragment(text: &str) -> bool {
