@@ -18,7 +18,6 @@ use crate::agent::api::AgentTurnOutcome;
 use crate::agent::control::AgentControlInit;
 use crate::agent::status::is_final;
 use crate::agents_md_manager::SessionInstructions;
-use crate::attestation::AttestationProvider;
 use crate::compact;
 use crate::compact::CompactedHistoryMetadata;
 use crate::context::ContextualUserFragment;
@@ -31,7 +30,6 @@ use crate::context::world_state::WorldStateSnapshot;
 use crate::context::world_state::WorldStateUpdate;
 use crate::context::world_state::WorldStateUpdateContent;
 use crate::context::world_state::split_prefix_updates;
-use crate::current_time::TimeProvider;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::image_preparation::ImagePreparationMode;
 use crate::image_preparation::ImageResizeNoticeMode;
@@ -78,10 +76,6 @@ use codex_protocol::ThreadId;
 use codex_protocol::config_types::AutoCompactTokenLimitScope;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::config_types::ServiceTier;
-use codex_protocol::config_types::WebSearchMode;
-use codex_protocol::dynamic_tools::DynamicToolResponse;
-use codex_protocol::dynamic_tools::DynamicToolSpec;
-use codex_protocol::items::EnteredReviewModeItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::items::UserMessageItem;
 use codex_protocol::models::BaseInstructions;
@@ -175,7 +169,6 @@ mod mcp_refresh;
 mod mcp_runtime;
 pub(crate) mod multi_agents;
 mod retained_context;
-mod review;
 mod rollout_budget;
 mod rollout_reconstruction;
 #[allow(clippy::module_inception)]
@@ -197,7 +190,6 @@ pub(crate) use self::input_queue::InputQueueActivity;
 pub(crate) use self::input_queue::TurnInput;
 pub(crate) use self::input_queue::TurnInputQueue;
 pub(crate) use self::input_queue::UserInputMetadata;
-use self::review::spawn_review_thread;
 use self::session::Session;
 use self::session::SessionConfiguration;
 use self::session::SessionSettingsCommit;
@@ -213,7 +205,6 @@ use crate::state::ReasoningEffortPin;
 use crate::state::SessionServices;
 use crate::state::SessionState;
 use crate::state::TaskKind;
-use crate::tasks::ReviewTask;
 use crate::turn_timing::TurnTimingState;
 use crate::unified_exec::UnifiedExecProcessManager;
 use codex_history::CodexHarnessMetadata;
@@ -307,7 +298,6 @@ pub(crate) struct SessionSpawnArgs {
     pub(crate) thread_source: Option<ThreadSource>,
     pub(crate) originator: String,
     pub(crate) agent_control: AgentControlInit,
-    pub(crate) dynamic_tools: Vec<DynamicToolSpec>,
     pub(crate) inherited_environments: Option<TurnEnvironmentSnapshot>,
     pub(crate) user_shell_override: Option<shell::Shell>,
     pub(crate) environment_selections: Vec<TurnEnvironmentSelection>,
@@ -316,8 +306,6 @@ pub(crate) struct SessionSpawnArgs {
     pub(crate) client_mcp_extensions: ClientMcpExtensions,
     pub(crate) reserved_thread_id: Option<ThreadId>,
     pub(crate) thread_store: Arc<ThreadStore>,
-    pub(crate) attestation_provider: Option<Arc<dyn AttestationProvider>>,
-    pub(crate) external_time_provider: Option<Arc<dyn TimeProvider>>,
     pub(crate) inherited_multi_agent_version: Option<MultiAgentVersion>,
     pub(crate) git_enrichment_policy: GitEnrichmentPolicy,
 }
@@ -386,7 +374,6 @@ impl Session {
             thread_source,
             originator,
             agent_control,
-            dynamic_tools,
             user_shell_override,
             inherited_environments,
             environment_selections,
@@ -395,8 +382,6 @@ impl Session {
             client_mcp_extensions,
             reserved_thread_id,
             thread_store,
-            attestation_provider,
-            external_time_provider,
             inherited_multi_agent_version,
             git_enrichment_policy,
         } = args;
@@ -481,7 +466,6 @@ impl Session {
             )?;
             token_budget::apply_model_defaults(Arc::make_mut(&mut config), &model_info);
         }
-        let configured_config = Arc::clone(&config);
         let multi_agent_version = config.multi_agent_version_override().or_else(|| {
             resolve_multi_agent_version(&conversation_history, inherited_multi_agent_version)
         });
@@ -493,12 +477,6 @@ impl Session {
             .or_else(|| conversation_history.get_base_instructions().map(|s| s.text))
             .unwrap_or_else(|| render_model_instructions(&model_info));
 
-        // Dynamic tools are defined at thread start and persisted in rollout session metadata.
-        let dynamic_tools = if dynamic_tools.is_empty() {
-            conversation_history.get_dynamic_tools().unwrap_or_default()
-        } else {
-            dynamic_tools
-        };
         // TODO (aibrahim): Consolidate config.model and config.model_reasoning_effort into config.collaboration_mode
         // to avoid extracting these fields separately and constructing CollaborationMode here.
         let persisted_collaboration_mode = match &conversation_history {
@@ -581,7 +559,6 @@ impl Session {
             parent_thread_id,
             thread_source,
             originator,
-            dynamic_tools,
             user_shell_override,
         };
         // Generate a unique ID for the lifetime of this session.
@@ -614,8 +591,6 @@ impl Session {
             environment_manager,
             inherited_environments,
             thread_store,
-            attestation_provider,
-            external_time_provider,
             multi_agent_version,
             git_enrichment_policy,
         ))
@@ -643,7 +618,7 @@ impl Session {
             .and_then(|startup| startup.session_teardown(thread_id));
         let session_for_loop = Arc::clone(&session);
         let session_loop_handle = tokio::spawn(Box::pin(async move {
-            submission_loop(session_for_loop, configured_config, rx_sub)
+            submission_loop(session_for_loop, rx_sub)
                 .instrument(info_span!("session_loop", thread_id = %thread_id))
                 .await;
             if let Some(tree_teardown) = tree_teardown {
@@ -1662,17 +1637,6 @@ impl Session {
         .await;
     }
 
-    async fn active_turn_context_and_cancellation_token(
-        &self,
-    ) -> Option<(Arc<TurnContext>, CancellationToken)> {
-        let active = self.active_turn.lock().await;
-        let task = active.as_ref()?.task.as_ref()?;
-        Some((
-            Arc::clone(&task.turn_context),
-            task.cancellation_token.child_token(),
-        ))
-    }
-
     #[expect(
         clippy::await_holding_invalid_type,
         reason = "active turn checks and turn state updates must remain atomic"
@@ -1737,31 +1701,6 @@ impl Session {
             }
             None => {
                 warn!("No pending user input found for sub_id: {sub_id}");
-            }
-        }
-    }
-
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "active turn checks and turn state updates must remain atomic"
-    )]
-    pub async fn notify_dynamic_tool_response(&self, call_id: &str, response: DynamicToolResponse) {
-        let entry = {
-            let mut active = self.active_turn.lock().await;
-            match active.as_mut() {
-                Some(at) => {
-                    let mut ts = at.turn_state.lock().await;
-                    ts.remove_pending_dynamic_tool(call_id)
-                }
-                None => None,
-            }
-        };
-        match entry {
-            Some(tx_response) => {
-                tx_response.send(response).ok();
-            }
-            None => {
-                warn!("No pending dynamic tool call found for call_id: {call_id}");
             }
         }
     }
@@ -2347,25 +2286,6 @@ impl Session {
         let world_state_item = WorldStateItem::full(world_state_baseline.clone().into_object());
         let compacted_item = {
             let mut state = self.state.lock().await;
-            // Goal edits are published outside the running task. Keep edits accepted after
-            // the compaction input snapshot, in their original order, after its replacement.
-            let replacement_goal_ids = crate::context::UserGoalUpdate::message_ids(
-                items.iter().map(|envelope| &envelope.item),
-            );
-            items.extend(
-                state
-                    .history
-                    .annotated_items()
-                    .iter()
-                    .filter(|envelope| {
-                        crate::context::UserGoalUpdate::message_text(&envelope.item).is_some()
-                            && envelope.item.id().is_some_and(|id| {
-                                !metadata.input_goal_ids.contains(id)
-                                    && !replacement_goal_ids.contains(id)
-                            })
-                    })
-                    .cloned(),
-            );
             let replacement_history = items.clone();
             state.replace_annotated_history(
                 items,
@@ -2769,7 +2689,6 @@ impl Session {
     ) {
         let turn_context = step_context.turn.as_ref();
         let history = self.clone_history().await;
-        let input_goal_ids = crate::context::UserGoalUpdate::message_ids(history.raw_items());
         let retained_client_items =
             crate::compact_remote_v2::truncate_retained_messages_for_remote_compaction(
                 history
@@ -2807,7 +2726,6 @@ impl Session {
             turn_context_item,
             world_state_snapshot,
             CompactedHistoryMetadata {
-                input_goal_ids,
                 message: String::new(),
                 window_number,
                 window_ids,

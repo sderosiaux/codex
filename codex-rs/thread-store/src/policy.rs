@@ -102,7 +102,6 @@ fn persisted_event_msg(
     match ev {
         EventMsg::ItemCompleted(event) => persisted_item_completed_event(ev, event, history_mode),
         EventMsg::TokenCount(_)
-        | EventMsg::ThreadGoalUpdated(_)
         | EventMsg::ThreadRolledBack(_)
         | EventMsg::TurnAborted(_)
         | EventMsg::TurnStarted(_)
@@ -115,8 +114,6 @@ fn persisted_event_msg(
         | EventMsg::AgentMessage(_)
         | EventMsg::AgentReasoning(_)
         | EventMsg::AgentReasoningRawContent(_)
-        | EventMsg::EnteredReviewMode(_)
-        | EventMsg::ExitedReviewMode(_)
         | EventMsg::PatchApplyEnd(_)
         | EventMsg::ContextCompacted(_)
         | EventMsg::McpToolCallEnd(_)
@@ -138,8 +135,6 @@ fn persisted_event_msg(
         | EventMsg::CollabWaitingEnd(_)
         | EventMsg::CollabCloseEnd(_)
         | EventMsg::CollabResumeEnd(_)
-        | EventMsg::DynamicToolCallRequest(_)
-        | EventMsg::DynamicToolCallResponse(_)
         | EventMsg::Warning(_)
         | EventMsg::AuthRecoveryStarted(_)
         | EventMsg::AuthRecoveryCompleted(_)

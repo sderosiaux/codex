@@ -13,10 +13,8 @@ use crate::agent::api::AgentConfigUpdate;
 use crate::agent::api::AgentControl;
 use crate::agent::control::AgentControlInit;
 use crate::agents_md_manager::SessionInstructions;
-use crate::attestation::AttestationProvider;
 use crate::codex_thread::CodexThread;
 use crate::config::Config;
-use crate::current_time::TimeProvider;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::environment_selection::default_thread_environment_selections;
 use crate::mcp::McpManager;
@@ -143,7 +141,6 @@ pub struct StartThreadOptions {
     pub history_mode: Option<ThreadHistoryMode>,
     pub session_source: Option<SessionSource>,
     pub thread_source: Option<ThreadSource>,
-    pub dynamic_tools: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
     pub metrics_service_name: Option<String>,
     pub environments: Option<Vec<TurnEnvironmentSelection>>,
     /// Existing environment bindings captured by an internal caller.
@@ -168,7 +165,6 @@ impl StartThreadOptions {
             history_mode: None,
             session_source: None,
             thread_source: None,
-            dynamic_tools: Vec::new(),
             metrics_service_name: None,
             environments: None,
             inherited_environments: None,
@@ -277,8 +273,6 @@ pub(crate) struct ThreadManagerState {
     extensions: Arc<ExtensionRegistry<Config>>,
     user_instructions_provider: Arc<dyn UserInstructionsProvider>,
     thread_store: Arc<ThreadStore>,
-    attestation_provider: Option<Arc<dyn AttestationProvider>>,
-    external_time_provider: Option<Arc<dyn TimeProvider>>,
     session_source: SessionSource,
     installation_id: String,
 }
@@ -309,8 +303,6 @@ impl ThreadManager {
         extensions: Arc<ExtensionRegistry<Config>>,
         user_instructions_provider: Arc<dyn UserInstructionsProvider>,
         installation_id: String,
-        attestation_provider: Option<Arc<dyn AttestationProvider>>,
-        external_time_provider: Option<Arc<dyn TimeProvider>>,
     ) -> Self {
         let restriction_product = session_source.restriction_product();
         let (thread_created_tx, _) = broadcast::channel(THREAD_CREATED_CHANNEL_CAPACITY);
@@ -336,8 +328,6 @@ impl ThreadManager {
                 extensions,
                 user_instructions_provider,
                 thread_store: Arc::new(ThreadStore::default()),
-                attestation_provider,
-                external_time_provider,
                 auth_manager,
                 session_source,
                 installation_id,
@@ -1001,7 +991,6 @@ impl ThreadManagerState {
             history_mode,
             session_source,
             thread_source,
-            dynamic_tools,
             metrics_service_name,
             environments: environment_selections,
             inherited_environments: captured_environments,
@@ -1171,7 +1160,6 @@ impl ThreadManagerState {
             thread_source: thread_source.clone(),
             originator,
             agent_control,
-            dynamic_tools,
             inherited_environments,
             user_shell_override,
             environment_selections,
@@ -1180,8 +1168,6 @@ impl ThreadManagerState {
             client_mcp_extensions,
             reserved_thread_id,
             thread_store: Arc::clone(&self.thread_store),
-            attestation_provider: self.attestation_provider.clone(),
-            external_time_provider: self.external_time_provider.clone(),
             inherited_multi_agent_version: multi_agent_version,
             git_enrichment_policy: GitEnrichmentPolicy::Fresh,
         })

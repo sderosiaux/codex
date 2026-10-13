@@ -225,7 +225,6 @@ async fn run_remote_compact_task_inner_impl(
         }
     };
     let RemoteCompactV2Attempt {
-        input_goal_ids,
         prompt_input,
         prompt_input_metadata,
         compaction_output,
@@ -261,7 +260,6 @@ async fn run_remote_compact_task_inner_impl(
         replacement_step_context.to_turn_context_item(),
         world_state_baseline,
         CompactedHistoryMetadata {
-            input_goal_ids,
             message: String::new(),
             window_number: new_window_number,
             window_ids: new_window_ids,

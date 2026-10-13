@@ -238,17 +238,6 @@ impl FunctionToolOutput {
         }
     }
 
-    pub fn from_content(
-        content: Vec<FunctionCallOutputContentItem>,
-        success: Option<bool>,
-    ) -> Self {
-        Self {
-            body: content,
-            success,
-            post_tool_use_response: None,
-        }
-    }
-
     pub fn into_text(self) -> String {
         function_call_output_content_items_to_text(&self.body).unwrap_or_default()
     }

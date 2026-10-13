@@ -21,10 +21,6 @@ use crate::config_types::CollaborationMode;
 use crate::config_types::ModeKind;
 use crate::config_types::Personality;
 use crate::config_types::ReasoningSummary as ReasoningSummaryConfig;
-use crate::dynamic_tools::DynamicToolCallOutputContentItem;
-use crate::dynamic_tools::DynamicToolCallRequest;
-use crate::dynamic_tools::DynamicToolResponse;
-use crate::dynamic_tools::DynamicToolSpec;
 use crate::error::Result as CodexResult;
 use crate::items::AgentMessageDelivery;
 use crate::items::AsyncUserInputQuestion;
@@ -282,15 +278,6 @@ pub enum Op {
         response: RequestUserInputResponse,
     },
 
-    /// Resolve a dynamic tool call request.
-    #[debug("DynamicToolResponse {{ id: {id:?}, success: {} }}", response.success)]
-    DynamicToolResponse {
-        /// Call id for the in-flight request.
-        id: String,
-        /// Tool output payload.
-        response: DynamicToolResponse,
-    },
-
     /// Request MCP servers to reinitialize and refresh cached tool lists.
     RefreshMcpServers,
 
@@ -305,33 +292,8 @@ pub enum Op {
     /// to generate a summary which will be returned as an AgentMessage event.
     Compact,
 
-    /// Request a code review from the agent.
-    #[debug(
-        "Review {{ target: {} }}",
-        match &review_request.target {
-            ReviewTarget::UncommittedChanges => "uncommitted_changes",
-            ReviewTarget::BaseBranch { .. } => "base_branch",
-            ReviewTarget::Commit { .. } => "commit",
-            ReviewTarget::Custom { .. } => "custom",
-        },
-    )]
-    Review { review_request: ReviewRequest },
-
     /// Request to shut down codex instance.
     Shutdown,
-
-    /// Execute a user-initiated one-off shell command (triggered by "!cmd").
-    ///
-    /// The command string is executed using the user's default shell and may
-    /// include shell syntax (pipes, redirects, etc.). Output is streamed via
-    /// `ExecCommand*` events and the UI regains control upon `TurnComplete`.
-    #[debug("RunUserShellCommand {{ timeout_ms: {timeout_ms:?} }}")]
-    RunUserShellCommand {
-        /// The raw command string after '!'
-        command: String,
-        /// Maximum execution time in milliseconds. Defaults to one hour.
-        timeout_ms: Option<u64>,
-    },
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, JsonSchema, TS)]
@@ -505,13 +467,10 @@ impl Op {
             Self::InterAgentCommunication { .. } => "inter_agent_communication",
             Self::ResolveElicitation { .. } => "resolve_elicitation",
             Self::UserInputAnswer { .. } => "user_input_answer",
-            Self::DynamicToolResponse { .. } => "dynamic_tool_response",
             Self::RefreshMcpServers => "refresh_mcp_servers",
             Self::ReloadUserConfig => "reload_user_config",
             Self::Compact => "compact",
-            Self::Review { .. } => "review",
             Self::Shutdown => "shutdown",
-            Self::RunUserShellCommand { .. } => "run_user_shell_command",
         }
     }
 }
@@ -600,9 +559,6 @@ pub enum EventMsg {
     /// Ack the client's configure message.
     SessionConfigured(SessionConfiguredEvent),
 
-    /// Updated long-running goal metadata for the thread.
-    ThreadGoalUpdated(ThreadGoalUpdatedEvent),
-
     /// A durable thread-scoped user-message queue changed.
     ThreadQueueChanged(ThreadQueueChangedEvent),
 
@@ -640,10 +596,6 @@ pub enum EventMsg {
 
     RequestUserInput(RequestUserInputEvent),
 
-    DynamicToolCallRequest(DynamicToolCallRequest),
-
-    DynamicToolCallResponse(DynamicToolCallResponseEvent),
-
     ElicitationRequest(ElicitationRequestEvent),
 
     /// An unanswered MCP responder was abandoned at its original unbounded source.
@@ -675,12 +627,6 @@ pub enum EventMsg {
 
     /// Notification that the agent is shutting down.
     ShutdownComplete,
-
-    /// Entered review mode.
-    EnteredReviewMode(EnteredReviewModeEvent),
-
-    /// Exited review mode with an optional final result to apply.
-    ExitedReviewMode(ExitedReviewModeEvent),
 
     RawResponseItem(RawResponseItemEvent),
     RawResponseCompleted(RawResponseCompletedEvent),
@@ -927,7 +873,6 @@ pub enum AgentStatus {
 #[serde(rename_all = "snake_case")]
 #[ts(rename_all = "snake_case")]
 pub enum NonSteerableTurnKind {
-    Review,
     Compact,
 }
 
@@ -1079,31 +1024,6 @@ pub struct ReasoningRawContentDeltaEvent {
     // load with default value so it's backward compatible with the old format.
     #[serde(default)]
     pub content_index: i64,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
-pub struct EnteredReviewModeEvent {
-    pub target: ReviewTarget,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub user_facing_hint: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub turn_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub item_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
-pub struct ExitedReviewModeEvent {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub turn_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub item_id: Option<String>,
-    pub review_output: Option<ReviewOutputEvent>,
 }
 
 // Individual event payload types matching each `EventMsg` variant.
@@ -1784,32 +1704,6 @@ pub struct McpToolCallEndEvent {
     pub result: Result<CallToolResult, String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS, PartialEq)]
-pub struct DynamicToolCallResponseEvent {
-    /// Identifier for the corresponding DynamicToolCallRequest.
-    pub call_id: String,
-    /// Turn ID that this dynamic tool call belongs to.
-    pub turn_id: String,
-    #[serde(default)]
-    pub completed_at_ms: i64,
-    /// Dynamic tool namespace, when one was provided.
-    #[serde(default)]
-    pub namespace: Option<String>,
-    /// Dynamic tool name.
-    pub tool: String,
-    /// Dynamic tool call arguments.
-    pub arguments: serde_json::Value,
-    /// Dynamic tool response content items.
-    pub content_items: Vec<DynamicToolCallOutputContentItem>,
-    /// Whether the tool call succeeded.
-    pub success: bool,
-    /// Optional error text when the tool call failed before producing a response.
-    pub error: Option<String>,
-    /// The duration of the dynamic tool call.
-    #[ts(type = "string")]
-    pub duration: Duration,
-}
-
 impl McpToolCallEndEvent {
     pub fn is_success(&self) -> bool {
         match &self.result {
@@ -1939,7 +1833,6 @@ impl FromStr for ThreadSource {
 #[serde(rename_all = "snake_case")]
 #[ts(rename_all = "snake_case")]
 pub enum SubAgentSource {
-    Review,
     Compact,
     ThreadSpawn {
         parent_thread_id: ThreadId,
@@ -2052,7 +1945,6 @@ impl SessionSource {
 impl fmt::Display for SubAgentSource {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            SubAgentSource::Review => f.write_str("review"),
             SubAgentSource::Compact => f.write_str("compact"),
             SubAgentSource::ThreadSpawn {
                 parent_thread_id,
@@ -2069,7 +1961,6 @@ impl fmt::Display for SubAgentSource {
 impl SubAgentSource {
     pub fn kind(&self) -> &str {
         match self {
-            SubAgentSource::Review => "review",
             SubAgentSource::Compact => "compact",
             SubAgentSource::ThreadSpawn { .. } => "thread_spawn",
             SubAgentSource::Other(other) => other,
@@ -2081,7 +1972,7 @@ impl SubAgentSource {
             SubAgentSource::ThreadSpawn {
                 parent_thread_id, ..
             } => Some(*parent_thread_id),
-            SubAgentSource::Review | SubAgentSource::Compact | SubAgentSource::Other(_) => None,
+            SubAgentSource::Compact | SubAgentSource::Other(_) => None,
         }
     }
 }
@@ -2177,12 +2068,6 @@ pub struct SessionMeta {
     /// but may be missing for older sessions. If not present, fall back to rendering the base_instructions
     /// from ModelsManager.
     pub base_instructions: Option<BaseInstructions>,
-    #[serde(
-        default,
-        deserialize_with = "crate::dynamic_tools::deserialize_dynamic_tool_specs",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub dynamic_tools: Option<Vec<DynamicToolSpec>>,
     #[serde(default)]
     pub history_mode: ThreadHistoryMode,
     /// Exclusive prefix of another paginated rollout inherited by this thread.
@@ -2224,7 +2109,6 @@ impl Default for SessionMeta {
             agent_path: None,
             model_provider: None,
             base_instructions: None,
-            dynamic_tools: None,
             history_mode: ThreadHistoryMode::default(),
             history_base: None,
             subagent_history_start_ordinal: None,
@@ -2386,93 +2270,6 @@ pub struct GitInfo {
     )]
     #[schemars(with = "Option<String>")]
     pub repository_url: Option<SanitizedGitUrl>,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
-#[serde(rename_all = "snake_case")]
-pub enum ReviewDelivery {
-    Inline,
-    Detached,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema, TS)]
-#[serde(tag = "type", rename_all = "camelCase")]
-#[ts(tag = "type")]
-pub enum ReviewTarget {
-    /// Review the working tree: staged, unstaged, and untracked files.
-    UncommittedChanges,
-
-    /// Review changes between the current branch and the given base branch.
-    #[serde(rename_all = "camelCase")]
-    #[ts(rename_all = "camelCase")]
-    BaseBranch { branch: String },
-
-    /// Review the changes introduced by a specific commit.
-    #[serde(rename_all = "camelCase")]
-    #[ts(rename_all = "camelCase")]
-    Commit {
-        sha: String,
-        /// Optional human-readable label (e.g., commit subject) for UIs.
-        title: Option<String>,
-    },
-
-    /// Arbitrary instructions provided by the user.
-    #[serde(rename_all = "camelCase")]
-    #[ts(rename_all = "camelCase")]
-    Custom { instructions: String },
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]
-/// Review request sent to the review session.
-pub struct ReviewRequest {
-    pub target: ReviewTarget,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub user_facing_hint: Option<String>,
-}
-
-/// Structured review result produced by a child review session.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]
-pub struct ReviewOutputEvent {
-    pub findings: Vec<ReviewFinding>,
-    pub overall_correctness: String,
-    pub overall_explanation: String,
-    pub overall_confidence_score: f32,
-}
-
-impl Default for ReviewOutputEvent {
-    fn default() -> Self {
-        Self {
-            findings: Vec::new(),
-            overall_correctness: String::default(),
-            overall_explanation: String::default(),
-            overall_confidence_score: 0.0,
-        }
-    }
-}
-
-/// A single review finding describing an observed issue or recommendation.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]
-pub struct ReviewFinding {
-    pub title: String,
-    pub body: String,
-    pub confidence_score: f32,
-    pub priority: i32,
-    pub code_location: ReviewCodeLocation,
-}
-
-/// Location of the code related to a review finding.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]
-pub struct ReviewCodeLocation {
-    pub absolute_file_path: PathBuf,
-    pub line_range: ReviewLineRange,
-}
-
-/// Inclusive line range in a file associated with the finding.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]
-pub struct ReviewLineRange {
-    pub start: u32,
-    pub end: u32,
 }
 
 #[derive(
@@ -2887,59 +2684,6 @@ pub struct SessionConfiguredEvent {
     pub reasoning_effort: Option<ReasoningEffortConfig>,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "protocol/")]
-pub enum ThreadGoalStatus {
-    Active,
-    Paused,
-    Blocked,
-    UsageLimited,
-    BudgetLimited,
-    Complete,
-}
-
-pub const MAX_THREAD_GOAL_OBJECTIVE_CHARS: usize = 4_000;
-
-pub fn validate_thread_goal_objective(value: &str) -> Result<(), String> {
-    if value.is_empty() {
-        return Err("goal objective must not be empty".to_string());
-    }
-    if value.chars().count() > MAX_THREAD_GOAL_OBJECTIVE_CHARS {
-        return Err(format!(
-            "goal objective must be at most {MAX_THREAD_GOAL_OBJECTIVE_CHARS} characters"
-        ));
-    }
-    Ok(())
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "protocol/")]
-pub struct ThreadGoal {
-    pub thread_id: ThreadId,
-    pub objective: String,
-    pub status: ThreadGoalStatus,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub token_budget: Option<i64>,
-    pub tokens_used: i64,
-    pub time_used_seconds: i64,
-    pub created_at: i64,
-    pub updated_at: i64,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "protocol/")]
-pub struct ThreadGoalUpdatedEvent {
-    pub thread_id: ThreadId,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub turn_id: Option<String>,
-    pub goal: ThreadGoal,
-}
-
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "protocol/")]
@@ -3002,7 +2746,6 @@ pub struct TurnAbortedEvent {
 pub enum TurnAbortReason {
     Interrupted,
     Replaced,
-    ReviewEnded,
     BudgetLimited,
 }
 

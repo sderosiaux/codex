@@ -24,9 +24,7 @@ mod subagent_notification;
 mod token_budget_context;
 mod turn_aborted;
 mod unsupported_media;
-mod user_goal;
 mod user_instructions;
-mod user_shell_command;
 pub(crate) mod world_state;
 
 pub(crate) use agent_message_board_notification::AgentMessageBoardNotification;
@@ -70,6 +68,4 @@ pub(crate) use token_budget_context::TokenBudgetRemainingContext;
 pub(crate) use token_budget_context::TokenBudgetReminder;
 pub(crate) use turn_aborted::TurnAborted;
 pub(crate) use unsupported_media::UnsupportedMedia;
-pub use user_goal::UserGoalUpdate;
 pub(crate) use user_instructions::UserInstructions;
-pub(crate) use user_shell_command::UserShellCommand;

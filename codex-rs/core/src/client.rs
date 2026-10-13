@@ -91,9 +91,6 @@ use tracing::trace;
 use tracing::warn;
 use uuid::Uuid;
 
-use crate::attestation::AttestationContext;
-use crate::attestation::AttestationProvider;
-use crate::attestation::X_OAI_ATTESTATION_HEADER;
 use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::client_common::ResponseStream;
@@ -148,8 +145,6 @@ struct ModelClientState {
     beta_features_header: Option<String>,
     concurrent_reasoning_summaries_enabled: bool,
     output_token_replay_enabled: bool,
-    include_attestation: bool,
-    attestation_provider: Option<Arc<dyn AttestationProvider>>,
     disable_websockets: AtomicBool,
     cached_websocket_session: StdMutex<WebsocketSession>,
 }
@@ -437,13 +432,11 @@ impl ModelClient {
         beta_features_header: Option<String>,
         concurrent_reasoning_summaries_enabled: bool,
         output_token_replay_enabled: bool,
-        attestation_provider: Option<Arc<dyn AttestationProvider>>,
         http_client_factory: HttpClientFactory,
         workspace_routing: WorkspaceRoutingContext,
         request_contributors: Vec<Arc<dyn codex_extension_api::ModelRequestContributor>>,
     ) -> Self {
         let model_provider = create_model_provider(provider_info, auth_manager);
-        let include_attestation = model_provider.supports_attestation();
         Self {
             state: Arc::new(ModelClientState {
                 thread_id,
@@ -459,8 +452,6 @@ impl ModelClient {
                 beta_features_header,
                 concurrent_reasoning_summaries_enabled,
                 output_token_replay_enabled,
-                include_attestation,
-                attestation_provider,
                 disable_websockets: AtomicBool::new(false),
                 cached_websocket_session: StdMutex::new(WebsocketSession::default()),
             }),
@@ -600,20 +591,6 @@ impl ModelClient {
             );
         }
         client_metadata
-    }
-
-    async fn generate_attestation_header_for(&self) -> Option<HeaderValue> {
-        if !self.state.include_attestation {
-            return None;
-        }
-
-        self.state
-            .attestation_provider
-            .as_ref()?
-            .header_for_request(AttestationContext {
-                thread_id: self.state.thread_id,
-            })
-            .await
     }
 
     fn build_reasoning(
@@ -944,9 +921,6 @@ impl ModelClient {
         if let Some(routing_hint) = &responses_metadata.routing_hint {
             headers.insert(X_CODEX_ROUTING_HINT_HEADER, routing_hint.clone());
         }
-        if let Some(header_value) = self.generate_attestation_header_for().await {
-            headers.insert(X_OAI_ATTESTATION_HEADER, header_value);
-        }
         headers.insert(
             OPENAI_BETA_HEADER,
             HeaderValue::from_static(RESPONSES_WEBSOCKETS_V2_BETA_HEADER_VALUE),
@@ -995,9 +969,6 @@ impl ModelClientSession {
                     self.client
                         .build_responses_compatibility_headers(responses_metadata),
                 );
-                if let Some(header_value) = self.client.generate_attestation_header_for().await {
-                    headers.insert(X_OAI_ATTESTATION_HEADER, header_value);
-                }
                 add_responses_lite_header(&mut headers, use_responses_lite);
                 headers
             },

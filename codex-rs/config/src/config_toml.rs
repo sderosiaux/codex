@@ -2,7 +2,6 @@
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
-use std::num::NonZeroU64;
 
 use crate::HooksToml;
 use crate::profile_toml::ConfigProfile;
@@ -106,8 +105,6 @@ of strings; comma-separated strings are not supported. Use \
 pub struct ConfigToml {
     /// Optional override of model selection.
     pub model: Option<String>,
-    /// Review model override used by the `/review` feature.
-    pub review_model: Option<String>,
 
     /// Provider to use from the model_providers map.
     pub model_provider: Option<String>,
@@ -308,9 +305,6 @@ pub struct ConfigToml {
     /// Agent-related settings (thread limits, etc.).
     pub agents: Option<AgentsToml>,
 
-    /// Goal-related settings.
-    pub goals: Option<GoalsToml>,
-
     /// User-level skill config entries keyed by SKILL.md path.
     pub skills: Option<SkillsConfig>,
 
@@ -390,13 +384,6 @@ where
         }
         Some(WebSearchToolConfigInput::Config(config)) => Some(config),
     })
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
-#[schemars(deny_unknown_fields)]
-pub struct GoalsToml {
-    /// Maximum token budget allowed for a goal and default budget for new goals.
-    pub max_goal_token_budget: Option<NonZeroU64>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]

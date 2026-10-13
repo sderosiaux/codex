@@ -3,7 +3,6 @@ use std::sync::Arc;
 use crate::agent::api::AgentControl;
 use crate::agent::control::LocalAgentRuntime;
 use crate::agents_md_manager::AgentsMdManager;
-use crate::attestation::AttestationProvider;
 use crate::client::ModelClient;
 use crate::current_time::TimeProvider;
 use crate::elicitation::ElicitationService;
@@ -23,7 +22,6 @@ use codex_models_manager::manager::SharedModelsManager;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_skills_extension::HostSkillsService;
 use codex_thread_store::LiveThread;
-use codex_thread_store::ThreadStore;
 use codex_utils_git_discovery::GitRootDiscovery;
 use tokio::runtime::Handle;
 
@@ -54,8 +52,6 @@ pub(crate) struct SessionServices {
     pub(crate) agent_control: Arc<dyn AgentControl>,
     pub(crate) local_agent_runtime: LocalAgentRuntime,
     pub(crate) live_thread: Option<LiveThread>,
-    pub(crate) thread_store: Arc<ThreadStore>,
-    pub(crate) attestation_provider: Option<Arc<dyn AttestationProvider>>,
     pub(crate) time_provider: Arc<dyn TimeProvider>,
     /// Session-scoped model client shared across turns.
     pub(crate) model_client: ModelClient,

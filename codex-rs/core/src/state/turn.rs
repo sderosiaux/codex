@@ -7,7 +7,6 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::AbortOnDropHandle;
 
-use codex_protocol::dynamic_tools::DynamicToolResponse;
 use codex_protocol::request_user_input::RequestUserInputResponse;
 use tokio::sync::oneshot;
 
@@ -60,7 +59,6 @@ impl Default for ActiveTurn {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TaskKind {
     Regular,
-    Review,
     Compact,
 }
 
@@ -79,7 +77,6 @@ pub(crate) struct RunningTask {
 #[derive(Default)]
 pub(crate) struct TurnState {
     pending_user_input: HashMap<String, oneshot::Sender<RequestUserInputResponse>>,
-    pending_dynamic_tools: HashMap<String, oneshot::Sender<DynamicToolResponse>>,
     pub(crate) pending_input: TurnInputQueue,
     mailbox_delivery_phase: MailboxDeliveryPhase,
     /// The last step captured for execution or selected from a speculative fallback.
@@ -90,7 +87,6 @@ pub(crate) struct TurnState {
 impl TurnState {
     pub(crate) fn clear_pending_waiters(&mut self) {
         self.pending_user_input.clear();
-        self.pending_dynamic_tools.clear();
     }
 
     pub(crate) fn insert_pending_user_input(
@@ -106,21 +102,6 @@ impl TurnState {
         key: &str,
     ) -> Option<oneshot::Sender<RequestUserInputResponse>> {
         self.pending_user_input.remove(key)
-    }
-
-    pub(crate) fn insert_pending_dynamic_tool(
-        &mut self,
-        key: String,
-        tx: oneshot::Sender<DynamicToolResponse>,
-    ) -> Option<oneshot::Sender<DynamicToolResponse>> {
-        self.pending_dynamic_tools.insert(key, tx)
-    }
-
-    pub(crate) fn remove_pending_dynamic_tool(
-        &mut self,
-        key: &str,
-    ) -> Option<oneshot::Sender<DynamicToolResponse>> {
-        self.pending_dynamic_tools.remove(key)
     }
 
     pub(crate) fn accept_mailbox_delivery_for_current_turn(&mut self) {

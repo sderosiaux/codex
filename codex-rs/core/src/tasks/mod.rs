@@ -1,8 +1,6 @@
 mod compact;
 mod lifecycle;
 mod regular;
-mod review;
-mod user_shell;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -45,10 +43,6 @@ use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::Result as CodexResult;
 pub(crate) use compact::CompactTask;
 pub(crate) use regular::RegularTask;
-pub(crate) use review::ReviewTask;
-pub(crate) use user_shell::UserShellCommandMode;
-pub(crate) use user_shell::UserShellCommandTask;
-pub(crate) use user_shell::execute_user_shell_command;
 
 pub(crate) const GRACEFULL_INTERRUPTION_TIMEOUT_MS: u64 = 100;
 

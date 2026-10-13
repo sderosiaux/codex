@@ -1,7 +1,6 @@
 //! Shared tool definitions and Responses API tool primitives that can live
 //! outside `codex-core`.
 
-mod dynamic_tool;
 mod function_call_error;
 mod functions_namespace_function_prefixes;
 mod image_detail;
@@ -22,7 +21,6 @@ mod tool_search;
 mod tool_spec;
 
 pub use codex_protocol::ToolName;
-pub use dynamic_tool::parse_dynamic_tool;
 pub use function_call_error::FunctionCallError;
 pub use functions_namespace_function_prefixes::FunctionsNamespaceFunctionPrefixes;
 pub use image_detail::can_request_original_image_detail;
@@ -49,7 +47,6 @@ pub use responses_api::ResponsesApiNamespaceTool;
 pub use responses_api::ResponsesApiTool;
 pub use responses_api::coalesce_loadable_tool_specs;
 pub use responses_api::default_namespace_description;
-pub use responses_api::dynamic_tool_to_responses_api_tool;
 pub use responses_api::mcp_tool_to_deferred_responses_api_tool;
 pub use responses_api::mcp_tool_to_responses_api_tool;
 pub use responses_api::tool_definition_to_responses_api_tool;

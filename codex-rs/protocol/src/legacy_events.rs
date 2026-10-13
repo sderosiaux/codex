@@ -1,5 +1,4 @@
 use crate::ThreadId;
-use crate::dynamic_tools::DynamicToolCallRequest;
 use crate::items::AgentMessageContent;
 use crate::items::AgentMessageItem;
 use crate::items::CollabAgentTool;
@@ -8,10 +7,6 @@ use crate::items::CollabAgentToolCallStatus;
 use crate::items::CommandExecutionItem;
 use crate::items::CommandExecutionStatus;
 use crate::items::ContextCompactionItem;
-use crate::items::DynamicToolCallItem;
-use crate::items::DynamicToolCallStatus;
-use crate::items::EnteredReviewModeItem;
-use crate::items::ExitedReviewModeItem;
 use crate::items::FileChangeItem;
 use crate::items::ImageGenerationItem;
 use crate::items::McpToolCallItem;
@@ -39,13 +34,10 @@ use crate::protocol::CollabResumeEndEvent;
 use crate::protocol::CollabWaitingBeginEvent;
 use crate::protocol::CollabWaitingEndEvent;
 use crate::protocol::ContextCompactedEvent;
-use crate::protocol::DynamicToolCallResponseEvent;
-use crate::protocol::EnteredReviewModeEvent;
 use crate::protocol::EventMsg;
 use crate::protocol::ExecCommandBeginEvent;
 use crate::protocol::ExecCommandEndEvent;
 use crate::protocol::ExecCommandStatus;
-use crate::protocol::ExitedReviewModeEvent;
 use crate::protocol::ImageGenerationBeginEvent;
 use crate::protocol::ImageGenerationEndEvent;
 use crate::protocol::ItemCompletedEvent;
@@ -137,27 +129,6 @@ impl AgentMessageItem {
     }
 }
 
-impl EnteredReviewModeItem {
-    pub fn as_legacy_event(&self, turn_id: String) -> EventMsg {
-        EventMsg::EnteredReviewMode(EnteredReviewModeEvent {
-            target: self.target.clone(),
-            user_facing_hint: Some(self.user_facing_hint.clone()),
-            turn_id: Some(turn_id),
-            item_id: Some(self.id.clone()),
-        })
-    }
-}
-
-impl ExitedReviewModeItem {
-    pub fn as_legacy_event(&self, turn_id: String) -> EventMsg {
-        EventMsg::ExitedReviewMode(ExitedReviewModeEvent {
-            turn_id: Some(turn_id),
-            item_id: Some(self.id.clone()),
-            review_output: self.review_output.clone(),
-        })
-    }
-}
-
 impl ReasoningItem {
     pub fn as_legacy_events(&self, show_raw_agent_reasoning: bool) -> Vec<EventMsg> {
         let mut events = Vec::new();
@@ -222,43 +193,6 @@ impl CommandExecutionItem {
             duration: self.duration.unwrap_or_default(),
             status,
         }))
-    }
-}
-
-impl DynamicToolCallItem {
-    pub(crate) fn as_legacy_request_event(&self, turn_id: String, started_at_ms: i64) -> EventMsg {
-        EventMsg::DynamicToolCallRequest(DynamicToolCallRequest {
-            call_id: self.id.clone(),
-            turn_id,
-            started_at_ms,
-            namespace: self.namespace.clone(),
-            tool: self.tool.clone(),
-            arguments: self.arguments.clone(),
-        })
-    }
-
-    pub(crate) fn as_legacy_response_event(
-        &self,
-        turn_id: String,
-        completed_at_ms: i64,
-    ) -> Option<EventMsg> {
-        if matches!(self.status, DynamicToolCallStatus::InProgress) {
-            return None;
-        }
-        Some(EventMsg::DynamicToolCallResponse(
-            DynamicToolCallResponseEvent {
-                call_id: self.id.clone(),
-                turn_id,
-                completed_at_ms,
-                namespace: self.namespace.clone(),
-                tool: self.tool.clone(),
-                arguments: self.arguments.clone(),
-                content_items: self.content_items.clone().unwrap_or_default(),
-                success: self.success.unwrap_or(false),
-                error: self.error.clone(),
-                duration: self.duration.unwrap_or_default(),
-            },
-        ))
     }
 }
 
@@ -536,9 +470,7 @@ impl TurnItem {
             TurnItem::FunctionCallOutput(_) | TurnItem::HookPrompt(_) => Vec::new(),
             TurnItem::AgentMessage(item) => item.as_legacy_events(),
             TurnItem::Plan(_) => Vec::new(),
-            TurnItem::CommandExecution(_)
-            | TurnItem::DynamicToolCall(_)
-            | TurnItem::CollabAgentToolCall(_) => Vec::new(),
+            TurnItem::CommandExecution(_) | TurnItem::CollabAgentToolCall(_) => Vec::new(),
             TurnItem::SubAgentActivity(_) => Vec::new(),
             TurnItem::WebSearch(item) => vec![item.as_legacy_event()],
             TurnItem::ImageView(item) => {
@@ -549,7 +481,6 @@ impl TurnItem {
             }
             TurnItem::Extension(_) => Vec::new(),
             TurnItem::ImageGeneration(item) => vec![item.as_legacy_event()],
-            TurnItem::EnteredReviewMode(_) | TurnItem::ExitedReviewMode(_) => Vec::new(),
             TurnItem::FileChange(item) => item
                 .as_legacy_end_event(String::new())
                 .into_iter()
@@ -581,9 +512,6 @@ impl HasLegacyEvent for ItemStartedEvent {
             TurnItem::CommandExecution(item) => {
                 vec![item.as_legacy_begin_event(self.turn_id.clone(), self.started_at_ms)]
             }
-            TurnItem::DynamicToolCall(item) => {
-                vec![item.as_legacy_request_event(self.turn_id.clone(), self.started_at_ms)]
-            }
             TurnItem::CollabAgentToolCall(item) => item
                 .as_legacy_begin_event(self.started_at_ms)
                 .into_iter()
@@ -608,22 +536,12 @@ impl HasLegacyEvent for ItemCompletedEvent {
                 .as_legacy_end_event(self.turn_id.clone(), self.completed_at_ms)
                 .into_iter()
                 .collect(),
-            TurnItem::DynamicToolCall(item) => item
-                .as_legacy_response_event(self.turn_id.clone(), self.completed_at_ms)
-                .into_iter()
-                .collect(),
             TurnItem::CollabAgentToolCall(item) => item
                 .as_legacy_end_event(self.completed_at_ms)
                 .into_iter()
                 .collect(),
             TurnItem::SubAgentActivity(item) => {
                 vec![item.as_legacy_event(self.completed_at_ms)]
-            }
-            TurnItem::EnteredReviewMode(item) => {
-                vec![item.as_legacy_event(self.turn_id.clone())]
-            }
-            TurnItem::ExitedReviewMode(item) => {
-                vec![item.as_legacy_event(self.turn_id.clone())]
             }
             _ => self.item.as_legacy_events(show_raw_agent_reasoning),
         }

@@ -8,13 +8,7 @@ use crate::session::session::Session;
 use crate::session::thread_settings;
 use crate::session::turn_input;
 
-use crate::config::Config;
-use crate::review_prompts::resolve_review_request;
-use crate::session::spawn_review_thread;
 use crate::tasks::CompactTask;
-use crate::tasks::UserShellCommandMode;
-use crate::tasks::UserShellCommandTask;
-use crate::tasks::execute_user_shell_command;
 use codex_protocol::error::CodexErr;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::ErrorEvent;
@@ -22,11 +16,9 @@ use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::Op;
-use codex_protocol::protocol::ReviewRequest;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::request_user_input::RequestUserInputResponse;
 
-use codex_protocol::dynamic_tools::DynamicToolResponse;
 use codex_protocol::mcp::RequestId as ProtocolRequestId;
 use codex_rmcp_client::ElicitationAction;
 use codex_rmcp_client::ElicitationResponse;
@@ -61,41 +53,6 @@ pub async fn inter_agent_communication(
         sess.maybe_start_turn_for_pending_work_with_sub_id(sub_id)
             .await;
     }
-}
-
-pub async fn run_user_shell_command(
-    sess: &Arc<Session>,
-    sub_id: String,
-    command: String,
-    timeout_ms: Option<u64>,
-) {
-    if let Some((turn_context, cancellation_token)) =
-        sess.active_turn_context_and_cancellation_token().await
-    {
-        let session = Arc::clone(sess);
-        tokio::spawn(async move {
-            execute_user_shell_command(
-                session,
-                turn_context,
-                command,
-                timeout_ms,
-                cancellation_token,
-                UserShellCommandMode::ActiveTurnAuxiliary,
-            )
-            .await;
-        });
-        return;
-    }
-
-    let turn_context = sess
-        .new_turn_with_default_settings(sub_id, Default::default())
-        .await;
-    sess.spawn_task(
-        turn_context,
-        Vec::new(),
-        UserShellCommandTask::new(command, timeout_ms),
-    )
-    .await;
 }
 
 pub async fn resolve_elicitation(
@@ -145,10 +102,6 @@ pub async fn request_user_input_response(
     response: RequestUserInputResponse,
 ) {
     sess.notify_user_input_response(&id, response).await;
-}
-
-pub async fn dynamic_tool_response(sess: &Arc<Session>, id: String, response: DynamicToolResponse) {
-    sess.notify_dynamic_tool_response(&id, response).await;
 }
 
 pub fn refresh_mcp_servers(sess: &Session) {
@@ -226,48 +179,7 @@ pub async fn shutdown(sess: &Arc<Session>, sub_id: String) -> bool {
     true
 }
 
-pub async fn review(
-    sess: &Arc<Session>,
-    config: &Arc<Config>,
-    sub_id: String,
-    review_request: ReviewRequest,
-) {
-    let turn_context = sess
-        .new_turn_with_default_settings(sub_id.clone(), Default::default())
-        .await;
-    sess.maybe_emit_model_warnings_for_turn(turn_context.as_ref())
-        .await;
-    #[allow(deprecated)]
-    match resolve_review_request(review_request, &turn_context.cwd) {
-        Ok(resolved) => {
-            spawn_review_thread(
-                Arc::clone(sess),
-                Arc::clone(config),
-                turn_context.clone(),
-                sub_id,
-                resolved,
-            )
-            .await;
-        }
-        Err(err) => {
-            let event = Event {
-                id: sub_id,
-                msg: EventMsg::Error(ErrorEvent {
-                    misalignment: None,
-                    message: err.to_string(),
-                    codex_error_info: Some(CodexErrorInfo::Other),
-                }),
-            };
-            sess.send_event(&turn_context, event.msg).await;
-        }
-    }
-}
-
-pub(super) async fn submission_loop(
-    sess: Arc<Session>,
-    config: Arc<Config>,
-    rx_sub: Receiver<Submission>,
-) {
+pub(super) async fn submission_loop(sess: Arc<Session>, rx_sub: Receiver<Submission>) {
     // Session shutdown and tree shutdown both use the existing teardown handler.
     let mut shutdown_received = false;
     let mut mailbox = sess.input_queue.mailbox_updates();
@@ -399,10 +311,6 @@ pub(super) async fn submission_loop(
                     request_user_input_response(&sess, id, response).await;
                     false
                 }
-                Op::DynamicToolResponse { id, response } => {
-                    dynamic_tool_response(&sess, id, response).await;
-                    false
-                }
                 Op::RefreshMcpServers => {
                     refresh_mcp_servers(&sess);
                     false
@@ -413,13 +321,6 @@ pub(super) async fn submission_loop(
                 }
                 Op::Compact => {
                     compact(&sess, sub.id.clone()).await;
-                    false
-                }
-                Op::RunUserShellCommand {
-                    command,
-                    timeout_ms,
-                } => {
-                    run_user_shell_command(&sess, sub.id.clone(), command, timeout_ms).await;
                     false
                 }
                 Op::ResolveElicitation {
@@ -434,10 +335,6 @@ pub(super) async fn submission_loop(
                     false
                 }
                 Op::Shutdown => shutdown(&sess, sub.id.clone()).await,
-                Op::Review { review_request } => {
-                    review(&sess, &config, sub.id.clone(), review_request).await;
-                    false
-                }
                 _ => false, // Ignore unknown ops; enum is non_exhaustive to allow extensions.
             }
         }

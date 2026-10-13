@@ -21,7 +21,6 @@ use codex_core_api::CodexThread;
 use codex_core_api::Config;
 use codex_core_api::ConfigBuilder;
 use codex_core_api::ConfigOverrides;
-use codex_core_api::DynamicToolResponse;
 use codex_core_api::EnvironmentManager;
 use codex_core_api::Event;
 use codex_core_api::EventMsg;
@@ -216,8 +215,6 @@ impl Host {
                 Arc::new(extensions.build()),
                 user_instructions_provider,
                 installation_id,
-                /*attestation_provider*/ None,
-                /*external_time_provider*/ None,
             )
         });
         Ok(Self { thread_manager })
@@ -337,19 +334,6 @@ async fn run_turn(
             EventMsg::RequestUserInput(request) => {
                 let op = prompter.answer_user_input(request).await;
                 thread.submit(op).await.context("answer user input")?;
-            }
-            EventMsg::DynamicToolCallRequest(request) => {
-                // No dynamic tools are registered by this host; answer so the turn can proceed.
-                thread
-                    .submit(Op::DynamicToolResponse {
-                        id: request.call_id,
-                        response: DynamicToolResponse {
-                            content_items: Vec::new(),
-                            success: false,
-                        },
-                    })
-                    .await
-                    .context("answer dynamic tool call")?;
             }
             _ => {}
         }

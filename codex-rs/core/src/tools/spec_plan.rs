@@ -6,7 +6,6 @@ use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::handlers::ApplyPatchHandler;
 use crate::tools::handlers::CurrentTimeHandler;
-use crate::tools::handlers::DynamicToolHandler;
 use crate::tools::handlers::ExecCommandHandler;
 use crate::tools::handlers::ExecCommandHandlerOptions;
 use crate::tools::handlers::GetContextRemainingHandler;
@@ -19,7 +18,6 @@ use crate::tools::handlers::RequestUserInputAsyncHandler;
 use crate::tools::handlers::RequestUserInputHandler;
 use crate::tools::handlers::SendMessageToUserAsyncHandler;
 use crate::tools::handlers::SleepHandler;
-use crate::tools::handlers::TestSyncHandler;
 use crate::tools::handlers::ToolSearchHandlerCache;
 use crate::tools::handlers::ViewImageHandler;
 use crate::tools::handlers::WriteStdinHandler;
@@ -57,8 +55,6 @@ use codex_prompts::ResolvedModelMessages;
 use codex_protocol::DEFAULT_FUNCTION_NAMESPACE;
 use codex_protocol::account::PlanType;
 use codex_protocol::config_types::WebSearchMode;
-use codex_protocol::dynamic_tools::DynamicToolNamespaceTool;
-use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::openai_models::ConfigShellToolType;
@@ -137,7 +133,6 @@ pub(crate) fn build_tool_router(
         extension_tool_executors(session, step_store),
         &mut registry,
     );
-    append_dynamic_tool_runtimes(&turn_context.dynamic_tools, &mut registry);
     let hosted_specs = hosted_model_tool_specs(
         turn_context,
         model_info,
@@ -737,15 +732,6 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
         registry.add(ApplyPatchHandler);
     }
 
-    if context
-        .model_info
-        .experimental_supported_tools
-        .iter()
-        .any(|tool| tool == "test_sync_tool")
-    {
-        registry.add(TestSyncHandler);
-    }
-
     if advertise_environment_tools && features.enabled(Feature::ViewImage) {
         registry.add(ViewImageHandler::new(ViewImageToolOptions {
             can_request_original_image_detail: can_request_original_image_detail(
@@ -884,39 +870,6 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
             registry
                 .add_with_exposure(WaitAgentHandler::new(context.wait_agent_timeouts), exposure);
             registry.add_with_exposure(CloseAgentHandler, exposure);
-        }
-    }
-}
-
-#[instrument(level = "trace", skip_all, fields(dynamic_tool_count = dynamic_tools.len()))]
-fn append_dynamic_tool_runtimes(dynamic_tools: &[DynamicToolSpec], registry: &mut ToolRegistry) {
-    for spec in dynamic_tools {
-        match spec {
-            DynamicToolSpec::Function(tool) => {
-                let Some(handler) = DynamicToolHandler::new(tool) else {
-                    tracing::error!(
-                        "Failed to convert dynamic tool {:?} to OpenAI tool",
-                        tool.name
-                    );
-                    continue;
-                };
-                registry.register_external(Arc::new(handler));
-            }
-            DynamicToolSpec::Namespace(namespace) => {
-                for tool in &namespace.tools {
-                    let DynamicToolNamespaceTool::Function(tool) = tool;
-                    let Some(handler) = DynamicToolHandler::new_in_namespace(namespace, tool)
-                    else {
-                        tracing::error!(
-                            "Failed to convert dynamic tool {:?}.{:?} to OpenAI tool",
-                            namespace.name,
-                            tool.name
-                        );
-                        continue;
-                    };
-                    registry.register_external(Arc::new(handler));
-                }
-            }
         }
     }
 }

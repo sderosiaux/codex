@@ -138,8 +138,6 @@ pub enum Feature {
     MultiAgentV2,
     /// Keep spawn model choices in append-only context instead of tool descriptions.
     ModelCatalogInContext,
-    /// Inherit client-defined dynamic tools in fresh V2 subagents.
-    MultiAgentV2DynamicTools,
     /// Use each subagent model's default context window and auto-compaction threshold.
     SubagentDefaultContextLimits,
     /// Keep sampling through reasoning and commentary boundaries when agent mail arrives.
@@ -181,8 +179,6 @@ pub enum Feature {
     DefaultModeRequestUserInput,
     /// Allow root agents to send async user messages without model catalog support.
     SendMessageToUserAsync,
-    /// Enable persisted thread goals and automatic goal continuation.
-    Goals,
     /// Add current context-window metadata to model-visible context.
     TokenBudget,
     /// Enables experimental context management.
@@ -794,12 +790,6 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: false,
     },
     FeatureSpec {
-        id: Feature::MultiAgentV2DynamicTools,
-        key: "multi_agent_v2_dynamic_tools",
-        stage: Stage::UnderDevelopment,
-        default_enabled: false,
-    },
-    FeatureSpec {
         id: Feature::SubagentDefaultContextLimits,
         key: "subagent_default_context_limits",
         stage: Stage::UnderDevelopment,
@@ -912,12 +902,6 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "send_message_to_user_async",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
-    },
-    FeatureSpec {
-        id: Feature::Goals,
-        key: "goals",
-        stage: Stage::Stable,
-        default_enabled: true,
     },
     FeatureSpec {
         id: Feature::TokenBudget,

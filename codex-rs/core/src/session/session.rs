@@ -114,7 +114,6 @@ pub(crate) struct SessionConfiguration {
     pub(super) thread_source: Option<ThreadSource>,
     /// Effective originator used for this thread's Responses requests and analytics events.
     pub(super) originator: String,
-    pub(super) dynamic_tools: Vec<DynamicToolSpec>,
     pub(super) user_shell_override: Option<shell::Shell>,
 }
 
@@ -279,11 +278,6 @@ impl Session {
         self.services.agent_control.identity()
     }
 
-    pub(crate) async fn dynamic_tools(&self) -> Vec<DynamicToolSpec> {
-        let state = self.state.lock().await;
-        state.session_configuration.dynamic_tools.clone()
-    }
-
     pub(crate) async fn responses_metadata(
         &self,
         step_context: &StepContext,
@@ -390,8 +384,6 @@ impl Session {
         environment_manager: Arc<EnvironmentManager>,
         inherited_environments: Option<TurnEnvironmentSnapshot>,
         thread_store: Arc<ThreadStore>,
-        attestation_provider: Option<Arc<dyn AttestationProvider>>,
-        external_time_provider: Option<Arc<dyn TimeProvider>>,
         multi_agent_version: Option<MultiAgentVersion>,
         git_enrichment_policy: GitEnrichmentPolicy,
     ) -> anyhow::Result<Arc<Self>> {
@@ -559,10 +551,8 @@ impl Session {
                 (control, runtime)
             }
         };
-        let time_provider = crate::current_time::resolve_time_provider(
-            config.current_time_reminder.as_ref(),
-            external_time_provider,
-        )?;
+        let time_provider =
+            crate::current_time::resolve_time_provider(config.current_time_reminder.as_ref())?;
         thread_extension_init.insert(codex_extension_api::ThreadOriginator(
             session_configuration.originator.clone(),
         ));
@@ -603,7 +593,6 @@ impl Session {
                             text: session_configuration.base_instructions.clone(),
                             provenance: base_instructions_provenance.clone(),
                         },
-                        dynamic_tools: session_configuration.dynamic_tools.clone(),
                         multi_agent_version: initial_multi_agent_version,
                         history_mode: session_configuration.history_mode,
                         subagent_history_start_ordinal: None,
@@ -837,8 +826,6 @@ impl Session {
                 local_agent_runtime,
                 agent_control,
                 live_thread: live_thread.clone(),
-                thread_store: Arc::clone(&thread_store),
-                attestation_provider: attestation_provider.clone(),
                 time_provider,
                 model_client: ModelClient::new(
                     Some(Arc::clone(&auth_manager)),
@@ -857,7 +844,6 @@ impl Session {
                         .features
                         .enabled(Feature::ConcurrentReasoningSummaries),
                     config.features.enabled(Feature::OutputTokenReplay),
-                    attestation_provider,
                     config.http_client_factory(),
                     workspace_routing.as_ref().clone(),
                     extensions.model_request_contributors().to_vec(),

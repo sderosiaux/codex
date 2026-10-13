@@ -447,7 +447,6 @@ impl CodexResponsesMetadata {
 pub(crate) fn subagent_header_value(session_source: &SessionSource) -> Option<String> {
     match session_source {
         SessionSource::SubAgent(subagent_source) => match subagent_source {
-            SubAgentSource::Review => Some("review".to_string()),
             SubAgentSource::Compact => Some("compact".to_string()),
             SubAgentSource::ThreadSpawn { .. } => Some("collab_spawn".to_string()),
             SubAgentSource::Other(label) => Some(label.clone()),

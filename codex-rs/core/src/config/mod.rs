@@ -181,9 +181,6 @@ pub struct Config {
     /// `default` means the user explicitly selected standard routing.
     pub service_tier: Option<String>,
 
-    /// Model used specifically for review sessions.
-    pub review_model: Option<String>,
-
     /// Size of the context window for the model, in tokens.
     pub model_context_window: Option<i64>,
 
@@ -360,9 +357,6 @@ pub struct Config {
 
     /// User-defined role declarations keyed by role name.
     pub agent_roles: BTreeMap<String, AgentRoleConfig>,
-
-    /// Maximum token budget allowed for a goal and default budget for new goals.
-    pub max_goal_token_budget: Option<i64>,
 
     /// Directory containing all Codex state (defaults to `~/.codex` but can be
     /// overridden by the `CODEX_HOME` environment variable).
@@ -1319,7 +1313,6 @@ fn is_session_layer(source: &ConfigLayerSource) -> bool {
 #[derive(Default, Debug, Clone)]
 pub struct ConfigOverrides {
     pub model: Option<String>,
-    pub review_model: Option<String>,
     pub cwd: Option<PathBuf>,
     pub model_provider: Option<String>,
     pub service_tier: Option<Option<String>>,
@@ -1811,7 +1804,6 @@ impl Config {
         // Destructure ConfigOverrides fully to ensure all overrides are applied.
         let ConfigOverrides {
             model,
-            review_model: override_review_model,
             cwd,
             model_provider,
             service_tier: service_tier_override,
@@ -2145,7 +2137,6 @@ impl Config {
         )
         .await?;
         let compact_prompt = compact_prompt.or(file_compact_prompt);
-        let review_model = override_review_model.or(cfg.review_model);
 
         let model_catalog = load_model_catalog(cfg.model_catalog_json.clone())?;
 
@@ -2157,7 +2148,6 @@ impl Config {
         let config = Self {
             model,
             service_tier,
-            review_model,
             model_context_window: cfg.model_context_window,
             model_auto_compact_token_limit: cfg.model_auto_compact_token_limit,
             model_auto_compact_token_limit_scope: cfg
@@ -2228,19 +2218,6 @@ impl Config {
             agent_default_subagent_reasoning_effort,
             agent_max_depth,
             agent_roles,
-            max_goal_token_budget: cfg
-                .goals
-                .as_ref()
-                .and_then(|goals| goals.max_goal_token_budget)
-                .map(|max_goal_token_budget| {
-                    i64::try_from(max_goal_token_budget.get()).map_err(|_| {
-                        std::io::Error::new(
-                            std::io::ErrorKind::InvalidInput,
-                            "goals.max_goal_token_budget exceeds the maximum supported token budget",
-                        )
-                    })
-                })
-                .transpose()?,
             agent_interrupt_message_enabled,
             codex_home,
             log_dir,

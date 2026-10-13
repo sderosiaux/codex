@@ -425,21 +425,7 @@ async fn start_if_idle(
     }
 
     let _admission = session.services.extensions.admit_turn_start();
-    // A one-shot review delegate completes its already-running parent's work.
-    // Its explicit input carries parent lineage; automatic starts do not qualify.
-    if _admission.is_none()
-        && !(kind == TurnStartKind::User
-            && start.parent_turn_id.is_some()
-            && matches!(
-                session
-                    .state
-                    .lock()
-                    .await
-                    .session_configuration
-                    .session_source,
-                SessionSource::SubAgent(SubAgentSource::Review)
-            ))
-    {
+    if _admission.is_none() {
         return Ok(TurnInputSubmission::NotSubmitted {
             reason: NotSubmittedReason::ServerDraining,
         });
@@ -685,11 +671,6 @@ impl Session {
 
         match active_task.kind {
             crate::state::TaskKind::Regular => {}
-            crate::state::TaskKind::Review => {
-                return Err(NotSubmittedReason::ActiveTurnNotSteerable {
-                    turn_kind: NonSteerableTurnKind::Review,
-                });
-            }
             crate::state::TaskKind::Compact => {
                 return Err(NotSubmittedReason::ActiveTurnNotSteerable {
                     turn_kind: NonSteerableTurnKind::Compact,

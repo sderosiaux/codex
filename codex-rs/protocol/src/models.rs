@@ -1409,27 +1409,6 @@ pub fn function_call_output_content_items_to_text(
     }
 }
 
-impl From<crate::dynamic_tools::DynamicToolCallOutputContentItem>
-    for FunctionCallOutputContentItem
-{
-    fn from(item: crate::dynamic_tools::DynamicToolCallOutputContentItem) -> Self {
-        match item {
-            crate::dynamic_tools::DynamicToolCallOutputContentItem::InputText { text } => {
-                Self::InputText { text }
-            }
-            crate::dynamic_tools::DynamicToolCallOutputContentItem::InputImage { image_url } => {
-                Self::InputImage {
-                    image: ImageReference::Inline { image_url },
-                    detail: Some(DEFAULT_IMAGE_DETAIL),
-                }
-            }
-            crate::dynamic_tools::DynamicToolCallOutputContentItem::InputAudio { audio_url } => {
-                Self::InputAudio { audio_url }
-            }
-        }
-    }
-}
-
 /// The payload we send back to OpenAI when reporting a tool call result.
 ///
 /// `body` serializes directly as the wire value for `function_call_output.output`.

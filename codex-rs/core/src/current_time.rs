@@ -42,14 +42,11 @@ impl TimeProvider for SystemTimeProvider {
 
 pub(crate) fn resolve_time_provider(
     config: Option<&CurrentTimeReminderConfig>,
-    external_provider: Option<Arc<dyn TimeProvider>>,
 ) -> Result<Arc<dyn TimeProvider>> {
     match config.map(|config| config.clock_source).unwrap_or_default() {
         CurrentTimeSource::System => Ok(Arc::new(SystemTimeProvider)),
-        CurrentTimeSource::External => external_provider.ok_or_else(|| {
-            anyhow!(
-                "features.current_time_reminder.clock_source is external, but no external current-time provider is available"
-            )
-        }),
+        CurrentTimeSource::External => Err(anyhow!(
+            "features.current_time_reminder.clock_source is external, but this build has no external current-time provider"
+        )),
     }
 }

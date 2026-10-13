@@ -1,7 +1,6 @@
 use crate::AgentPath;
 use crate::ResponseItemId;
 use crate::ThreadId;
-use crate::dynamic_tools::DynamicToolCallOutputContentItem;
 use crate::mcp::CallToolResult;
 use crate::models::ContentItem;
 use crate::models::FunctionCallOutputBody;
@@ -18,8 +17,6 @@ use crate::protocol::ExecCommandSource;
 use crate::protocol::ExecCommandStatus;
 use crate::protocol::FileChange;
 use crate::protocol::PatchApplyStatus;
-use crate::protocol::ReviewOutputEvent;
-use crate::protocol::ReviewTarget;
 use crate::protocol::SubAgentActivityKind;
 use crate::user_input::ByteRange;
 use crate::user_input::TextElement;
@@ -50,7 +47,6 @@ pub enum TurnItem {
     Plan(PlanItem),
     Reasoning(ReasoningItem),
     CommandExecution(CommandExecutionItem),
-    DynamicToolCall(DynamicToolCallItem),
     CollabAgentToolCall(CollabAgentToolCallItem),
     SubAgentActivity(SubAgentActivityItem),
     /// Hosted Responses API web-search item handled directly by core.
@@ -69,8 +65,6 @@ pub enum TurnItem {
     /// This remains separate from [`Self::Extension`] because core still owns
     /// hosted image persistence and legacy-event fanout.
     ImageGeneration(ImageGenerationItem),
-    EnteredReviewMode(EnteredReviewModeItem),
-    ExitedReviewMode(ExitedReviewModeItem),
     FileChange(FileChangeItem),
     McpToolCall(McpToolCallItem),
     ContextCompaction(ContextCompactionItem),
@@ -166,19 +160,6 @@ pub struct AgentMessageItem {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema)]
-pub struct EnteredReviewModeItem {
-    pub id: String,
-    pub target: ReviewTarget,
-    pub user_facing_hint: String,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema)]
-pub struct ExitedReviewModeItem {
-    pub id: String,
-    pub review_output: Option<ReviewOutputEvent>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema)]
 pub struct PlanItem {
     pub id: String,
     pub text: String,
@@ -242,37 +223,6 @@ pub struct CommandExecutionItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub exit_code: Option<i32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(type = "string", optional)]
-    pub duration: Option<Duration>,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum DynamicToolCallStatus {
-    InProgress,
-    Completed,
-    Failed,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq)]
-pub struct DynamicToolCallItem {
-    pub id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub namespace: Option<String>,
-    pub tool: String,
-    pub arguments: serde_json::Value,
-    pub status: DynamicToolCallStatus,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub content_items: Option<Vec<DynamicToolCallOutputContentItem>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub success: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(type = "string", optional)]
     pub duration: Option<Duration>,
@@ -698,15 +648,12 @@ impl TurnItem {
             TurnItem::Plan(item) => item.id.clone(),
             TurnItem::Reasoning(item) => item.id.clone(),
             TurnItem::CommandExecution(item) => item.id.clone(),
-            TurnItem::DynamicToolCall(item) => item.id.clone(),
             TurnItem::CollabAgentToolCall(item) => item.id.clone(),
             TurnItem::SubAgentActivity(item) => item.id.clone(),
             TurnItem::WebSearch(item) => item.id.clone(),
             TurnItem::ImageView(item) => item.id.clone(),
             TurnItem::Extension(item) => item.id().to_string(),
             TurnItem::ImageGeneration(item) => item.id.clone(),
-            TurnItem::EnteredReviewMode(item) => item.id.clone(),
-            TurnItem::ExitedReviewMode(item) => item.id.clone(),
             TurnItem::FileChange(item) => item.id.clone(),
             TurnItem::McpToolCall(item) => item.id.clone(),
             TurnItem::ContextCompaction(item) => item.id.clone(),

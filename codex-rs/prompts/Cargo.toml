@@ -14,11 +14,7 @@ test = false
 workspace = true
 
 [dependencies]
-anyhow = { workspace = true }
 codex-collaboration-mode-templates = { workspace = true }
 codex-context-fragments = { workspace = true }
-codex-git-utils = { workspace = true }
 codex-protocol = { workspace = true }
-codex-utils-absolute-path = { workspace = true }
-codex-utils-template = { workspace = true }
 tracing = { workspace = true }

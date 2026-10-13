@@ -51,7 +51,6 @@ impl ThreadStore {
             thread_source: params.thread_source.clone(),
             model_provider: Some(params.model_provider.clone()),
             base_instructions: Some(params.base_instructions.clone()),
-            dynamic_tools: (!params.dynamic_tools.is_empty()).then(|| params.dynamic_tools.clone()),
             history_mode: params.history_mode,
             subagent_history_start_ordinal: params.subagent_history_start_ordinal,
             multi_agent_version: params.multi_agent_version,

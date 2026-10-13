@@ -6,7 +6,6 @@
 use std::sync::Arc;
 
 use super::ContextManager;
-use crate::context::UserGoalUpdate;
 use codex_history::CodexHarnessMetadata;
 use codex_history::RetainedContext;
 use codex_history::RetainedInputSource;
@@ -122,10 +121,7 @@ impl ContextManager {
                         .and_then(|metadata| metadata.content_item_kinds.as_ref())
                         .is_some_and(|kinds| {
                             kinds.len() == content.len()
-                                && kinds.iter().all(|kind| {
-                                    kind.0.starts_with("user.")
-                                        && kind.0 != UserGoalUpdate::OMITTED_OBJECTIVE_KIND
-                                })
+                                && kinds.iter().all(|kind| kind.0.starts_with("user."))
                         }));
             complete &= metadata
                 .and_then(|metadata| metadata.retained_source.as_ref())

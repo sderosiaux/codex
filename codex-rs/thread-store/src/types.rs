@@ -4,7 +4,6 @@ use std::sync::Arc;
 use codex_history::RolloutItem;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
-use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::MultiAgentVersion;
@@ -26,7 +25,6 @@ pub struct CreateThreadParams {
     pub thread_source: Option<ThreadSource>,
     pub originator: String,
     pub base_instructions: BaseInstructions,
-    pub dynamic_tools: Vec<DynamicToolSpec>,
     pub multi_agent_version: Option<MultiAgentVersion>,
     pub history_mode: ThreadHistoryMode,
     /// First item ordinal owned by a sub-agent whose inherited prefix was copied in.

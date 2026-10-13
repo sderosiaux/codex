@@ -179,7 +179,6 @@ pub struct TurnContext {
     pub(crate) multi_agent_version: MultiAgentVersion,
     pub(crate) available_models: Vec<ModelPreset>,
     pub(crate) final_output_json_schema: Option<Value>,
-    pub(crate) dynamic_tools: Vec<DynamicToolSpec>,
     pub(crate) turn_metadata_state: Arc<TurnMetadataState>,
     pub(crate) extension_data: Arc<codex_extension_api::ExtensionData>,
     pub(crate) turn_timing_state: Arc<TurnTimingState>,
@@ -212,53 +211,6 @@ impl TurnContext {
         self.turn_metadata_state
             .root_turn_id()
             .unwrap_or_else(|| self.sub_id.clone())
-    }
-
-    /// Builds a review turn with fresh turn-local state.
-    pub(super) fn for_review(
-        &self,
-        sub_id: String,
-        config: Arc<Config>,
-        step_settings: Arc<ResolvedStepSettings>,
-        available_models: Vec<ModelPreset>,
-        turn_metadata_state: Arc<TurnMetadataState>,
-    ) -> Self {
-        let extension_data = Arc::new(codex_extension_api::ExtensionData::new(sub_id.clone()));
-        extension_data.insert(self.skills_snapshot().as_ref().clone());
-
-        Self {
-            sub_id,
-            configured_token_budget: config.token_budget.clone(),
-            use_model_token_budget_defaults: config.features.enabled(Feature::TokenBudget)
-                && !has_explicit_settings(&config),
-            config,
-            auth_manager: self.auth_manager.clone(),
-            initial_settings: Arc::clone(&step_settings),
-            next_step_settings: ArcSwap::from(step_settings),
-            provider: self.provider.clone(),
-            session_source: self.session_source.clone(),
-            history_mode: self.history_mode,
-            parent_thread_id: self.parent_thread_id,
-            originator: self.originator.clone(),
-            initial_environments: self.initial_environments.clone(),
-            available_models,
-            current_date: self.current_date.clone(),
-            timezone: self.timezone.clone(),
-            app_server_client_name: self.app_server_client_name.clone(),
-            developer_instructions: None,
-            multi_agent_version: MultiAgentVersion::Disabled,
-            #[allow(deprecated)]
-            cwd: self.cwd.clone(),
-            final_output_json_schema: None,
-            dynamic_tools: self.dynamic_tools.clone(),
-            turn_metadata_state,
-            extension_data,
-            turn_timing_state: Arc::new(TurnTimingState::default()),
-            terminal_error: Arc::new(Mutex::new(None)),
-            server_model_warning_emitted: AtomicBool::new(false),
-            model_verification_emitted: AtomicBool::new(false),
-            cyber_access_program: None,
-        }
     }
 
     pub(crate) fn attribution(&self) -> codex_history::TurnAttribution {
@@ -408,7 +360,6 @@ impl TurnContext {
             multi_agent_version: self.multi_agent_version,
             available_models,
             final_output_json_schema: self.final_output_json_schema.clone(),
-            dynamic_tools: self.dynamic_tools.clone(),
             turn_metadata_state: self.turn_metadata_state.clone(),
             extension_data: Arc::clone(&self.extension_data),
             turn_timing_state: Arc::clone(&self.turn_timing_state),
@@ -583,7 +534,6 @@ impl Session {
             multi_agent_version,
             available_models,
             final_output_json_schema: None,
-            dynamic_tools: session_configuration.dynamic_tools.clone(),
             turn_metadata_state,
             extension_data,
             turn_timing_state: Arc::new(TurnTimingState::default()),

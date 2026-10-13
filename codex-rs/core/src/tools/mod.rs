@@ -21,7 +21,6 @@ use std::borrow::Cow;
 use codex_protocol::exec_output::ExecToolCallOutput;
 use codex_tools::ToolName;
 use codex_utils_output_truncation::TruncationPolicy;
-use codex_utils_output_truncation::formatted_truncate_text;
 use codex_utils_output_truncation::truncate_text;
 pub(crate) use executed_tool_calls::ExecutedToolCalls;
 pub(crate) use multi_agent_tool::MULTI_AGENT_V2_NAMESPACE_DESCRIPTION;
@@ -73,16 +72,6 @@ pub fn format_exec_output_for_model(
     sections.push(formatted_output);
 
     sections.join("\n")
-}
-
-pub fn format_exec_output_str(
-    exec_output: &ExecToolCallOutput,
-    truncation_policy: TruncationPolicy,
-) -> String {
-    let content = build_content_with_timeout(exec_output);
-
-    // Truncate for model consumption before serialization.
-    formatted_truncate_text(&content, truncation_policy)
 }
 
 /// Extracts exec output content and prepends a timeout message if the command timed out.

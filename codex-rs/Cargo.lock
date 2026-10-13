@@ -1024,21 +1024,14 @@ name = "codex-core-api"
 version = "0.0.0"
 dependencies = [
  "codex-arg0",
- "codex-config",
  "codex-core",
  "codex-exec-server",
  "codex-extension-api",
- "codex-features",
- "codex-history",
  "codex-home",
- "codex-http-client",
  "codex-image-generation-extension",
  "codex-login",
- "codex-model-provider-info",
- "codex-models-manager",
  "codex-protocol",
  "codex-skills-extension",
- "codex-utils-absolute-path",
  "codex-web-search-extension",
 ]
 
@@ -1375,13 +1368,9 @@ dependencies = [
 name = "codex-prompts"
 version = "0.0.0"
 dependencies = [
- "anyhow",
  "codex-collaboration-mode-templates",
  "codex-context-fragments",
- "codex-git-utils",
  "codex-protocol",
- "codex-utils-absolute-path",
- "codex-utils-template",
  "tracing",
 ]
 

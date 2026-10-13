@@ -201,9 +201,6 @@
             "fast_mode": {
               "type": "boolean"
             },
-            "goals": {
-              "type": "boolean"
-            },
             "hooks": {
               "type": "boolean"
             },
@@ -239,9 +236,6 @@
             },
             "multi_agent_v2": {
               "$ref": "#/definitions/FeatureToml_for_MultiAgentV2ConfigToml"
-            },
-            "multi_agent_v2_dynamic_tools": {
-              "type": "boolean"
             },
             "non_prefixed_mcp_tool_names": {
               "$ref": "#/definitions/FeatureToml_for_NonPrefixedMcpToolNamesConfigToml"
@@ -595,18 +589,6 @@
         "ignore_large_untracked_files": {
           "description": "Legacy no-op setting retained for compatibility.",
           "format": "int64",
-          "type": "integer"
-        }
-      },
-      "type": "object"
-    },
-    "GoalsToml": {
-      "additionalProperties": false,
-      "properties": {
-        "max_goal_token_budget": {
-          "description": "Maximum token budget allowed for a goal and default budget for new goals.",
-          "format": "uint64",
-          "minimum": 1.0,
           "type": "integer"
         }
       },
@@ -1962,9 +1944,6 @@
         "fast_mode": {
           "type": "boolean"
         },
-        "goals": {
-          "type": "boolean"
-        },
         "hooks": {
           "type": "boolean"
         },
@@ -2000,9 +1979,6 @@
         },
         "multi_agent_v2": {
           "$ref": "#/definitions/FeatureToml_for_MultiAgentV2ConfigToml"
-        },
-        "multi_agent_v2_dynamic_tools": {
-          "type": "boolean"
         },
         "non_prefixed_mcp_tool_names": {
           "$ref": "#/definitions/FeatureToml_for_NonPrefixedMcpToolNamesConfigToml"
@@ -2138,14 +2114,6 @@
       ],
       "default": null,
       "description": "Compatibility-only settings retained so legacy `ghost_snapshot` config still loads."
-    },
-    "goals": {
-      "allOf": [
-        {
-          "$ref": "#/definitions/GoalsToml"
-        }
-      ],
-      "description": "Goal-related settings."
     },
     "hide_agent_reasoning": {
       "default": false,
@@ -2365,10 +2333,6 @@
       },
       "description": "Bounded, product-owned metadata attached to every Responses API request.",
       "type": "object"
-    },
-    "review_model": {
-      "description": "Review model override used by the `/review` feature.",
-      "type": "string"
     },
     "service_tier": {
       "description": "Optional explicit service tier request id for new turns (for example `default`, `priority`, or `flex`; legacy `fast` also works).",

@@ -419,11 +419,6 @@ impl TurnMetadataState {
         })));
     }
 
-    pub(crate) async fn wait_for_git_enrichment(&self) {
-        let mut completion = self.git_enrichment_complete.subscribe();
-        let _ = completion.wait_for(|complete| *complete).await;
-    }
-
     pub(crate) fn cancel_git_enrichment_task(&self) {
         let mut task_guard = self
             .enrichment_task

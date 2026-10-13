@@ -12,9 +12,7 @@ use super::LegacyModelMismatchWarning;
 use super::LegacyUnifiedExecProcessLimitWarning;
 use super::SubagentNotification;
 use super::TurnAborted;
-use super::UserGoalUpdate;
 use super::UserInstructions;
-use super::UserShellCommand;
 use super::world_state::EnvironmentsState;
 
 const CONTEXTUAL_USER_FRAGMENT_MATCHERS: &[fn(&str) -> bool] = &[
@@ -23,7 +21,6 @@ const CONTEXTUAL_USER_FRAGMENT_MATCHERS: &[fn(&str) -> bool] = &[
     AdditionalContextUserFragment::matches_text,
     AgentMessageBoardNotification::matches_text,
     codex_skills_extension::is_skill_prompt_fragment,
-    UserShellCommand::matches_text,
     TurnAborted::matches_text,
     SubagentNotification::matches_text,
     InternalModelContextFragment::matches_text,
@@ -33,12 +30,11 @@ const CONTEXTUAL_USER_FRAGMENT_MATCHERS: &[fn(&str) -> bool] = &[
     LegacyModelMismatchWarning::matches_text,
 ];
 
-/// Hidden runtime context is not conversation content. Explicit user goal edits are.
+/// Hidden runtime context is not conversation content.
 pub(crate) fn is_hidden_context_message(item: &ResponseItem) -> bool {
     matches!(item, ResponseItem::Message { role, content, .. }
         if role == "user"
-            && content.iter().any(is_contextual_user_fragment)
-            && UserGoalUpdate::message_text(item).is_none())
+            && content.iter().any(is_contextual_user_fragment))
 }
 
 /// Uses host annotations rather than text markers to identify user-authored instructions.

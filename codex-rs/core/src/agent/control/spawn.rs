@@ -26,7 +26,6 @@ use crate::thread_manager::StartThreadOptions;
 use crate::thread_manager::fork_history_as_interrupted;
 use codex_context_fragments::set_annotated_content;
 use codex_context_fragments::to_annotated_content;
-use codex_features::Feature;
 use codex_history::ResponseItemEnvelope;
 use codex_prompts::ResolvedModelMessages;
 use codex_protocol::error::AgentErrorContext;
@@ -526,11 +525,6 @@ impl LocalAgentControl {
                         ThreadHistoryMode::Paginated
                     )
                     .then_some(ThreadHistoryMode::Paginated);
-                    if multi_agent_version == MultiAgentVersion::V2
-                        && config.features.enabled(Feature::MultiAgentV2DynamicTools)
-                    {
-                        start_options.dynamic_tools = parent_thread.session.dynamic_tools().await;
-                    }
                 }
             }
             (None, _) => {}
@@ -822,7 +816,6 @@ impl LocalAgentControl {
                         RolloutItem::EventMsg(
                             EventMsg::ItemCompleted(_)
                                 | EventMsg::TokenCount(_)
-                                | EventMsg::ThreadGoalUpdated(_)
                                 | EventMsg::ThreadSettingsApplied(_),
                         )
                     )

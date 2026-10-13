@@ -3,10 +3,8 @@ use crate::ToolDefinition;
 use crate::ToolName;
 use crate::ToolOutputSchema;
 use crate::mcp_tool::parse_mcp_tool_with_schema_max_bytes;
-use crate::parse_dynamic_tool;
 use crate::parse_mcp_tool;
 use codex_protocol::DEFAULT_FUNCTION_NAMESPACE;
-use codex_protocol::dynamic_tools::DynamicToolFunctionSpec;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -75,14 +73,6 @@ pub enum ResponsesApiNamespaceTool {
     Function(ResponsesApiTool),
     #[serde(rename = "custom")]
     Custom(FreeformTool),
-}
-
-pub fn dynamic_tool_to_responses_api_tool(
-    tool: &DynamicToolFunctionSpec,
-) -> Result<ResponsesApiTool, serde_json::Error> {
-    Ok(tool_definition_to_responses_api_tool(parse_dynamic_tool(
-        tool,
-    )?))
 }
 
 pub fn coalesce_loadable_tool_specs(
