@@ -2,9 +2,6 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
-use codex_connectors::AppToolPolicyEvaluator;
-use codex_connectors::AppToolPolicyInput;
-use codex_core_plugins::executor_plugin_hook_sources;
 use codex_hooks::InterruptRequest;
 use codex_hooks::PostToolUseOutcome;
 use codex_hooks::PostToolUseRequest;
@@ -19,10 +16,8 @@ use codex_hooks::UserPromptSubmitOutcome;
 use codex_hooks::UserPromptSubmitRequest;
 use codex_hooks::hook_execution_mode_label;
 use codex_hooks::hook_handler_type_label;
-use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
 use codex_otel::HOOK_RUN_DURATION_METRIC;
 use codex_otel::HOOK_RUN_METRIC;
-use codex_plugin::ExecutorPluginHookSource;
 use codex_protocol::items::FunctionCallOutputItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::items::UserMessageItem;
@@ -47,9 +42,7 @@ use codex_rollout::state_db;
 use codex_thread_store::PersistContext;
 use codex_thread_store::ReadThreadParams;
 use codex_utils_absolute_path::AbsolutePathBuf;
-use serde_json::Map;
 use serde_json::Value;
-use tokio::sync::Mutex;
 use tracing::instrument;
 
 use crate::context::ContextualUserFragment;
@@ -61,9 +54,7 @@ use crate::session::TurnInput;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
-use crate::state::TurnState;
 use crate::tools::hook_names::HookToolName;
-use crate::turn_metadata::ExecutionMetadata;
 
 pub(crate) struct HookRuntimeOutcome {
     pub should_stop: bool,
@@ -283,64 +274,6 @@ pub(crate) async fn run_post_tool_use_hooks(
     outcome
 }
 
-fn executor_hook_sources_for_step(step_context: &StepContext) -> Vec<ExecutorPluginHookSource> {
-    step_context
-        .executor_capability_discovery
-        .as_deref()
-        .map(|snapshot| {
-            let config = step_context.mcp.config();
-            let app_tool_policy = AppToolPolicyEvaluator::new(&config.config_layer_stack);
-            executor_plugin_hook_sources(snapshot, &config.plugins, |server, tool| {
-                step_context
-                    .mcp
-                    .tool_info(server, tool)
-                    .filter(|tool_info| {
-                        if server != CODEX_APPS_MCP_SERVER_NAME {
-                            return true;
-                        }
-                        let annotations = tool_info.tool.annotations.as_ref();
-                        app_tool_policy.tool_enabled(AppToolPolicyInput {
-                            connector_id: tool_info.connector_id.as_deref(),
-                            tool_name: &tool_info.tool.name,
-                            tool_title: tool_info.tool.title.as_deref(),
-                            destructive_hint: annotations
-                                .and_then(|annotations| annotations.destructive_hint),
-                            open_world_hint: annotations
-                                .and_then(|annotations| annotations.open_world_hint),
-                        })
-                    })
-            })
-            .into_iter()
-            .filter(|source| {
-                !step_context
-                    .turn
-                    .disabled_plugin_ids
-                    .contains(&source.plugin_id.as_key())
-            })
-            .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn build_request_metadata(
-    step_context: Option<&StepContext>,
-    turn_context: &TurnContext,
-) -> Map<String, Value> {
-    let settings = step_context
-        .map(|step_context| step_context.settings.as_ref())
-        .unwrap_or(turn_context.initial_settings.as_ref());
-    turn_context
-        .turn_metadata_state
-        .current_meta_value_for_mcp_request(ExecutionMetadata::from_settings(settings))
-        .map(|turn_metadata| {
-            Map::from_iter([(
-                crate::X_CODEX_TURN_METADATA_HEADER.to_string(),
-                turn_metadata,
-            )])
-        })
-        .unwrap_or_default()
-}
-
 #[instrument(level = "trace", skip_all)]
 pub(crate) async fn run_turn_stop_hooks(
     sess: &Arc<Session>,
@@ -397,7 +330,6 @@ pub(crate) async fn run_turn_stop_hooks(
         ),
         _ => (StopHookTarget::Stop, sess.hook_transcript_path().await),
     };
-    let request_metadata = build_request_metadata(Some(step_context), turn_context);
     let request = codex_hooks::StopRequest {
         session_id: sess.session_id().into(),
         turn_id: turn_context.sub_id.clone(),
@@ -406,13 +338,11 @@ pub(crate) async fn run_turn_stop_hooks(
         transcript_path,
         model: turn_context.model_info().slug.clone(),
         permission_mode: HOOK_PERMISSION_MODE.to_string(),
-        request_metadata: (!request_metadata.is_empty()).then_some(request_metadata),
         stop_hook_active,
         last_assistant_message,
         target,
     };
-    let executor_hook_sources = executor_hook_sources_for_step(step_context);
-    let hooks = sess.hooks().with_executor_hooks(executor_hook_sources);
+    let hooks = sess.hooks();
     emit_hook_started_events(sess, turn_context, hooks.preview_stop(&request)).await;
 
     let mut outcome = hooks.run_stop(request).await;
@@ -452,29 +382,17 @@ pub(crate) async fn run_session_end_hooks(sess: &Arc<Session>) {
     emit_hook_completed_events(sess, &turn_context, outcome.hook_events).await;
 }
 
-pub(crate) async fn run_turn_interrupt_hooks(
-    sess: &Arc<Session>,
-    turn_context: &Arc<TurnContext>,
-    turn_state: &Mutex<TurnState>,
-) {
+pub(crate) async fn run_turn_interrupt_hooks(sess: &Arc<Session>, turn_context: &Arc<TurnContext>) {
     if matches!(&turn_context.session_source, SessionSource::SubAgent(_)) {
         return;
     }
 
-    // The active turn has already been detached. Reuse only its last executing step's discovery.
-    let last_known_step_context = turn_state.lock().await.last_known_step_context.clone();
-    let executor_hook_sources = last_known_step_context
-        .as_deref()
-        .map(executor_hook_sources_for_step)
-        .unwrap_or_default();
-    let has_executor_hooks = !executor_hook_sources.is_empty();
-    let hooks = sess.hooks().with_executor_hooks(executor_hook_sources);
+    let hooks = sess.hooks();
     let preview_runs = hooks.preview_interrupt();
-    if preview_runs.is_empty() && !has_executor_hooks {
+    if preview_runs.is_empty() {
         return;
     }
 
-    let request_metadata = build_request_metadata(last_known_step_context.as_deref(), turn_context);
     let request = InterruptRequest {
         session_id: sess.session_id().into(),
         turn_id: turn_context.sub_id.clone(),
@@ -483,7 +401,6 @@ pub(crate) async fn run_turn_interrupt_hooks(
         transcript_path: sess.hook_transcript_path().await,
         model: turn_context.model_info().slug.clone(),
         permission_mode: HOOK_PERMISSION_MODE.to_string(),
-        request_metadata: (!request_metadata.is_empty()).then_some(request_metadata),
     };
     if let Err(err) = sess.flush_rollout().await {
         tracing::warn!("failed to flush transcript before Interrupt hook: {err}");
@@ -826,7 +743,7 @@ fn additional_context_messages(additional_contexts: Vec<String>) -> Vec<Response
 }
 
 fn should_emit_hook_notification(run: &HookRunSummary) -> bool {
-    !run.builtin && run.execution_mode == HookExecutionMode::Sync
+    run.execution_mode == HookExecutionMode::Sync
 }
 
 async fn emit_hook_started_events(
@@ -915,7 +832,6 @@ fn hook_run_metric_tags(run: &HookRunSummary) -> [(&'static str, &'static str); 
         HookSource::User => "user",
         HookSource::Project => "project",
         HookSource::SessionFlags => "session_flags",
-        HookSource::Plugin => "plugin",
         HookSource::Unknown => "unknown",
     };
     let status = match run.status {

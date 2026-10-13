@@ -16,7 +16,6 @@ use crate::state::ExecutorSkillsStepState;
 pub struct SkillInvocation {
     pub skill_name: String,
     pub location: SkillInvocationLocation,
-    pub plugin_id: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -54,7 +53,6 @@ pub fn detect_implicit_skill_invocation(
                 path: skill.path_to_skills_md,
                 scope: skill.scope,
             },
-            plugin_id: skill.plugin_id,
         });
     }
 
@@ -86,7 +84,6 @@ pub fn detect_implicit_skill_invocation(
                         id: entry.main_prompt.as_str().to_owned(),
                         scope: entry.analytics_scope,
                     },
-                    plugin_id: entry.plugin_id.clone(),
                 });
             }
         }

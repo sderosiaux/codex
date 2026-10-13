@@ -1,5 +1,4 @@
 use std::path::Component;
-use std::path::Path;
 use std::path::PathBuf;
 
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -21,18 +20,10 @@ pub struct SkillInterfaceFile {
     default_prompt: Option<String>,
 }
 
-/// Controls whether interface icons may resolve through a plugin's shared assets directory.
-#[derive(Debug, Clone, Copy)]
-pub enum SkillInterfaceAssetPolicy<'a> {
-    LocalOnly,
-    PluginShared { plugin_root: &'a AbsolutePathBuf },
-}
-
 /// Validates skill interface metadata and resolves its asset paths.
 pub fn resolve_skill_interface(
     interface: Option<SkillInterfaceFile>,
     skill_dir: &AbsolutePathBuf,
-    asset_policy: SkillInterfaceAssetPolicy<'_>,
 ) -> Option<SkillInterface> {
     let interface = interface?;
     let interface = SkillInterface {
@@ -46,18 +37,8 @@ pub fn resolve_skill_interface(
             MAX_DESCRIPTION_LEN,
             "interface.short_description",
         ),
-        icon_small: resolve_asset_path(
-            skill_dir,
-            asset_policy,
-            "interface.icon_small",
-            interface.icon_small,
-        ),
-        icon_large: resolve_asset_path(
-            skill_dir,
-            asset_policy,
-            "interface.icon_large",
-            interface.icon_large,
-        ),
+        icon_small: resolve_asset_path(skill_dir, "interface.icon_small", interface.icon_small),
+        icon_large: resolve_asset_path(skill_dir, "interface.icon_large", interface.icon_large),
         brand_color: resolve_color_str(interface.brand_color, "interface.brand_color"),
         default_prompt: resolve_str(
             interface.default_prompt,
@@ -76,7 +57,6 @@ pub fn resolve_skill_interface(
 
 fn resolve_asset_path(
     skill_dir: &AbsolutePathBuf,
-    asset_policy: SkillInterfaceAssetPolicy<'_>,
     field: &'static str,
     path: Option<PathBuf>,
 ) -> Option<AbsolutePathBuf> {
@@ -100,7 +80,8 @@ fn resolve_asset_path(
             Component::CurDir => {}
             Component::Normal(component) => normalized.push(component),
             Component::ParentDir => {
-                return resolve_plugin_shared_asset_path(skill_dir, asset_policy, field, &path);
+                tracing::warn!("ignoring {field}: icon path must not contain '..'");
+                return None;
             }
             Component::Prefix(_) | Component::RootDir => {
                 tracing::warn!("ignoring {field}: icon path must be under assets/");
@@ -119,48 +100,6 @@ fn resolve_asset_path(
     }
 
     Some(skill_dir.join(normalized))
-}
-
-fn resolve_plugin_shared_asset_path(
-    skill_dir: &AbsolutePathBuf,
-    asset_policy: SkillInterfaceAssetPolicy<'_>,
-    field: &'static str,
-    path: &Path,
-) -> Option<AbsolutePathBuf> {
-    let SkillInterfaceAssetPolicy::PluginShared { plugin_root } = asset_policy else {
-        tracing::warn!("ignoring {field}: icon path must not contain '..'");
-        return None;
-    };
-
-    let plugin_assets_dir = lexically_normalize(plugin_root.join("assets").as_path());
-    let resolved = lexically_normalize(skill_dir.join(path).as_path());
-    if !resolved.starts_with(&plugin_assets_dir) {
-        tracing::warn!("ignoring {field}: icon path with '..' must resolve under plugin assets/");
-        return None;
-    }
-
-    AbsolutePathBuf::try_from(resolved)
-        .map_err(|error| {
-            tracing::warn!("ignoring {field}: icon path must resolve to an absolute path: {error}");
-            error
-        })
-        .ok()
-}
-
-fn lexically_normalize(path: &Path) -> PathBuf {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                normalized.pop();
-            }
-            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
-                normalized.push(component.as_os_str());
-            }
-        }
-    }
-    normalized
 }
 
 fn resolve_str(value: Option<String>, max_len: usize, field: &'static str) -> Option<String> {

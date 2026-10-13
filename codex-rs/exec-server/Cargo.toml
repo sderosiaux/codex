@@ -24,15 +24,12 @@ clatter = { workspace = true }
 codex-api = { workspace = true }
 codex-build-info = { workspace = true }
 codex-config = { workspace = true }
-codex-core-plugin-common = { workspace = true }
 codex-http-client = { workspace = true }
 codex-exec-server-protocol = { workspace = true }
 codex-file-system = { workspace = true }
-codex-file-watcher = { workspace = true }
 codex-otel = { workspace = true }
 codex-protocol = { workspace = true }
 codex-shell-command = { workspace = true }
-codex-skills = { workspace = true }
 codex-utils-absolute-path = { workspace = true }
 codex-utils-home-dir = { workspace = true }
 codex-utils-path-uri = { workspace = true }
@@ -42,7 +39,7 @@ codex-utils-rustls-provider = { workspace = true }
 codex-websocket-auth = { workspace = true }
 codex-websocket-client = { workspace = true }
 dirs = { workspace = true }
-futures = { workspace = true }
+futures = { workspace = true, features = ["std"] }
 http = { workspace = true }
 opentelemetry = { workspace = true }
 prost = "0.14.3"

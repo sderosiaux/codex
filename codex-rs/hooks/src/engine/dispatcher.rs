@@ -2,8 +2,6 @@ use std::path::Path;
 
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
-use serde_json::Map;
-use serde_json::Value;
 
 use codex_protocol::protocol::HookCompletedEvent;
 use codex_protocol::protocol::HookEventName;
@@ -17,7 +15,6 @@ use super::ClaudeHooksEngine;
 use super::ConfiguredHandler;
 use super::ConfiguredHandlerKind;
 use super::HandlerRunResult;
-use super::HandlerSourcePath;
 use super::command_runner::run_command;
 use super::mcp_runner::run_mcp_tool;
 use crate::events::common::matches_matcher;
@@ -75,17 +72,13 @@ pub(crate) fn select_handlers_for_matcher_inputs(
 }
 
 pub(crate) fn running_summary(handler: &ConfiguredHandler) -> HookRunSummary {
-    let HandlerSourcePath::Local(source_path) = &handler.source_path else {
-        unreachable!("executor-scoped hooks do not produce public hook summaries");
-    };
     HookRunSummary {
-        builtin: handler.builtin,
         id: handler.run_id(),
         event_name: handler.event_name,
         handler_type: handler.handler_type(),
         execution_mode: handler.execution_mode(),
         scope: scope_for_event(handler.event_name),
-        source_path: source_path.clone(),
+        source_path: handler.source_path.clone(),
         source: handler.source,
         display_order: handler.display_order,
         status: HookRunStatus::Running,
@@ -105,31 +98,8 @@ pub(crate) async fn execute_handlers<T: 'static>(
     turn_id: Option<String>,
     parse: fn(&ConfiguredHandler, HandlerRunResult, Option<String>) -> ParsedHandler<T>,
 ) -> Vec<ParsedHandler<T>> {
-    execute_handlers_with_metadata(
-        engine, handlers, input_json, cwd, turn_id, /*metadata*/ None, parse,
-    )
-    .await
-}
-
-pub(crate) async fn execute_handlers_with_metadata<T: 'static>(
-    engine: &ClaudeHooksEngine,
-    handlers: Vec<ConfiguredHandler>,
-    input_json: String,
-    cwd: &Path,
-    turn_id: Option<String>,
-    metadata: Option<&Map<String, Value>>,
-    parse: fn(&ConfiguredHandler, HandlerRunResult, Option<String>) -> ParsedHandler<T>,
-) -> Vec<ParsedHandler<T>> {
-    let mut executor_handlers = Vec::new();
     let mut pending = FuturesUnordered::new();
     for (configured_order, handler) in handlers.into_iter().enumerate() {
-        if matches!(
-            handler.source_path,
-            HandlerSourcePath::ExecutorScoped { .. }
-        ) {
-            executor_handlers.push(handler);
-            continue;
-        }
         if handler.execution_mode() == HookExecutionMode::Async {
             engine.command_runtime.schedule_async_hook(
                 handler,
@@ -143,46 +113,19 @@ pub(crate) async fn execute_handlers_with_metadata<T: 'static>(
         let input_json = input_json.clone();
         let turn_id = turn_id.clone();
         pending.push(async move {
-            let result =
-                execute_handler(engine, &handler, &input_json, cwd, /*metadata*/ None).await;
+            let result = execute_handler(engine, &handler, &input_json, cwd).await;
             (configured_order, parse(&handler, result, turn_id))
         });
     }
 
     let mut completed = Vec::new();
     let mut completion_order = 0;
-    let mut should_stop = false;
-    let mut should_block = false;
     while let Some((configured_order, mut parsed)) = pending.next().await {
-        should_stop |= parsed.completed.run.status == HookRunStatus::Stopped;
-        should_block |= parsed.completed.run.status == HookRunStatus::Blocked;
         parsed.completion_order = completion_order;
         completion_order += 1;
         completed.push((configured_order, parsed));
     }
     completed.sort_by_key(|(configured_order, _)| *configured_order);
-
-    if should_stop || !should_block {
-        for handler in executor_handlers {
-            let task_engine = engine.clone();
-            let input_json = input_json.clone();
-            let cwd = cwd.to_path_buf();
-            let metadata = metadata.cloned();
-            engine.command_runtime.schedule_async_task(async move {
-                let result =
-                    execute_handler(&task_engine, &handler, &input_json, &cwd, metadata.as_ref())
-                        .await;
-                if let Some(error) = result.error {
-                    tracing::warn!(
-                        source_path = %handler.source_path,
-                        %error,
-                        "executor-scoped hook failed"
-                    );
-                }
-            });
-        }
-    }
-
     completed.into_iter().map(|(_, parsed)| parsed).collect()
 }
 
@@ -191,19 +134,10 @@ async fn execute_handler(
     handler: &ConfiguredHandler,
     input_json: &str,
     cwd: &Path,
-    metadata: Option<&Map<String, Value>>,
 ) -> HandlerRunResult {
     match &handler.kind {
-        ConfiguredHandlerKind::Command { command, env, .. } => {
-            run_command(
-                &engine.command_runtime,
-                handler,
-                command,
-                env,
-                input_json,
-                cwd,
-            )
-            .await
+        ConfiguredHandlerKind::Command { command, .. } => {
+            run_command(&engine.command_runtime, handler, command, input_json, cwd).await
         }
         ConfiguredHandlerKind::McpTool {
             server,
@@ -217,7 +151,6 @@ async fn execute_handler(
                 tool,
                 input,
                 input_json,
-                metadata,
             )
             .await
         }
@@ -230,17 +163,13 @@ pub(crate) fn completed_summary(
     status: HookRunStatus,
     entries: Vec<codex_protocol::protocol::HookOutputEntry>,
 ) -> HookRunSummary {
-    let HandlerSourcePath::Local(source_path) = &handler.source_path else {
-        unreachable!("executor-scoped hooks do not produce public hook summaries");
-    };
     HookRunSummary {
-        builtin: handler.builtin,
         id: handler.run_id(),
         event_name: handler.event_name,
         handler_type: handler.handler_type(),
         execution_mode: handler.execution_mode(),
         scope: scope_for_event(handler.event_name),
-        source_path: source_path.clone(),
+        source_path: handler.source_path.clone(),
         source: handler.source,
         display_order: handler.display_order,
         status,
@@ -315,7 +244,6 @@ pub(crate) fn hook_source_label(source: codex_protocol::protocol::HookSource) ->
         codex_protocol::protocol::HookSource::User => "user",
         codex_protocol::protocol::HookSource::Project => "project",
         codex_protocol::protocol::HookSource::SessionFlags => "session_flags",
-        codex_protocol::protocol::HookSource::Plugin => "plugin",
         codex_protocol::protocol::HookSource::Unknown => "unknown",
     }
 }

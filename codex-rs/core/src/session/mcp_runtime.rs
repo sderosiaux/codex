@@ -6,16 +6,12 @@
 
 use super::session::SessionConfiguration;
 use super::*;
-use crate::mcp::McpRuntimeProjection;
 use codex_config::McpServerTransportConfig;
-use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
 use codex_mcp::McpServerRegistration;
-use codex_mcp::McpServerSource;
 use codex_mcp::McpStartupPolicy;
 use codex_mcp::PreparedMcpCall;
 use codex_mcp::ToolInfo;
 use codex_otel::auth_storage::AuthStorageOriginator;
-use codex_protocol::capabilities::SelectedCapabilityRoot;
 use std::collections::HashSet;
 
 pub(super) struct McpDesiredState {
@@ -26,7 +22,6 @@ pub(super) struct McpDesiredState {
     pub(super) session_source: SessionSource,
     pub(super) environments: TurnEnvironmentSnapshot,
     pub(super) local_process_cwd: PathBuf,
-    pub(super) disabled_plugin_ids: Vec<String>,
 }
 
 impl Session {
@@ -64,13 +59,7 @@ impl Session {
         auth: Option<CodexAuth>,
         environments: TurnEnvironmentSnapshot,
     ) -> McpDesiredState {
-        let (session_configuration, disabled_plugin_ids) = {
-            let state = self.state.lock().await;
-            (
-                state.session_configuration.clone(),
-                state.active_disabled_plugin_ids.clone(),
-            )
-        };
+        let session_configuration = self.state.lock().await.session_configuration.clone();
         let cwd = environments
             .primary()
             .and_then(|environment| environment.cwd().to_abs_path().ok())
@@ -93,7 +82,6 @@ impl Session {
             session_source: session_configuration.session_source,
             environments,
             local_process_cwd,
-            disabled_plugin_ids,
         }
     }
 
@@ -101,7 +89,7 @@ impl Session {
         self: &Arc<Self>,
         session_configuration: &SessionConfiguration,
         auth: Option<CodexAuth>,
-        mcp_projection: McpRuntimeProjection,
+        mcp_config: McpConfig,
         resolved_environments: &TurnEnvironmentSnapshot,
         mcp_runtime_cwd: PathBuf,
     ) -> anyhow::Result<()> {
@@ -124,18 +112,13 @@ impl Session {
             session_source: session_configuration.session_source.clone(),
             environments: resolved_environments.clone(),
             local_process_cwd,
-            disabled_plugin_ids: session_configuration.disabled_plugin_ids.clone(),
         };
-        self.publish_mcp_runtime(
-            &desired,
-            mcp_projection,
-            /*ready_selected_capability_roots*/ &[],
-        )
-        .instrument(info_span!(
-            "session_init.mcp_manager_init",
-            otel.name = "session_init.mcp_manager_init",
-        ))
-        .await;
+        self.publish_mcp_runtime(&desired, mcp_config)
+            .instrument(info_span!(
+                "session_init.mcp_manager_init",
+                otel.name = "session_init.mcp_manager_init",
+            ))
+            .await;
 
         self.services.mcp_runtime.validate_required_servers().await
     }
@@ -144,11 +127,11 @@ impl Session {
     pub(super) fn project_selected_environment_mcp_servers<'a>(
         &'a self,
         environments: &'a TurnEnvironmentSnapshot,
-        mut projection: McpRuntimeProjection,
-    ) -> BoxFuture<'a, McpRuntimeProjection> {
+        mut config: McpConfig,
+    ) -> BoxFuture<'a, McpConfig> {
         Box::pin(async move {
             if self.isolation == codex_extension_api::SessionIsolation::Isolated {
-                return projection;
+                return config;
             }
 
             let mut catalog = None;
@@ -197,20 +180,8 @@ impl Session {
                         /*inc*/ 1,
                         &[("server_name", name.as_str()), ("outcome", outcome)],
                     );
-                    if name == CODEX_APPS_MCP_SERVER_NAME
-                        || !server.is_local_environment()
-                        || projection
-                            .config
-                            .mcp_server_catalog
-                            .server(&name)
-                            .is_some_and(|existing| {
-                                existing.config().environment_id != *environment_id
-                                    || !matches!(
-                                        existing.source(),
-                                        McpServerSource::Plugin(_)
-                                            | McpServerSource::SelectedPlugin(_)
-                                    )
-                            })
+                    if !server.is_local_environment()
+                        || config.mcp_server_catalog.server(&name).is_some()
                         || registered.contains(&name)
                     {
                         continue;
@@ -238,20 +209,19 @@ impl Session {
                     server.environment_id = environment_id.clone();
                     registered.insert(name.clone());
                     catalog
-                        .get_or_insert_with(|| projection.config.mcp_server_catalog.to_builder())
+                        .get_or_insert_with(|| config.mcp_server_catalog.to_builder())
                         .register(McpServerRegistration::from_executor_config(name, server));
                 }
             }
 
             if let Some(catalog) = catalog {
                 let selections = environments.all_selections();
-                let environment_scope = McpEnvironmentScope::Selected(&selections);
-                projection.config.mcp_server_catalog =
+                config.mcp_server_catalog =
                     catalog.build_with_environment_authority(|environment_id| {
-                        environment_scope.authority_for(environment_id)
+                        crate::mcp::environment_authority(&selections, environment_id)
                     });
             }
-            projection
+            config
         })
     }
 
@@ -259,33 +229,23 @@ impl Session {
     pub(super) async fn publish_mcp_runtime(
         &self,
         desired: &McpDesiredState,
-        mcp_projection: McpRuntimeProjection,
-        ready_selected_capability_roots: &[SelectedCapabilityRoot],
+        mcp_config: McpConfig,
     ) {
-        let mcp_projection = self
-            .project_selected_environment_mcp_servers(&desired.environments, mcp_projection)
+        let mcp_config = self
+            .project_selected_environment_mcp_servers(&desired.environments, mcp_config)
             .await;
-        let selected_plugins = mcp_projection.selected_plugins.clone();
-        let input =
-            self.build_mcp_runtime_input(desired, mcp_projection, ready_selected_capability_roots);
+        let input = self.build_mcp_runtime_input(desired, mcp_config);
         AuthStorageOriginator::from_client_name(&desired.originator)
             .scope(self.services.mcp_runtime.replace(input))
             .await;
-        self.services.thread_extension_data.insert(selected_plugins);
     }
 
     pub(super) fn build_mcp_runtime_input(
         &self,
         desired: &McpDesiredState,
-        mcp_projection: McpRuntimeProjection,
-        ready_selected_capability_roots: &[SelectedCapabilityRoot],
+        mut config: McpConfig,
     ) -> McpRuntimeInput {
         let auth = desired.auth.clone();
-        let McpRuntimeProjection {
-            mut config,
-            plugins_available,
-            selected_plugins: _,
-        } = mcp_projection;
         config.environment_cwds = desired
             .environments
             .turn_environments()
@@ -300,7 +260,7 @@ impl Session {
             .environment_cwds
             .entry(codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string())
             .or_insert_with(|| PathUri::from_abs_path(&desired.config.cwd));
-        let mcp_servers = effective_mcp_servers(&config, auth.as_ref());
+        let mcp_servers = effective_mcp_servers(&config);
         let mcp_config = Arc::new(config);
         let runtime_context = McpRuntimeContext::new(
             self.services.turn_environments.environment_manager(),
@@ -317,16 +277,12 @@ impl Session {
                 McpStartupPolicy::Eager
             },
             config: mcp_config,
-            plugins_available,
-            ready_selected_capability_roots: ready_selected_capability_roots.to_vec(),
             mcp_servers,
             submit_id: desired.submit_id.clone(),
             tx_event: Some(self.get_tx_event()),
             startup_cancellation_token: CancellationToken::new(),
             runtime_context,
-            codex_apps_tools_cache: self.services.mcp_manager.codex_apps_tools_cache(),
             tool_catalog_cache: self.services.mcp_manager.tool_catalog_cache(),
-            codex_apps_tools_cache_key: connector_runtime_context_key(auth.as_ref()),
             client_mcp_extensions: self.services.client_mcp_extensions.for_mcp_servers(),
             auth,
             auth_manager: Some(Arc::clone(&self.services.auth_manager)),

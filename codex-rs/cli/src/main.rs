@@ -18,7 +18,6 @@ use clap::Subcommand;
 use codex_core_api::Arg0DispatchPaths;
 use codex_core_api::AuthManager;
 use codex_core_api::ClientMcpExtensions;
-use codex_core_api::CodexAppsToolsCache;
 use codex_core_api::CodexHomeUserInstructionsProvider;
 use codex_core_api::CodexThread;
 use codex_core_api::Config;
@@ -55,8 +54,6 @@ use codex_core_api::build_models_manager;
 use codex_core_api::init_state_db;
 use codex_core_api::install_agent_message_board;
 use codex_core_api::install_image_generation_extension;
-use codex_core_api::install_mcp_extension;
-use codex_core_api::install_mcp_plugins;
 use codex_core_api::install_skills_extension;
 use codex_core_api::install_web_search_extension;
 use codex_core_api::local_agent_graph_store_from_state_db;
@@ -258,8 +255,6 @@ impl Host {
         let thread_manager = Arc::new_cyclic(|thread_manager| {
             let mut extensions = ExtensionRegistryBuilder::<Config>::new();
             install_agent_message_board(&mut extensions, thread_manager.clone());
-            install_mcp_extension(&mut extensions);
-            install_mcp_plugins(&mut extensions, Arc::clone(&environment_manager));
             install_web_search_extension(&mut extensions, Arc::clone(&auth_manager));
             install_image_generation_extension(
                 &mut extensions,
@@ -280,7 +275,6 @@ impl Host {
                     include_instructions: config.include_skill_instructions,
                     max_context_tokens: config.skill_max_context_tokens,
                     bundled_skills_enabled: config.bundled_skills_enabled(),
-                    cloud_skill_enabled: config.cloud_skill_enabled,
                     shadow_selection_enabled: false,
                 },
             );
@@ -288,7 +282,6 @@ impl Host {
                 config,
                 Arc::clone(&auth_manager),
                 build_models_manager(config, Arc::clone(&auth_manager)),
-                CodexAppsToolsCache::default(),
                 session_source,
                 environment_manager,
                 Arc::new(extensions.build()),

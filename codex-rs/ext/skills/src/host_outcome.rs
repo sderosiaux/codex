@@ -20,7 +20,6 @@ pub struct SkillLoadOutcome {
     pub(crate) skill_roots: Vec<AbsolutePathBuf>,
     pub(crate) skill_root_by_path: Arc<HashMap<PathUri, AbsolutePathBuf>>,
     pub(crate) skill_discovery_path_by_path: Arc<HashMap<PathUri, PathUri>>,
-    pub(crate) agent_plugin_skill_paths: HashSet<PathUri>,
     pub(crate) file_systems_by_skill_path: SkillFileSystemsByPath,
     pub(crate) implicit_skills_by_scripts_dir: Arc<HashMap<PathUri, SkillMetadata>>,
     pub(crate) implicit_skills_by_doc_path: Arc<HashMap<PathUri, SkillMetadata>>,
@@ -34,7 +33,6 @@ impl SkillLoadOutcome {
         skill_roots: Vec<AbsolutePathBuf>,
         skill_root_by_path: HashMap<PathUri, AbsolutePathBuf>,
         skill_discovery_path_by_path: HashMap<PathUri, PathUri>,
-        agent_plugin_skill_paths: HashSet<PathUri>,
         file_systems_by_skill_path: HashMap<PathUri, Arc<dyn ExecutorFileSystem>>,
     ) -> Self {
         Self {
@@ -43,7 +41,6 @@ impl SkillLoadOutcome {
             skill_roots,
             skill_root_by_path: Arc::new(skill_root_by_path),
             skill_discovery_path_by_path: Arc::new(skill_discovery_path_by_path),
-            agent_plugin_skill_paths,
             file_systems_by_skill_path: SkillFileSystemsByPath::new(file_systems_by_skill_path),
             ..Self::default()
         }
@@ -83,11 +80,6 @@ impl SkillLoadOutcome {
         self.implicit_skills_by_scripts_dir = Arc::new(by_scripts_dir);
         self.implicit_skills_by_doc_path = Arc::new(by_doc_path);
         self
-    }
-
-    pub(crate) fn is_agent_plugin_skill(&self, skill: &SkillMetadata) -> bool {
-        self.agent_plugin_skill_paths
-            .contains(&skill.path_to_skills_md)
     }
 
     /// Returns the discovery root that supplied a loaded skill path.

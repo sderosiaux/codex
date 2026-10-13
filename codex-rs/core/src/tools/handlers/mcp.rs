@@ -25,7 +25,6 @@ use codex_tools::ToolName;
 use codex_tools::ToolSearchInfo;
 use codex_tools::ToolSearchSourceInfo;
 use codex_tools::ToolSpec;
-use codex_tools::agent_plugin_mcp_tool_to_responses_api_tool;
 use codex_tools::mcp_tool_to_responses_api_tool;
 use codex_utils_output_truncation::TruncationPolicy;
 use codex_utils_string::take_bytes_at_char_boundary;
@@ -35,62 +34,35 @@ use serde_json::Value;
 
 const LEGACY_MCP_TOOL_NAME_PREFIX: &str = "mcp__";
 const MCP_TOOL_NAME_DELIMITER: &str = "__";
-const MAX_AGENT_PLUGIN_MCP_NAMESPACE_DESCRIPTION_BYTES: usize = 1_000;
 const MAX_MCP_NAMESPACE_DESCRIPTION_BYTES: usize = 512 * 1024;
 
 pub struct McpHandler {
     tool_info: ToolInfo,
-    agent_plugin: bool,
     spec: Arc<ToolSpec>,
 }
 
 impl McpHandler {
     pub fn new(tool_info: ToolInfo) -> Result<Self, serde_json::Error> {
-        Self::with_agent_plugin(
-            tool_info, /*agent_plugin*/ false, /*schema_max_bytes*/ None,
-        )
+        Self::with_schema_max_bytes(tool_info, /*schema_max_bytes*/ None)
     }
 
     pub fn new_with_schema_max_bytes(
         tool_info: ToolInfo,
         schema_max_bytes: usize,
     ) -> Result<Self, serde_json::Error> {
-        Self::with_agent_plugin(
-            tool_info,
-            /*agent_plugin*/ false,
-            Some(schema_max_bytes),
-        )
+        Self::with_schema_max_bytes(tool_info, Some(schema_max_bytes))
     }
 
-    pub fn new_agent_plugin(tool_info: ToolInfo) -> Result<Self, serde_json::Error> {
-        Self::with_agent_plugin(
-            tool_info, /*agent_plugin*/ true, /*schema_max_bytes*/ None,
-        )
-    }
-
-    fn with_agent_plugin(
+    fn with_schema_max_bytes(
         tool_info: ToolInfo,
-        agent_plugin: bool,
         schema_max_bytes: Option<usize>,
     ) -> Result<Self, serde_json::Error> {
-        let spec = Arc::new(create_tool_spec(
-            &tool_info,
-            agent_plugin,
-            schema_max_bytes,
-        )?);
-        Ok(Self {
-            tool_info,
-            agent_plugin,
-            spec,
-        })
+        let spec = Arc::new(create_tool_spec(&tool_info, schema_max_bytes)?);
+        Ok(Self { tool_info, spec })
     }
 
     pub(crate) fn tool_info(&self) -> &ToolInfo {
         &self.tool_info
-    }
-
-    pub(crate) fn model_spec_bytes(&self) -> Result<usize, serde_json::Error> {
-        serde_json::to_vec(&self.spec).map(|spec| spec.len())
     }
 
     fn hook_tool_name(&self) -> HookToolName {
@@ -140,23 +112,17 @@ impl ToolExecutor<ToolInvocation> for McpHandler {
     }
 
     fn search_info(&self) -> Option<ToolSearchInfo> {
-        let source_name = self
-            .tool_info
-            .connector_name
-            .as_deref()
-            .map(str::trim)
-            .filter(|connector_name| !connector_name.is_empty())
-            .unwrap_or_else(|| self.tool_info.server_name.trim());
+        let source_name = self.tool_info.server_name.trim();
         let source_info = (!source_name.is_empty()).then(|| ToolSearchSourceInfo {
             name: source_name.to_string(),
-            description: effective_namespace_description(&self.tool_info, self.agent_plugin)
+            description: effective_namespace_description(&self.tool_info)
                 .map(str::trim)
                 .filter(|description| !description.is_empty())
                 .map(str::to_string),
         });
 
         ToolSearchInfo::from_shared_spec(
-            build_mcp_search_text(&self.tool_info, self.agent_plugin),
+            build_mcp_search_text(&self.tool_info),
             Arc::clone(&self.spec),
             source_info,
         )
@@ -312,27 +278,14 @@ impl CoreToolRuntime for McpHandler {
 
 fn create_tool_spec(
     tool_info: &ToolInfo,
-    agent_plugin: bool,
     schema_max_bytes: Option<usize>,
 ) -> Result<ToolSpec, serde_json::Error> {
     let tool_name = tool_info.canonical_tool_name();
-    let tool = if agent_plugin {
-        agent_plugin_mcp_tool_to_responses_api_tool(&tool_name, &tool_info.tool)?
-    } else {
-        mcp_tool_to_responses_api_tool(&tool_name, &tool_info.tool, schema_max_bytes)?
-    };
-    let description = effective_namespace_description(tool_info, agent_plugin)
+    let tool = mcp_tool_to_responses_api_tool(&tool_name, &tool_info.tool, schema_max_bytes)?;
+    let description = effective_namespace_description(tool_info)
         .map(str::trim)
         .filter(|description| !description.is_empty())
         .map(str::to_string)
-        .or_else(|| {
-            tool_info
-                .connector_name
-                .as_deref()
-                .map(str::trim)
-                .filter(|connector_name| !connector_name.is_empty())
-                .map(|connector_name| format!("Tools for working with {connector_name}."))
-        })
         .unwrap_or_default();
 
     Ok(ToolSpec::Namespace(ResponsesApiNamespace {
@@ -343,16 +296,8 @@ fn create_tool_spec(
     }))
 }
 
-fn effective_namespace_description(tool_info: &ToolInfo, agent_plugin: bool) -> Option<&str> {
-    let description = tool_info.namespace_description.as_deref()?;
-    Some(if agent_plugin {
-        take_bytes_at_char_boundary(
-            description,
-            MAX_AGENT_PLUGIN_MCP_NAMESPACE_DESCRIPTION_BYTES,
-        )
-    } else {
-        description
-    })
+fn effective_namespace_description(tool_info: &ToolInfo) -> Option<&str> {
+    tool_info.namespace_description.as_deref()
 }
 
 fn mcp_hook_tool_input(raw_arguments: &str) -> Value {
@@ -363,7 +308,7 @@ fn mcp_hook_tool_input(raw_arguments: &str) -> Value {
     serde_json::from_str(raw_arguments).unwrap_or_else(|_| Value::String(raw_arguments.to_string()))
 }
 
-fn build_mcp_search_text(info: &ToolInfo, agent_plugin: bool) -> String {
+fn build_mcp_search_text(info: &ToolInfo) -> String {
     let tool_name = info.canonical_tool_name();
     let mut schema_properties = info
         .tool
@@ -389,25 +334,11 @@ fn build_mcp_search_text(info: &ToolInfo, agent_plugin: bool) -> String {
     {
         parts.push(description.to_string());
     }
-    if let Some(connector_name) = info.connector_name.as_deref().map(str::trim)
-        && !connector_name.is_empty()
-    {
-        parts.push(connector_name.to_string());
-    }
-    if let Some(namespace_description) =
-        effective_namespace_description(info, agent_plugin).map(str::trim)
+    if let Some(namespace_description) = effective_namespace_description(info).map(str::trim)
         && !namespace_description.is_empty()
     {
         parts.push(namespace_description.to_string());
     }
-    parts.extend(
-        info.plugin_display_names
-            .iter()
-            .map(String::as_str)
-            .map(str::trim)
-            .filter(|display_name| !display_name.is_empty())
-            .map(str::to_string),
-    );
     parts.extend(schema_properties);
     parts.join(" ")
 }

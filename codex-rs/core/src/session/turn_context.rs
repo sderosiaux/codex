@@ -8,9 +8,6 @@ use crate::environment_selection::EnvironmentConfigOrigin;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::shell_snapshot::ShellSnapshotFile;
 use arc_swap::ArcSwap;
-use codex_core_plugins::PluginCommandAttribution;
-use codex_core_plugins::TrustedPluginRoots;
-use codex_exec_server::ExecutorFileSystem;
 use codex_file_system::EnvironmentAccess;
 use codex_file_system::FileSystemEnvironmentAccessor;
 use codex_model_provider::SharedModelProvider;
@@ -162,8 +159,6 @@ pub struct TurnContext {
     /// Frozen settings used to construct this context. Legacy turn consumers
     /// keep this view even when later steps use different settings.
     pub(crate) initial_settings: Arc<ResolvedStepSettings>,
-    /// Thread-owned plugin selection captured when this turn was admitted.
-    pub(crate) disabled_plugin_ids: Vec<String>,
     /// Settings for the next step; environments are owned by `ThreadEnvironments`.
     pub(super) next_step_settings: ArcSwap<ResolvedStepSettings>,
     /// Turn-wide telemetry; model-attributed step work should use `StepContext::session_telemetry`.
@@ -244,7 +239,6 @@ impl TurnContext {
             config,
             auth_manager: self.auth_manager.clone(),
             initial_settings: Arc::clone(&step_settings),
-            disabled_plugin_ids: self.disabled_plugin_ids.clone(),
             next_step_settings: ArcSwap::from(step_settings),
             session_telemetry,
             provider: self.provider.clone(),
@@ -325,28 +319,6 @@ impl TurnContext {
         self.initial_settings.effective_collaboration_mode()
     }
 
-    pub(crate) fn plugin_attribution_for_command(
-        &self,
-        command: &[String],
-        cwd: &AbsolutePathBuf,
-    ) -> Option<PluginCommandAttribution> {
-        self.extension_data
-            .get::<TrustedPluginRoots>()?
-            .resolve_attribution(command, cwd)
-    }
-
-    pub(crate) async fn plugin_attribution_for_executor_command(
-        &self,
-        command: &[String],
-        cwd: &PathUri,
-        file_system: &dyn ExecutorFileSystem,
-    ) -> Option<PluginCommandAttribution> {
-        self.extension_data
-            .get::<TrustedPluginRoots>()?
-            .resolve_executor_attribution(command, cwd, file_system)
-            .await
-    }
-
     /// Legacy: returns the frozen initial-turn reasoning effort, including the initial model default.
     /// Step-scoped consumers should use their captured `StepContext::settings`.
     pub(crate) fn effective_reasoning_effort(&self) -> Option<ReasoningEffortConfig> {
@@ -365,17 +337,6 @@ impl TurnContext {
     /// Step-scoped consumers should use their captured `StepContext::settings`.
     pub(crate) fn model_context_window(&self) -> Option<i64> {
         self.model_info().usable_context_window()
-    }
-
-    pub(crate) fn apps_enabled(&self) -> bool {
-        let uses_codex_backend = self
-            .auth_manager
-            .as_deref()
-            .is_some_and(AuthManager::current_auth_uses_codex_backend);
-        self.config
-            .features
-            .apps_enabled_for_auth(uses_codex_backend)
-            && self.config.orchestrator_mcp_enabled
     }
 
     pub(crate) async fn with_model(
@@ -439,7 +400,6 @@ impl TurnContext {
             use_model_token_budget_defaults: self.use_model_token_budget_defaults,
             auth_manager: self.auth_manager.clone(),
             initial_settings: Arc::clone(&step_settings),
-            disabled_plugin_ids: self.disabled_plugin_ids.clone(),
             next_step_settings: ArcSwap::from(step_settings),
             session_telemetry,
             provider: self.provider.clone(),
@@ -478,7 +438,6 @@ impl TurnContext {
         TurnContextItem {
             turn_id: Some(self.sub_id.clone()),
             root_turn_id: self.turn_metadata_state.root_turn_id(),
-            disabled_plugin_ids: Some(self.disabled_plugin_ids.clone()),
             cwd,
             model: self.model_info().slug.clone(),
             comp_hash: self.model_info().comp_hash.clone(),
@@ -620,7 +579,6 @@ impl Session {
             use_model_token_budget_defaults,
             auth_manager,
             initial_settings: Arc::clone(&step_settings),
-            disabled_plugin_ids: session_configuration.disabled_plugin_ids.clone(),
             next_step_settings: ArcSwap::from(step_settings),
             session_telemetry: session_telemetry_for_context,
             provider,
@@ -794,17 +752,6 @@ impl Session {
                 )
             }
         };
-        let plugins_input = per_turn_config.plugins_config_input();
-        let plugin_outcome = self
-            .services
-            .plugins_manager
-            .plugins_for_config(&plugins_input)
-            .await
-            .without_plugins(&session_configuration.disabled_plugin_ids);
-        let trusted_plugin_roots = TrustedPluginRoots::from_plugin_load_outcome(
-            &plugin_outcome,
-            per_turn_config.codex_home.as_path(),
-        );
         let skills_snapshot = if matches!(build_mode, TurnContextBuildMode::InjectItems)
             || (per_turn_config
                 .features
@@ -814,14 +761,7 @@ impl Session {
             // Executor and orchestrator catalogs are supplied independently of host skills.
             HostSkillsSnapshot::new(Arc::new(SkillLoadOutcome::default()))
         } else {
-            let effective_skill_roots = plugin_outcome.effective_plugin_skill_roots();
-            let plugin_skill_snapshots = self
-                .services
-                .plugins_manager
-                .plugin_skill_snapshots_for_config(&plugins_input);
-            let skills_input =
-                skills_load_input_from_config(&per_turn_config, effective_skill_roots)
-                    .with_plugin_skill_snapshots(plugin_skill_snapshots);
+            let skills_input = skills_load_input_from_config(&per_turn_config);
             let fs = primary_turn_environment
                 .map(|turn_environment| turn_environment.environment.get_filesystem());
             self.services
@@ -850,7 +790,6 @@ impl Session {
             sub_id,
             skills_snapshot,
         );
-        turn_context.extension_data.insert(trusted_plugin_roots);
         turn_context.final_output_json_schema = options.final_output_json_schema;
         turn_context.cyber_access_program = cyber_access_program::for_provider(
             &turn_context.config.model_provider_id,

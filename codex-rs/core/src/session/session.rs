@@ -19,8 +19,6 @@ use crate::state::ActiveTurn;
 use crate::turn_metadata::ExecutionMetadata;
 use codex_attachment_store::AttachmentStore;
 use codex_extension_api::ExtensionDataInit;
-use codex_http_client::ClientRouteClass;
-use codex_http_client::RouteAwareClientPool;
 use codex_login::auth::AgentIdentityAuthPolicy;
 use codex_model_provider::SharedModelProvider;
 use codex_prompts::render_model_instructions;
@@ -107,8 +105,6 @@ pub(crate) struct SessionConfiguration {
     pub(super) codex_home: AbsolutePathBuf,
     /// Optional user-facing name for the thread, updated during the session.
     pub(super) thread_name: Option<String>,
-    /// Thread-owned plugin selection inherited by future turns.
-    pub(super) disabled_plugin_ids: Vec<String>,
 
     // TODO(pakrym): Remove config from here
     pub(super) original_config_do_not_use: Arc<Config>,
@@ -172,7 +168,6 @@ impl SessionConfiguration {
             parent_thread_id: self.parent_thread_id,
             thread_source: self.thread_source.clone(),
             originator: self.originator.clone(),
-            disabled_plugin_ids: self.disabled_plugin_ids.clone(),
             turn_extension_init: self.turn_extension_init.clone(),
         }
     }
@@ -189,7 +184,6 @@ impl SessionConfiguration {
             reasoning_summary: self.step_settings.reasoning_summary,
             personality: self.step_settings.personality,
             collaboration_mode: self.step_settings.collaboration_mode.clone(),
-            disabled_plugin_ids: self.disabled_plugin_ids.clone(),
         }
     }
 
@@ -211,7 +205,6 @@ impl SessionConfiguration {
             service_tier: Some(self.step_settings.service_tier.clone()),
             collaboration_mode: Some(self.step_settings.collaboration_mode.clone()),
             personality: self.step_settings.personality,
-            disabled_plugin_ids: Some(self.disabled_plugin_ids.clone()),
             turn_extension_init: Some(self.turn_extension_init.clone()),
             ..Default::default()
         }
@@ -229,9 +222,6 @@ impl SessionConfiguration {
         let mut next_configuration = self.clone();
         if let Some(turn_extension_init) = &updates.turn_extension_init {
             next_configuration.turn_extension_init = turn_extension_init.clone();
-        }
-        if let Some(disabled_plugin_ids) = &updates.disabled_plugin_ids {
-            next_configuration.disabled_plugin_ids = disabled_plugin_ids.clone();
         }
 
         let current_cwd = self.cwd().clone();
@@ -284,18 +274,14 @@ pub(crate) struct SessionSettingsUpdate {
     pub(crate) service_tier_for_turn: Option<String>,
     pub(crate) app_server_client_name: Option<String>,
     pub(crate) app_server_client_version: Option<String>,
-    pub(crate) disabled_plugin_ids: Option<Vec<String>>,
 }
 
-async fn warm_plugins_and_skills_for_session_init(
+async fn warm_skills_for_session_init(
     config: Arc<Config>,
-    plugins_manager: Arc<PluginsManager>,
     skills_service: Arc<HostSkillsService>,
     turn_environments: &TurnEnvironmentSnapshot,
     extensions: &codex_extension_api::ExtensionRegistry<Config>,
 ) -> Vec<SkillError> {
-    let plugins_input = config.plugins_config_input();
-    let plugin_outcome = plugins_manager.plugins_for_config(&plugins_input).await;
     if config.features.enabled(Feature::SkipHostSkillDiscovery)
         && !extensions.requires_host_skill_discovery()
     {
@@ -303,10 +289,7 @@ async fn warm_plugins_and_skills_for_session_init(
     }
 
     let fs = turn_environments.primary_filesystem();
-    let effective_skill_roots = plugin_outcome.effective_plugin_skill_roots();
-    let plugin_skill_snapshots = plugins_manager.plugin_skill_snapshots_for_config(&plugins_input);
-    let skills_input = skills_load_input_from_config(config.as_ref(), effective_skill_roots)
-        .with_plugin_skill_snapshots(plugin_skill_snapshots);
+    let skills_input = skills_load_input_from_config(config.as_ref());
     skills_service
         .snapshot_for_config(&skills_input, fs)
         .await
@@ -324,11 +307,6 @@ impl Session {
     /// Returns the identity shared by the root thread and all descendant threads.
     pub(crate) fn session_id(&self) -> SessionId {
         self.services.agent_control.identity()
-    }
-
-    pub(crate) async fn originator(&self) -> String {
-        let state = self.state.lock().await;
-        state.session_configuration.originator.clone()
     }
 
     pub(crate) async fn dynamic_tools(&self) -> Vec<DynamicToolSpec> {
@@ -434,7 +412,6 @@ impl Session {
         fork_persistence: ForkPersistence,
         session_source: SessionSource,
         skills_service: Arc<HostSkillsService>,
-        plugins_manager: Arc<PluginsManager>,
         mcp_manager: Arc<McpManager>,
         extensions: Arc<codex_extension_api::ExtensionRegistry<crate::config::Config>>,
         mut thread_extension_init: ExtensionDataInit,
@@ -652,7 +629,6 @@ impl Session {
         let tool_policy = thread_extension_init
             .get::<codex_extension_api::ToolPolicy>()
             .unwrap_or_default();
-        let mcp_thread_init = thread_extension_init.clone();
         let thread_extension_data = codex_extension_api::ExtensionData::new_with_init(
             thread_id.to_string(),
             thread_extension_init,
@@ -795,14 +771,8 @@ impl Session {
         ));
 
         let mut mcp_auth_changes = auth_manager.auth_change_receiver();
-        let plugins_manager_for_prewarm = Arc::clone(&plugins_manager);
         let config_for_mcp = Arc::clone(&config);
         let mcp_manager_for_mcp = Arc::clone(&mcp_manager);
-        let mcp_thread_init_for_startup = &mcp_thread_init;
-        let thread_extension_data_for_mcp = &thread_extension_data;
-        let mcp_originator = session_configuration.originator.clone();
-        let mcp_session_source = session_configuration.session_source.clone();
-        let mcp_disabled_plugin_ids = session_configuration.disabled_plugin_ids.clone();
         let mcp_runtime_cwd = environment_selections
             .first()
             .and_then(|environment| environment.cwd.to_abs_path().ok())
@@ -810,37 +780,9 @@ impl Session {
             .unwrap_or_else(|| session_configuration.cwd().to_path_buf());
         let auth_and_mcp_fut = async move {
             let auth = mcp_auth.await;
-            if config_for_mcp.features.plugin_recommendations_enabled() {
-                let plugins_config = config_for_mcp.plugins_config_input();
-                let auth_for_prewarm = auth.clone();
-                // Fetch the catalog while MCP and plugin/skill initialization continue.
-                // Context construction still handles filtering and prompt insertion.
-                tokio::spawn(async move {
-                    plugins_manager_for_prewarm
-                        .recommended_plugins_mode_for_config(
-                            &plugins_config,
-                            auth_for_prewarm.as_ref(),
-                        )
-                        .await;
-                });
-            }
-            let mcp_projection = mcp_manager_for_mcp
-                .runtime_config_for_step(
-                    &config_for_mcp,
-                    mcp_thread_init_for_startup,
-                    thread_extension_data_for_mcp,
-                    McpThreadIdentity {
-                        auth_changed: false,
-                        session_source: &mcp_session_source,
-                        originator: &mcp_originator,
-                        disabled_plugin_ids: &mcp_disabled_plugin_ids,
-                        environments: McpEnvironmentScope::Selected(environment_selections),
-                    },
-                    /*ready_selected_capability_roots*/ &[],
-                    /*executor_capability_discovery*/ None,
-                )
-                .await;
-            (auth, mcp_projection)
+            let mcp_config = mcp_manager_for_mcp
+                .runtime_config_for_step(&config_for_mcp, environment_selections);
+            (auth, mcp_config)
         }
         .instrument(info_span!(
             "session_init.auth_mcp",
@@ -848,7 +790,7 @@ impl Session {
         ));
 
         // Join all independent futures.
-        let (thread_persistence_result, state_db_ctx, (auth, mcp_projection)) =
+        let (thread_persistence_result, state_db_ctx, (auth, mcp_config)) =
             tokio::join!(thread_persistence_fut, state_db_fut, auth_and_mcp_fut);
 
         let (live_thread, mut live_thread_init, resume_context) = thread_persistence_result
@@ -963,11 +905,10 @@ impl Session {
                 &[("is_git", is_git_tag), ("is_worktree", is_worktree_tag)],
             );
 
-            let mcp_server_names =
-                codex_mcp::effective_mcp_servers(&mcp_projection.config, auth.as_ref())
-                    .into_iter()
-                    .filter_map(|(name, server)| server.enabled().then_some(name))
-                    .collect::<Vec<_>>();
+            let mcp_server_names = codex_mcp::effective_mcp_servers(&mcp_config)
+                .into_iter()
+                .filter_map(|(name, server)| server.enabled().then_some(name))
+                .collect::<Vec<_>>();
             session_telemetry.conversation_starts(
                 config.model_provider.name.as_str(),
                 session_configuration
@@ -1013,16 +954,15 @@ impl Session {
             session_configuration.environments = turn_environments.selections();
             let resolved_environments = turn_environments.snapshot().await;
             let agents_md_manager = Arc::new(AgentsMdManager::new(instructions));
-            let plugin_skill_warmup = warm_plugins_and_skills_for_session_init(
+            let skill_warmup = warm_skills_for_session_init(
                 Arc::clone(&config),
-                Arc::clone(&plugins_manager),
                 Arc::clone(&skills_service),
                 &resolved_environments,
                 extensions.as_ref(),
             )
             .instrument(info_span!(
-                "session_init.plugin_skill_warmup",
-                otel.name = "session_init.plugin_skill_warmup",
+                "session_init.skill_warmup",
+                otel.name = "session_init.skill_warmup",
             ));
             let thread_name_lookup = async {
                 if config.ephemeral && matches!(&initial_history, InitialHistory::Forked(_)) {
@@ -1036,9 +976,9 @@ impl Session {
                 "session_init.thread_name_lookup",
                 otel.name = "session_init.thread_name_lookup",
             ));
-            let (instruction_refresh, plugin_skill_errors, thread_name) = tokio::join!(
+            let (instruction_refresh, skill_errors, thread_name) = tokio::join!(
                 agents_md_manager.refresh(config.as_ref(), &resolved_environments),
-                plugin_skill_warmup,
+                skill_warmup,
                 thread_name_lookup,
             );
             let (agents_md_result, instruction_warnings) = instruction_refresh;
@@ -1050,7 +990,7 @@ impl Session {
                     msg: EventMsg::Warning(WarningEvent { message }),
                 },
             ));
-            for err in &plugin_skill_errors {
+            for err in &skill_errors {
                 error!(
                     "failed to load skill {}: {}",
                     err.path.display(),
@@ -1068,19 +1008,11 @@ impl Session {
             if let Some(pin) = thread_extension_data.remove::<ReasoningEffortPin>() {
                 state.reasoning_effort_pin = pin.as_ref().clone();
             }
-            state.active_disabled_plugin_ids = session_configuration.disabled_plugin_ids.clone();
 
             // Hooks and extensions share one stable thread-owned MCP runtime handle.
-            let mcp_runtime = Arc::new(McpRuntime::empty(
-                mcp_projection.config.prefix_mcp_tool_names,
-            ));
-            let hooks_config = build_hooks_config(
-                &config,
-                plugins_manager.as_ref(),
-                resolved_environments.single_local_environment(),
-                &session_configuration.disabled_plugin_ids,
-            )
-            .await;
+            let mcp_runtime = Arc::new(McpRuntime::empty(mcp_config.prefix_mcp_tool_names));
+            let hooks_config =
+                build_hooks_config(&config, resolved_environments.single_local_environment());
             let (hooks, async_hook_results) = Hooks::new(
                 hooks_config,
                 thread_id,
@@ -1098,28 +1030,9 @@ impl Session {
                 });
             }
 
-            for item in initial_history.get_rollout_items() {
-                match item {
-                    RolloutItem::Compacted(compacted) => {
-                        if let Some(checkpoint) = &compacted.mcp_resource_origins {
-                            mcp_runtime.restore_resource_origin_checkpoint(checkpoint);
-                        }
-                    }
-                    RolloutItem::EventMsg(event) => mcp_runtime.observe_event(event),
-                    RolloutItem::SessionMeta(_)
-                    | RolloutItem::ResponseItem(_)
-                    | RolloutItem::InterAgentCommunication(_)
-                    | RolloutItem::InterAgentCommunicationMetadata { .. }
-                    | RolloutItem::TurnContext(_)
-                    | RolloutItem::WorldState(_)
-                    | RolloutItem::TokenUsageRecord(_)
-                    | RolloutItem::RetainedContext(_) => {}
-                }
-            }
             let session_extension_data =
                 codex_extension_api::ExtensionData::new(session_id.to_string());
             session_extension_data.insert(session_telemetry.clone());
-            let mcp_resource_client = Arc::new(McpResourceClient::new(Arc::clone(&mcp_runtime)));
             let extension_metrics =
                 extension_metrics::from_session_telemetry(session_telemetry.clone());
             let workspace_routing =
@@ -1131,7 +1044,6 @@ impl Session {
                         session_source: &session_configuration.session_source,
                         persistent_thread_state_available: state_db_ctx.is_some(),
                         environments: environment_selections,
-                        mcp_resource_client: Some(Arc::clone(&mcp_resource_client)),
                         extension_metrics: Some(Arc::clone(&extension_metrics)),
                         session_store: &session_extension_data,
                         thread_store: &thread_extension_data,
@@ -1165,25 +1077,18 @@ impl Session {
                 user_shell: Arc::new(default_shell),
                 show_raw_agent_reasoning: config.show_raw_agent_reasoning,
                 auth_manager: Arc::clone(&auth_manager),
-                openai_file_upload_client_pool: RouteAwareClientPool::new_without_request_logging(
-                    config.http_client_factory(),
-                    ClientRouteClass::Api,
-                )
-                .with_legacy_custom_ca_fallback(),
                 session_telemetry,
                 models_manager: Arc::clone(&models_manager),
                 git_root_discovery,
                 runtime_handle: tokio::runtime::Handle::current(),
                 skills_service,
                 agents_md_manager,
-                plugins_manager: Arc::clone(&plugins_manager),
                 mcp_manager: Arc::clone(&mcp_manager),
                 extensions: Arc::clone(&extensions),
                 // TODO(jif): extract session to share between sub-agents
                 session_extension_data,
                 thread_extension_data,
                 selected_capability_roots,
-                mcp_thread_init,
                 client_mcp_extensions,
                 local_agent_runtime,
                 agent_control,
@@ -1299,39 +1204,20 @@ impl Session {
             }
             let latest_auth = sess.services.auth_manager.auth().await;
             let resolved_environment_selections = resolved_environments.all_selections();
-            let mcp_projection = if startup_auth_changed
+            let mcp_config = if startup_auth_changed
                 || mcp_auth_changes.has_changed().unwrap_or(false)
                 || resolved_environment_selections.as_slice() != environment_selections
             {
                 sess.services
                     .mcp_manager
-                    .runtime_config_for_step(
-                        config.as_ref(),
-                        &sess.services.mcp_thread_init,
-                        &sess.services.thread_extension_data,
-                        McpThreadIdentity {
-                            auth_changed: !sess
-                                .services
-                                .mcp_runtime
-                                .current_auth_matches(latest_auth.as_ref()),
-                            session_source: &session_configuration.session_source,
-                            originator: &session_configuration.originator,
-                            disabled_plugin_ids: &session_configuration.disabled_plugin_ids,
-                            environments: McpEnvironmentScope::Selected(
-                                &resolved_environment_selections,
-                            ),
-                        },
-                        /*ready_selected_capability_roots*/ &[],
-                        /*executor_capability_discovery*/ None,
-                    )
-                    .await
+                    .runtime_config_for_step(config.as_ref(), &resolved_environment_selections)
             } else {
-                mcp_projection
+                mcp_config
             };
             sess.install_initial_mcp_runtime(
                 &session_configuration,
                 latest_auth,
-                mcp_projection,
+                mcp_config,
                 &resolved_environments,
                 mcp_runtime_cwd,
             )

@@ -95,13 +95,8 @@ impl ShadowSelectionExperiment {
         let mut eligible_ids = HashSet::new();
         let mut eligible_skill_resources = HashSet::new();
         for (id, entry) in catalog.entries.iter().enumerate() {
-            // Invocation observation exists only for host shell use and cloud reads.
-            if !entry.is_model_visible()
-                || !matches!(
-                    &entry.authority.kind,
-                    SkillSourceKind::Host | SkillSourceKind::Cloud
-                )
-            {
+            // Invocation observation exists only for host shell use.
+            if !entry.is_model_visible() || entry.authority.kind != SkillSourceKind::Host {
                 continue;
             }
             let resource = normalize_skill_resource(entry.main_prompt.as_str());
@@ -123,11 +118,7 @@ impl ShadowSelectionExperiment {
         // Explicit intent is a relevance signal even if the subsequent prompt read fails.
         // It can update future turns now that this turn's prediction inputs are frozen.
         for entry in explicitly_selected.iter().filter(|entry| {
-            entry.is_model_visible()
-                && matches!(
-                    &entry.authority.kind,
-                    SkillSourceKind::Host | SkillSourceKind::Cloud
-                )
+            entry.is_model_visible() && entry.authority.kind == SkillSourceKind::Host
         }) {
             task_context.record(
                 &input.turn_id,

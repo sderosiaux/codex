@@ -25,7 +25,6 @@ codex-image-generation-extension = { workspace = true }
 codex-exec-server = { workspace = true }
 codex-features = { workspace = true }
 codex-login = { workspace = true }
-codex-mcp-extension = { workspace = true }
 codex-model-provider-info = { workspace = true }
 codex-models-manager = { workspace = true }
 codex-protocol = { workspace = true }

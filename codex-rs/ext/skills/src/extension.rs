@@ -3,7 +3,6 @@ use std::sync::Arc;
 use crate::HostSkillsSnapshot;
 use crate::InjectedHostSkillPrompts;
 use codex_exec_server::ExecutorCapabilityDiscoverySnapshot;
-use codex_exec_server::LOCAL_ENVIRONMENT_ID;
 use codex_exec_server::ResolvedSelectedCapabilityRoot;
 use codex_extension_api::ConfigContributor;
 use codex_extension_api::ContextContributor;
@@ -15,7 +14,6 @@ use codex_extension_api::ExtensionMetrics;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_extension_api::ExtensionWarning;
 use codex_extension_api::PromptFragment;
-use codex_extension_api::SelectedPluginSnapshot;
 use codex_extension_api::SkillInvocationContributor;
 use codex_extension_api::SkillInvocationInput;
 use codex_extension_api::SkillInvocationKind;
@@ -28,7 +26,6 @@ use codex_extension_api::TurnInputContext;
 use codex_extension_api::TurnInputContributor;
 use codex_extension_api::WorldStateContributionInput;
 use codex_extension_api::WorldStateSectionContribution;
-use codex_mcp::McpResourceClient;
 use codex_otel::MetricsClient;
 use codex_protocol::openai_models::ModelInfo;
 
@@ -73,9 +70,6 @@ use crate::tools::skill_tools;
 use crate::warnings::bounded_warnings;
 use crate::world_state_catalogs::CatalogContext;
 use crate::world_state_catalogs::CatalogStatus;
-
-#[path = "cloud_skill.rs"]
-mod cloud_skill;
 
 struct SkillsExtension<C> {
     providers: SkillProviders,
@@ -139,17 +133,13 @@ where
     fn on_thread_start<'a>(&'a self, input: ThreadStartInput<'a, C>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
             input.session_store.insert(SkillsSessionState {
-                mcp_resources: input.mcp_resource_client.clone(),
                 extension_metrics: input.extension_metrics.clone(),
             });
-            let cloud_skills_available = !input
-                .environments
-                .iter()
-                .any(|environment| environment.environment_id == LOCAL_ENVIRONMENT_ID);
-            input.thread_store.insert(SkillsThreadState::new(
-                (self.config_from_host)(input.config),
-                cloud_skills_available,
-            ));
+            input
+                .thread_store
+                .insert(SkillsThreadState::new((self.config_from_host)(
+                    input.config,
+                )));
         })
     }
 }
@@ -169,8 +159,7 @@ where
         if let Some(state) = thread_store.get::<SkillsThreadState>() {
             state.set_config(next_config);
         } else {
-            let cloud_skills_available = true;
-            thread_store.insert(SkillsThreadState::new(next_config, cloud_skills_available));
+            thread_store.insert(SkillsThreadState::new(next_config));
         }
     }
 }
@@ -193,22 +182,16 @@ where
                 return Vec::new();
             }
             let catalog = self
-                .list_skills(
-                    SkillListQuery {
-                        turn_id: thread_store.level_id().to_string(),
-                        executor_roots: Vec::new(),
-                        resolved_executor_roots: Vec::new(),
-                        host_snapshot: None,
-                        include_host_skills: false,
-                        include_bundled_skills: config.bundled_skills_enabled,
-                        include_cloud_skills: false,
-                        mcp_resources: session_store
-                            .get::<SkillsSessionState>()
-                            .and_then(|state| state.mcp_resources.clone()),
-                        executor_capability_discovery: None,
-                    },
-                    &thread_state,
-                )
+                .providers
+                .list_for_turn(SkillListQuery {
+                    turn_id: thread_store.level_id().to_string(),
+                    executor_roots: Vec::new(),
+                    resolved_executor_roots: Vec::new(),
+                    host_snapshot: None,
+                    include_host_skills: false,
+                    include_bundled_skills: config.bundled_skills_enabled,
+                    executor_capability_discovery: None,
+                })
                 .await;
             for warning in bounded_warnings(&catalog.warnings) {
                 self.emit_warning(thread_store.level_id(), /*turn_id*/ None, warning);
@@ -271,12 +254,7 @@ where
         session_store: &ExtensionData,
         thread_store: &ExtensionData,
     ) -> Vec<Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>> {
-        self.build_skill_tools(
-            session_store,
-            thread_store,
-            /*executor_query*/ None,
-            /*selected_plugins*/ None,
-        )
+        self.build_skill_tools(session_store, thread_store, /*executor_query*/ None)
     }
 
     fn tools_for_step(
@@ -299,18 +277,11 @@ where
             host_snapshot: None,
             include_host_skills: false,
             include_bundled_skills: false,
-            include_cloud_skills: false,
-            mcp_resources: None,
             executor_capability_discovery: step_store
                 .get::<ExecutorCapabilityDiscoverySnapshot>()
                 .map(|discovery| discovery.as_ref().clone()),
         });
-        self.build_skill_tools(
-            session_store,
-            thread_store,
-            executor_query,
-            step_store.get::<SelectedPluginSnapshot>(),
-        )
+        self.build_skill_tools(session_store, thread_store, executor_query)
     }
 }
 
@@ -361,9 +332,6 @@ where
             };
 
             let config = thread_state.config();
-            let mcp_resources = session_store
-                .get::<SkillsSessionState>()
-                .and_then(|state| state.mcp_resources.clone());
             let host_snapshot = turn_store.get::<HostSkillsSnapshot>();
             let host_catalog_in_world_state =
                 turn_store.get::<HostSkillsCatalogInWorldState>().is_some();
@@ -375,15 +343,13 @@ where
                 host_snapshot: host_snapshot.clone(),
                 include_host_skills: host_skills.is_none() && !host_catalog_in_world_state,
                 include_bundled_skills: config.bundled_skills_enabled,
-                include_cloud_skills: thread_state.cloud_skill_enabled(),
-                mcp_resources: mcp_resources.clone(),
                 executor_capability_discovery: None,
             };
             let mut catalog = turn_store
                 .get::<ExecutorSkillsStepState>()
                 .map(|executor_skills| executor_skills.0.clone())
                 .unwrap_or_default();
-            catalog.extend(self.list_skills(query, &thread_state).await);
+            catalog.extend(self.providers.list_for_turn(query).await);
             for warning in bounded_warnings(&catalog.warnings) {
                 self.emit_warning(thread_store.level_id(), Some(&input.turn_id), warning);
             }
@@ -412,10 +378,9 @@ where
             let mut fragments: Vec<Box<dyn ContextualUserFragment + Send>> = Vec::new();
             if config.include_instructions && !host_catalog_in_world_state {
                 let mut turn_catalog = catalog.clone();
-                turn_catalog.entries.retain(|entry| {
-                    entry.authority.kind != SkillSourceKind::Executor
-                        && entry.authority.kind != SkillSourceKind::Cloud
-                });
+                turn_catalog
+                    .entries
+                    .retain(|entry| entry.authority.kind != SkillSourceKind::Executor);
                 let model_info = thread_store.get::<ModelInfo>();
                 let include_usage = model_info
                     .as_deref()
@@ -447,13 +412,7 @@ where
             let telemetry = SkillInvocationTelemetry::from_stores(session_store, thread_store);
             for entry in &selected_entries {
                 match self
-                    .read_main_prompt(
-                        entry,
-                        host_snapshot.clone(),
-                        mcp_resources.clone(),
-                        &thread_state,
-                        &input,
-                    )
+                    .read_main_prompt(entry, host_snapshot.clone(), &input)
                     .await
                 {
                     Ok(read_result) => {
@@ -552,32 +511,13 @@ impl<C> SkillsExtension<C> {
         session_store: &ExtensionData,
         thread_store: &ExtensionData,
         executor_query: Option<SkillListQuery>,
-        selected_plugins: Option<Arc<SelectedPluginSnapshot>>,
     ) -> Vec<Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>> {
         skill_tools(
             self.providers.clone(),
             session_store,
             thread_store,
             executor_query,
-            selected_plugins,
         )
-    }
-
-    #[tracing::instrument(level = "trace", skip_all)]
-    async fn list_skills(
-        &self,
-        mut query: SkillListQuery,
-        thread_state: &SkillsThreadState,
-    ) -> SkillCatalog {
-        let include_cloud_skills = query.include_cloud_skills;
-        query.include_cloud_skills = false;
-
-        let mut catalog = self.providers.list_for_turn(query).await;
-        if include_cloud_skills {
-            let cloud_catalog = thread_state.cloud_catalog_snapshot();
-            catalog.extend(cloud_catalog);
-        }
-        catalog
     }
 
     #[tracing::instrument(level = "trace", skip_all, fields(skill = %entry.name))]
@@ -585,13 +525,9 @@ impl<C> SkillsExtension<C> {
         &self,
         entry: &SkillCatalogEntry,
         host_snapshot: Option<Arc<HostSkillsSnapshot>>,
-        mcp_resources: Option<Arc<McpResourceClient>>,
-        thread_state: &SkillsThreadState,
         input: &TurnInputContext<'_>,
     ) -> Result<SkillReadResult, String> {
         let context = match entry.authority.kind {
-            SkillSourceKind::Cloud => SkillReadContext::Cloud { mcp_resources },
-            SkillSourceKind::Custom(_) => SkillReadContext::Custom { mcp_resources },
             SkillSourceKind::Host => SkillReadContext::Host { host_snapshot },
             SkillSourceKind::Executor => {
                 let fs = entry
@@ -610,16 +546,13 @@ impl<C> SkillsExtension<C> {
                 SkillReadContext::Executor { fs }
             }
         };
-        thread_state
-            .read_skill(
-                &self.providers,
-                SkillReadRequest {
-                    authority: entry.authority.clone(),
-                    package: entry.id.clone(),
-                    resource: entry.main_prompt.clone(),
-                    context,
-                },
-            )
+        self.providers
+            .read(SkillReadRequest {
+                authority: entry.authority.clone(),
+                package: entry.id.clone(),
+                resource: entry.main_prompt.clone(),
+                context,
+            })
             .await
             .map_err(|err| err.message)
     }
@@ -677,7 +610,6 @@ pub fn install_with_providers_and_metrics<C>(
     });
     registry.thread_lifecycle_contributor(extension.clone());
     registry.turn_lifecycle_contributor(Arc::new(SkillTelemetry));
-    registry.turn_lifecycle_contributor(extension.clone());
     registry.config_contributor(extension.clone());
     registry.prompt_contributor(extension.clone());
     registry.turn_input_contributor(extension.clone());

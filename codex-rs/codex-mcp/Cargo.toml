@@ -20,7 +20,6 @@ async-channel = { workspace = true }
 codex-async-utils = { workspace = true }
 codex-api = { workspace = true }
 codex-config = { workspace = true }
-codex-connectors = { workspace = true }
 codex-diagnostics = { workspace = true }
 codex-exec-server = { workspace = true }
 codex-login = { workspace = true }
@@ -29,7 +28,6 @@ codex-otel = { workspace = true }
 codex-protocol = { workspace = true }
 codex-rmcp-client = { workspace = true }
 codex-utils-path-uri = { workspace = true }
-codex-utils-plugins = { workspace = true }
 futures = { workspace = true }
 lru = { workspace = true }
 regex-lite = { workspace = true }

@@ -9,7 +9,6 @@ use crate::HostSkillsSnapshot;
 use codex_exec_server::EnvironmentAccess;
 use codex_exec_server::ExecutorCapabilityDiscoverySnapshot;
 use codex_exec_server::ResolvedSelectedCapabilityRoot;
-use codex_mcp::McpResourceClient;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
 
 use crate::catalog::SkillAuthority;
@@ -21,7 +20,6 @@ use crate::catalog::SkillResourceId;
 use crate::catalog::SkillSearchResult;
 
 pub use executor::ExecutorSkillProvider;
-pub(crate) use executor::attribute_executor_plugins;
 pub use host::HostSkillProvider;
 
 pub(crate) const MAX_SKILL_RESOURCE_CONTENT_BYTES: usize = 1024 * 1024;
@@ -34,8 +32,6 @@ pub struct SkillListQuery {
     pub host_snapshot: Option<Arc<HostSkillsSnapshot>>,
     pub include_host_skills: bool,
     pub include_bundled_skills: bool,
-    pub include_cloud_skills: bool,
-    pub mcp_resources: Option<Arc<McpResourceClient>>,
     /// Present only when the opt-in high-level executor discovery path is selected.
     pub executor_capability_discovery: Option<ExecutorCapabilityDiscoverySnapshot>,
 }
@@ -57,12 +53,6 @@ pub enum SkillReadContext<'a> {
     },
     Executor {
         fs: &'a dyn EnvironmentAccess,
-    },
-    Cloud {
-        mcp_resources: Option<Arc<McpResourceClient>>,
-    },
-    Custom {
-        mcp_resources: Option<Arc<McpResourceClient>>,
     },
 }
 

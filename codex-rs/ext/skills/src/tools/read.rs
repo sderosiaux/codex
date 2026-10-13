@@ -12,6 +12,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate::catalog::SkillResourceId;
+use crate::catalog::SkillSourceKind;
 use crate::provider::MAX_SKILL_RESOURCE_CONTENT_BYTES;
 use crate::provider::SkillReadContext;
 use crate::provider::SkillReadRequest;
@@ -20,8 +21,6 @@ use crate::state::ExecutorReadSnapshot;
 
 use super::MAX_HANDLE_BYTES;
 use super::MAX_SKILL_RESPONSE_BYTES;
-use super::SkillToolAuthority;
-use super::SkillToolAuthoritySelector;
 use super::SkillToolContext;
 use super::pagination_cursor;
 use super::parse_args;
@@ -84,34 +83,23 @@ impl<'call> ToolExecutor<ToolCall<'call>> for ReadTool {
                 validate_handle("resource", resource, MAX_HANDLE_BYTES)?;
             }
 
-            let mut selected_skill = None;
-            for selector in [
-                super::SkillToolAuthoritySelector::Cloud,
-                super::SkillToolAuthoritySelector::Executor,
-            ] {
-                let catalog = self.context.catalog(&call.turn_id, selector).await;
-                let alias_plan = build_alias_plan(
-                    &catalog
-                        .entries
-                        .iter()
-                        .filter(|entry| entry.is_model_visible())
-                        .collect::<Vec<_>>(),
-                );
-                if let Some(entry) = catalog.entries.into_iter().find(|entry| {
-                    entry.enabled
-                        && (entry.id.0 == args.package
-                            || alias_plan
-                                .as_ref()
-                                .and_then(|plan| plan.shorten(&entry.id.0))
-                                .is_some_and(|alias| alias == args.package))
-                        && SkillToolAuthority::from_authority(&entry.authority)
-                            .is_some_and(|authority| authority.selector() == selector)
-                }) {
-                    selected_skill = Some((entry, selector));
-                    break;
-                }
-            }
-            let Some((skill_entry, output_authority)) = selected_skill else {
+            let catalog = self.context.catalog(&call.turn_id).await;
+            let alias_plan = build_alias_plan(
+                &catalog
+                    .entries
+                    .iter()
+                    .filter(|entry| entry.is_model_visible())
+                    .collect::<Vec<_>>(),
+            );
+            let Some(skill_entry) = catalog.entries.into_iter().find(|entry| {
+                entry.enabled
+                    && entry.authority.kind == SkillSourceKind::Executor
+                    && (entry.id.0 == args.package
+                        || alias_plan
+                            .as_ref()
+                            .and_then(|plan| plan.shorten(&entry.id.0))
+                            .is_some_and(|alias| alias == args.package))
+            }) else {
                 return Err(FunctionCallError::RespondToModel(
                     "skill package is not available".to_string(),
                 ));
@@ -126,35 +114,26 @@ impl<'call> ToolExecutor<ToolCall<'call>> for ReadTool {
                     .bind_environment_package_resource(&package, resource.clone())
                     .unwrap_or_else(|| SkillResourceId::new(resource)),
             };
-            let (context, access_key) = match output_authority {
-                SkillToolAuthoritySelector::Cloud => (
-                    SkillReadContext::Cloud {
-                        mcp_resources: self.context.mcp_resources.clone(),
-                    },
-                    None,
-                ),
-                SkillToolAuthoritySelector::Executor => {
-                    let fs = requested_resource
-                        .environment_path()
-                        .and_then(|(id, _)| {
-                            call.environments
-                                .iter()
-                                .find(|env| env.environment_id == id)
-                        })
-                        .map(codex_extension_api::ToolEnvironment::fs)
-                        .ok_or_else(|| {
-                            FunctionCallError::RespondToModel(
-                                "skill environment is not available for this callback".to_string(),
-                            )
-                        })?;
-                    (SkillReadContext::Executor { fs }, Some(fs.cache_key()))
-                }
-            };
+            let fs = requested_resource
+                .environment_path()
+                .and_then(|(id, _)| {
+                    call.environments
+                        .iter()
+                        .find(|env| env.environment_id == id)
+                })
+                .map(codex_extension_api::ToolEnvironment::fs)
+                .ok_or_else(|| {
+                    FunctionCallError::RespondToModel(
+                        "skill environment is not available for this callback".to_string(),
+                    )
+                })?;
+            let context = SkillReadContext::Executor { fs };
+            let access_key = fs.cache_key();
             // Reuse the snapshot to avoid reading the whole file for each page. File edits
             // are not detected on cache hits, so a continuation can return old contents.
             // Snapshots have no expiry and are not cleared after the final page.
             let cached = args.cursor.as_deref().and_then(|cursor| {
-                let access = access_key.as_ref()?;
+                let access = &access_key;
                 let snapshot = self
                     .context
                     .thread_state
@@ -180,16 +159,13 @@ impl<'call> ToolExecutor<ToolCall<'call>> for ReadTool {
                 None => {
                     let result = self
                         .context
-                        .thread_state
-                        .read_skill(
-                            &self.context.providers,
-                            SkillReadRequest {
-                                authority: authority.clone(),
-                                package: package.clone(),
-                                resource: requested_resource.clone(),
-                                context,
-                            },
-                        )
+                        .providers
+                        .read(SkillReadRequest {
+                            authority: authority.clone(),
+                            package: package.clone(),
+                            resource: requested_resource.clone(),
+                            context,
+                        })
                         .await
                         .map_err(|err| {
                             tracing::warn!(
@@ -208,14 +184,6 @@ impl<'call> ToolExecutor<ToolCall<'call>> for ReadTool {
                             "skill provider returned a different resource".to_string(),
                         ));
                     }
-                    if output_authority == super::SkillToolAuthoritySelector::Cloud
-                        && let Some(state) = self
-                            .context
-                            .thread_state
-                            .shadow_selection_turn(&call.turn_id)
-                    {
-                        state.record_invocation(main_prompt.as_str());
-                    }
                     let start = parse_pagination_cursor(
                         args.cursor.as_deref(),
                         result.contents.as_str(),
@@ -229,14 +197,10 @@ impl<'call> ToolExecutor<ToolCall<'call>> for ReadTool {
                     "skills.read cursor is invalid".to_string(),
                 ));
             }
-            let skill_root = if output_authority == super::SkillToolAuthoritySelector::Executor {
-                main_prompt
-                    .environment_path()
-                    .and_then(|(_, path)| path.parent())
-                    .map(|path| path.inferred_native_path_string())
-            } else {
-                None
-            };
+            let skill_root = main_prompt
+                .environment_path()
+                .and_then(|(_, path)| path.parent())
+                .map(|path| path.inferred_native_path_string());
             let response = page_response(
                 result.resource.as_str(),
                 &result.contents,
@@ -244,11 +208,9 @@ impl<'call> ToolExecutor<ToolCall<'call>> for ReadTool {
                 start,
                 response_byte_budget,
             )?;
-            let output = skill_json_output(&response, output_authority)?;
-            if output_authority == super::SkillToolAuthoritySelector::Executor
-                && response.next_cursor.is_some()
+            let output = skill_json_output(&response)?;
+            if response.next_cursor.is_some()
                 && result.contents.len() <= MAX_SKILL_RESOURCE_CONTENT_BYTES
-                && let Some(access) = access_key
             {
                 *self
                     .context
@@ -259,7 +221,7 @@ impl<'call> ToolExecutor<ToolCall<'call>> for ReadTool {
                     Some(ExecutorReadSnapshot {
                         authority,
                         package,
-                        access,
+                        access: access_key,
                         result,
                     });
             }

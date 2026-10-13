@@ -7,17 +7,12 @@ use serde::Serialize;
 use serde_json::json;
 
 use crate::render::SkillRenderReport;
-use crate::world_state_catalogs::CatalogBudgetAllocation;
 
 pub(crate) const SKILLS_WORLD_STATE_ID: &str = "skills";
-pub(crate) const CLOUD_SKILLS_WORLD_STATE_ID: &str = "cloud_skills";
 pub(crate) const HOST_SKILLS_WORLD_STATE_ID: &str = "host_skills";
 const NO_EXECUTOR_SKILLS_BODY: &str =
     "\n## Skills update\nNo selected-environment skills are currently available.\n";
 const HIDDEN_EXECUTOR_SKILLS_BODY: &str = "\n## Skills update\nSelected-environment skills are not listed automatically. Explicit skill mentions can still be resolved when available.\n";
-const NO_CLOUD_SKILLS_BODY: &str =
-    "\n## Cloud skills update\nNo cloud skills are currently available.\n";
-const HIDDEN_CLOUD_SKILLS_BODY: &str = "\n## Cloud skills update\nCloud skills are not listed automatically. Explicit skill mentions can still be resolved when available.\n";
 const NO_HOST_SKILLS_BODY: &str =
     "\n## Host skills update\nNo host skills are currently available.\n";
 const HIDDEN_HOST_SKILLS_BODY: &str = "\n## Host skills update\nHost skills are not listed automatically. Explicit skill mentions can still be resolved when available.\n";
@@ -30,10 +25,6 @@ pub(crate) type CatalogRenderCallback = Box<dyn Fn() + Send + Sync>;
 struct CatalogSnapshot {
     body: Option<String>,
     include_instructions: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    enabled: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    allocation: Option<CatalogBudgetAllocation>,
 }
 
 pub(crate) fn executor_skills_world_state_section(
@@ -119,31 +110,6 @@ pub(crate) fn executor_skills_world_state_section(
     }
 }
 
-pub(crate) fn cloud_skills_world_state_section(
-    body: Option<String>,
-    include_instructions: bool,
-    enabled: bool,
-    allocation: CatalogBudgetAllocation,
-    on_render: CatalogRenderCallback,
-) -> WorldStateSectionContribution {
-    skills_world_state_section(
-        CLOUD_SKILLS_WORLD_STATE_ID,
-        CatalogSnapshot {
-            body,
-            include_instructions,
-            enabled: Some(enabled),
-            allocation: Some(allocation),
-        },
-        NO_CLOUD_SKILLS_BODY,
-        if enabled {
-            HIDDEN_CLOUD_SKILLS_BODY
-        } else {
-            NO_CLOUD_SKILLS_BODY
-        },
-        on_render,
-    )
-}
-
 fn skills_world_state_section(
     id: &'static str,
     state: CatalogSnapshot,
@@ -155,8 +121,6 @@ fn skills_world_state_section(
     let CatalogSnapshot {
         body,
         include_instructions,
-        enabled,
-        ..
     } = state;
     let retained_body = body.clone();
 
@@ -166,10 +130,8 @@ fn skills_world_state_section(
             let previous_include_instructions = previous
                 .get("includeInstructions")
                 .and_then(serde_json::Value::as_bool);
-            let previous_enabled = previous.get("enabled").and_then(serde_json::Value::as_bool);
             if previous_body == body.as_deref()
                 && previous_include_instructions == Some(include_instructions)
-                && previous_enabled == enabled
             {
                 return (Some(snapshot.clone()), None);
             }
@@ -221,8 +183,6 @@ pub(crate) fn host_skills_world_state_section(
         CatalogSnapshot {
             body,
             include_instructions,
-            enabled: None,
-            allocation: None,
         },
         NO_HOST_SKILLS_BODY,
         HIDDEN_HOST_SKILLS_BODY,

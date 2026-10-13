@@ -102,13 +102,10 @@ pub(crate) async fn run_codex_thread_interactive(
             .turn_environments
             .environment_manager(),
         skills_service: Arc::clone(&parent_session.services.skills_service),
-        plugins_manager: Arc::clone(&parent_session.services.plugins_manager),
         mcp_manager: Arc::clone(&parent_session.services.mcp_manager),
         extensions,
         conversation_history,
         history_initialization,
-        disabled_plugin_ids: (isolation == codex_extension_api::SessionIsolation::Inherit)
-            .then(|| parent_ctx.disabled_plugin_ids.clone()),
         requested_history_mode: None,
         fork_persistence: ForkPersistence::Copied,
         session_source,

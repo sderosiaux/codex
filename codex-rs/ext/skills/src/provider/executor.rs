@@ -5,10 +5,8 @@ use std::sync::Arc;
 use codex_exec_server::EnvironmentAccess;
 use codex_exec_server::EnvironmentManager;
 use codex_exec_server::FileSystemEnvironmentAccessor;
-use codex_extension_api::SelectedPluginSnapshot;
 use codex_protocol::capabilities::CapabilityRootLocation;
 use codex_protocol::protocol::Product;
-use codex_protocol::protocol::SkillScope;
 use codex_skills::EnvironmentSkillMetadata;
 use codex_utils_path_uri::PathConvention;
 use codex_utils_path_uri::PathUri;
@@ -62,25 +60,6 @@ impl ExecutorSkillProvider {
     ) -> Self {
         self.disabled_skill_paths = disabled_skill_paths;
         self
-    }
-}
-
-pub(crate) fn attribute_executor_plugins(
-    catalog: &mut SkillCatalog,
-    snapshot: &SelectedPluginSnapshot,
-) {
-    catalog
-        .entries
-        .retain(|skill| !snapshot.disabled_plugin_roots.contains(&skill.authority.id));
-    for skill in &mut catalog.entries {
-        if let Some(plugin) = snapshot
-            .plugins
-            .iter()
-            .find(|plugin| plugin.selected_root_id.as_ref() == Some(&skill.authority.id))
-        {
-            skill.plugin_id = Some(plugin.plugin_id.clone());
-            skill.analytics_scope = Some(SkillScope::User);
-        }
     }
 }
 

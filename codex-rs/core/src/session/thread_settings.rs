@@ -60,7 +60,6 @@ pub(super) fn prepare_update(
         service_tier,
         collaboration_mode,
         personality,
-        disabled_plugin_ids,
     } = overrides;
     SessionSettingsUpdate {
         turn_extension_init,
@@ -74,7 +73,6 @@ pub(super) fn prepare_update(
         },
         environments: environment_requests.map(|requests| requests.select(roots)),
         runtime_workspace_roots,
-        disabled_plugin_ids,
         ..Default::default()
     }
 }

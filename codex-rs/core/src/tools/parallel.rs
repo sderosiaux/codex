@@ -102,12 +102,6 @@ impl ToolCallRuntime {
                     ResponseItemEnvelope::new(Self::failure_response(error_call, other).into())
                 }
             };
-            if let Some(text) = call_state.delivered_assistant_message.get() {
-                response
-                    .metadata
-                    .get_or_insert_default()
-                    .delivered_assistant_message = Some(text.clone());
-            }
             recorder.attach_direct_call_to_output(&mut response.item, recorded_call);
             Ok(response)
         }

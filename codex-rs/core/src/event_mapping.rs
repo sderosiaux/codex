@@ -18,13 +18,11 @@ use codex_protocol::models::is_local_audio_close_tag_text;
 use codex_protocol::models::is_local_audio_open_tag_text;
 use codex_protocol::models::is_local_image_close_tag_text;
 use codex_protocol::models::is_local_image_open_tag_text;
-use codex_protocol::protocol::APPS_INSTRUCTIONS_OPEN_TAG;
 use codex_protocol::protocol::COLLABORATION_MODE_OPEN_TAG;
 use codex_protocol::protocol::CONTEXT_WINDOW_GUIDANCE_OPEN_TAG;
 use codex_protocol::protocol::CONTEXT_WINDOW_OPEN_TAG;
 use codex_protocol::protocol::ENVIRONMENTS_INSTRUCTIONS_OPEN_TAG;
 use codex_protocol::protocol::MULTI_AGENT_MODE_OPEN_TAG;
-use codex_protocol::protocol::PLUGINS_INSTRUCTIONS_OPEN_TAG;
 use codex_protocol::protocol::SKILLS_INSTRUCTIONS_OPEN_TAG;
 use codex_protocol::protocol::TOOLS_OPEN_TAG;
 use codex_protocol::user_input::UserInput;
@@ -43,13 +41,11 @@ const CONTEXTUAL_DEVELOPER_PREFIXES: &[&str] = &[
     "<model_switch>",
     "<managed_developer_instructions>",
     "<persistent_mode>",
-    APPS_INSTRUCTIONS_OPEN_TAG,
     COLLABORATION_MODE_OPEN_TAG,
     "<multi_agent_role>",
     MULTI_AGENT_MODE_OPEN_TAG,
     ENVIRONMENTS_INSTRUCTIONS_OPEN_TAG,
     "<git_attribution>",
-    PLUGINS_INSTRUCTIONS_OPEN_TAG,
     SKILLS_INSTRUCTIONS_OPEN_TAG,
     TOOLS_OPEN_TAG,
     "<personality_spec>",

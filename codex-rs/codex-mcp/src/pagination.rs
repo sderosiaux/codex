@@ -8,7 +8,6 @@ use rmcp::model::PaginatedRequestParams;
 
 const MAX_MCP_CATALOG_PAGES: usize = 100;
 pub(crate) const MAX_MCP_CATALOG_ITEMS: usize = 2_048;
-pub(crate) const MAX_CODEX_APPS_TOOL_CATALOG_ITEMS: usize = 8_192;
 const MAX_MCP_PAGINATION_CURSOR_BYTES: usize = 64 * 1024;
 const DEFAULT_MCP_PAGINATION_TIMEOUT: Duration = Duration::from_secs(30);
 

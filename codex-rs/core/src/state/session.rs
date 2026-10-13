@@ -64,8 +64,6 @@ impl ReasoningEffortPin {
 /// Persistent, session-scoped state previously stored directly on `Session`.
 pub(crate) struct SessionState {
     pub(crate) session_configuration: SessionConfiguration,
-    /// Plugin selection of the last admitted task; settings updates take effect on the next task.
-    pub(crate) active_disabled_plugin_ids: Vec<String>,
     /// Persisted origin of the session base instructions, when known.
     pub(crate) base_instructions_provenance: Option<BaseInstructionsProvenance>,
     pub(crate) history: ContextManager,
@@ -103,7 +101,6 @@ impl SessionState {
         history: ContextManager,
     ) -> Self {
         Self {
-            active_disabled_plugin_ids: Vec::new(),
             session_configuration,
             base_instructions_provenance: None,
             history,

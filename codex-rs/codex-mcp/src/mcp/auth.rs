@@ -206,11 +206,7 @@ where
 {
     let futures = servers.into_iter().map(|(name, server)| {
         let name = name.clone();
-        let redirect_mode = if server.is_agent_plugin() {
-            StreamableHttpRedirectMode::AgentPluginV1
-        } else {
-            StreamableHttpRedirectMode::Legacy
-        };
+        let redirect_mode = StreamableHttpRedirectMode::Legacy;
         let config = server.config().clone();
         let runtime_context = runtime_context.clone();
         async move {

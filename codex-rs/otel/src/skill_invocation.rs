@@ -17,7 +17,6 @@ pub struct SkillInvocationEvent<'a> {
     pub turn_id: &'a str,
     pub skill_name: &'a str,
     pub scope: Option<SkillScope>,
-    pub plugin_id: Option<&'a str>,
     pub invocation_type: SkillInvocationType,
 }
 
@@ -50,7 +49,6 @@ impl SessionTelemetry {
             user.account_id = self.metadata.account_id.as_deref(),
             skill.name = event.skill_name,
             skill.scope = scope,
-            skill.plugin_id = event.plugin_id,
             skill.invocation_type = invocation_type,
             model = %self.metadata.model,
             app.version = self.metadata.app_version,

@@ -18,18 +18,17 @@ pub(crate) struct CoreHookMcpExecutor {
 impl HookMcpExecutor for CoreHookMcpExecutor {
     fn execute(&self, call: HookMcpCall) -> BoxFuture<'_, anyhow::Result<String>> {
         async move {
-            let mut metadata = call.metadata.unwrap_or_default();
-            metadata.insert(
+            let metadata = serde_json::Map::from_iter([(
                 "threadId".to_string(),
                 Value::String(self.thread_id.to_string()),
-            );
+            )]);
 
             let result = self
                 .runtime
                 .latest_call_tool(
                     &call.server,
                     &call.tool,
-                    call.environment_id.as_deref(),
+                    /*environment_id*/ None,
                     Some(Value::Object(call.input)),
                     Some(Value::Object(metadata)),
                     Some(call.timeout),

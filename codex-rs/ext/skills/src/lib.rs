@@ -51,7 +51,7 @@ pub(crate) use skills_extension_state::SkillsExtensionState;
 pub use sources::SkillProviderSource;
 pub use sources::SkillProviders;
 pub use state::SkillsThreadState;
-pub use telemetry::record_plugin_turn_usage;
+pub use telemetry::record_skill_turn_usage;
 
 /// Recognizes persisted explicit skill prompts without exposing their fragment implementation.
 pub fn is_skill_prompt_fragment(text: &str) -> bool {

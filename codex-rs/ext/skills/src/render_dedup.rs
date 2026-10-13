@@ -1,6 +1,4 @@
-//! Prefers cloud skills before budgeting while retaining aliases from the full visible inventory.
-
-use std::collections::HashSet;
+//! Orders model-visible entries and plans aliases from the full visible inventory.
 
 use super::AvailableSkillsRender;
 use super::CatalogLines;
@@ -35,22 +33,6 @@ impl<'a> PreparedSkillCatalog<'a> {
             alias_plan,
             policy,
         }
-    }
-
-    pub(crate) fn prefer_cloud_skills(&mut self, cloud: &SkillCatalog) {
-        let cloud_names: HashSet<_> = cloud
-            .entries
-            .iter()
-            .filter(|entry| entry.is_model_visible())
-            .map(|entry| entry.name.as_str())
-            .filter(|name| {
-                name.split_once(':')
-                    .is_some_and(|(plugin, skill)| !plugin.is_empty() && !skill.is_empty())
-            })
-            .collect();
-
-        self.entries
-            .retain(|entry| !cloud_names.contains(entry.name.as_str()));
     }
 
     pub(super) fn unaliased(&self) -> CatalogLines<'a> {

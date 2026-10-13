@@ -524,11 +524,7 @@ impl ToolRegistry {
         let cancellation_token = invocation.cancellation_token.clone();
         let tool_name = invocation.tool_name.clone();
         let call_id_owned = invocation.call_id.clone();
-        let otel = invocation
-            .step_context
-            .session_telemetry
-            .clone()
-            .with_product_sku(invocation.turn.config.apps_mcp_product_sku.as_deref());
+        let otel = invocation.step_context.session_telemetry.clone();
 
         {
             let mut active = invocation
@@ -669,7 +665,7 @@ impl ToolRegistry {
                 log_payload.as_ref(),
                 &tool_result_tags,
                 &extra_trace_fields,
-                || handle_any_tool(tool.as_ref(), invocation.clone(), call_state.as_deref()),
+                || handle_any_tool(tool.as_ref(), invocation.clone()),
                 |result| {
                     (
                         result.result.log_output(),
@@ -776,7 +772,6 @@ async fn notify_tool_finish_if_unclaimed(
 async fn handle_any_tool(
     tool: &dyn CoreToolRuntime,
     invocation: ToolInvocation,
-    call_state: Option<&ToolCallState>,
 ) -> Result<AnyToolResult, FunctionCallError> {
     let call_id = invocation.call_id.clone();
     let payload = invocation.payload.clone();
@@ -789,7 +784,6 @@ async fn handle_any_tool(
         result: output,
         post_tool_use_payload,
     };
-    super::user_messaging::capture_delivery(&result, call_state);
     if result.result.contains_external_context()
         && invocation.turn.config.memories.disable_on_external_context
     {

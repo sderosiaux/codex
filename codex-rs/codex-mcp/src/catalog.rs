@@ -1,135 +1,29 @@
-use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 
-use codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID;
 use codex_config::McpServerConfig;
 use codex_config::McpServerDisabledReason;
 use codex_config::McpServerIdpOAuthConfig;
-use codex_config::McpServerTransportConfig;
-use codex_utils_path_uri::PathUri;
 
-use crate::CODEX_APPS_MCP_SERVER_NAME;
 use crate::McpProtocolMode;
 use crate::server::McpCredentialPolicy;
-
-/// Plugin identity retained with an MCP registration for tool attribution.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct McpPluginAttribution {
-    plugin_id: String,
-    display_name: String,
-    agent_plugin: bool,
-    host_root: Option<PathUri>,
-}
-
-impl McpPluginAttribution {
-    pub fn new(plugin_id: String, display_name: String) -> Self {
-        Self {
-            plugin_id,
-            display_name,
-            agent_plugin: false,
-            host_root: None,
-        }
-    }
-
-    pub fn agent_plugin(plugin_id: String, display_name: String) -> Self {
-        Self {
-            plugin_id,
-            display_name,
-            agent_plugin: true,
-            host_root: None,
-        }
-    }
-
-    /// Records the exact host-discovered plugin root.
-    pub fn with_host_root(mut self, host_root: PathUri) -> Self {
-        self.host_root = Some(host_root);
-        self
-    }
-
-    pub fn plugin_id(&self) -> &str {
-        &self.plugin_id
-    }
-
-    pub fn display_name(&self) -> &str {
-        &self.display_name
-    }
-
-    pub fn is_agent_plugin(&self) -> bool {
-        self.agent_plugin
-    }
-
-    /// Returns the host-discovered root captured with this server registration.
-    pub fn host_root(&self) -> Option<&PathUri> {
-        self.host_root.as_ref()
-    }
-}
 
 /// The component that declared an MCP server registration.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum McpServerSource {
-    /// A plugin discovered through the process-wide legacy plugin manager.
-    Plugin(McpPluginAttribution),
-    /// A plugin explicitly selected for this thread through a capability root.
-    SelectedPlugin(McpPluginAttribution),
     Config,
-    Compatibility {
-        id: String,
-    },
-    Extension {
-        id: String,
-        host_owned_apps: bool,
-    },
-}
-
-impl McpServerSource {
-    pub fn is_agent_plugin(&self) -> bool {
-        match self {
-            Self::Plugin(attribution) | Self::SelectedPlugin(attribution) => {
-                attribution.is_agent_plugin()
-            }
-            Self::Config | Self::Compatibility { .. } | Self::Extension { .. } => false,
-        }
-    }
-
-    pub(crate) fn is_host_owned_apps(&self, name: &str, config: &McpServerConfig) -> bool {
-        name == CODEX_APPS_MCP_SERVER_NAME
-            && config.is_local_environment()
-            && matches!(
-                self,
-                Self::Compatibility { .. }
-                    | Self::Extension {
-                        host_owned_apps: true,
-                        ..
-                    }
-            )
-    }
-
-    fn disabled_registration_is_name_veto(&self) -> bool {
-        // A selected package's policy applies to its registration, not to a higher runtime source
-        // that happens to use the same logical server name.
-        !matches!(self, Self::SelectedPlugin(_))
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum RegistrationPrecedence {
-    Plugin(Reverse<usize>),
-    SelectedPlugin(Reverse<usize>),
     Config,
-    Compatibility,
-    Extension(usize),
 }
 
 impl RegistrationPrecedence {
     fn tier(self) -> u8 {
         match self {
-            Self::Plugin(_) => 0,
-            Self::SelectedPlugin(_) => 1,
-            Self::Config => 2,
-            Self::Compatibility => 3,
-            Self::Extension(_) => 4,
+            Self::Config => 0,
         }
     }
 }
@@ -169,106 +63,6 @@ impl McpServerRegistration {
         )
     }
 
-    /// Registers a plugin discovered by the host's process-wide plugin manager.
-    pub fn from_plugin(
-        name: String,
-        attribution: McpPluginAttribution,
-        plugin_order: usize,
-        config: McpServerConfig,
-    ) -> Self {
-        Self::new(
-            name,
-            McpServerSource::Plugin(attribution),
-            config,
-            RegistrationPrecedence::Plugin(Reverse(plugin_order)),
-            McpCredentialPolicy::HostFallbackAllowed,
-        )
-    }
-
-    /// Registers a thread-selected plugin above discovered plugins and below config.
-    /// HTTP credential authority comes from the selected root, not the server's execution environment.
-    pub fn from_selected_plugin(
-        name: String,
-        attribution: McpPluginAttribution,
-        selection_order: usize,
-        source_environment_id: &str,
-        config: McpServerConfig,
-    ) -> Self {
-        let credential_policy = if source_environment_id != DEFAULT_MCP_SERVER_ENVIRONMENT_ID
-            && matches!(
-                &config.transport,
-                McpServerTransportConfig::StreamableHttp { .. }
-            ) {
-            McpCredentialPolicy::ExecutorOnly
-        } else {
-            McpCredentialPolicy::HostFallbackAllowed
-        };
-        Self::new(
-            name,
-            McpServerSource::SelectedPlugin(attribution),
-            config,
-            RegistrationPrecedence::SelectedPlugin(Reverse(selection_order)),
-            credential_policy,
-        )
-    }
-
-    pub fn from_compatibility(
-        name: String,
-        id: impl Into<String>,
-        config: McpServerConfig,
-    ) -> Self {
-        Self::new(
-            name,
-            McpServerSource::Compatibility { id: id.into() },
-            config,
-            RegistrationPrecedence::Compatibility,
-            McpCredentialPolicy::HostFallbackAllowed,
-        )
-    }
-
-    pub fn from_extension(
-        name: String,
-        id: impl Into<String>,
-        contribution_order: usize,
-        config: McpServerConfig,
-    ) -> Self {
-        Self::new(
-            name,
-            McpServerSource::Extension {
-                id: id.into(),
-                host_owned_apps: false,
-            },
-            config,
-            RegistrationPrecedence::Extension(contribution_order),
-            McpCredentialPolicy::HostFallbackAllowed,
-        )
-    }
-
-    /// Overrides the protocol for this registration if it wins HTTP server resolution.
-    pub fn with_protocol_mode(mut self, protocol_mode: McpProtocolMode) -> Self {
-        self.protocol_mode = Some(protocol_mode);
-        self
-    }
-
-    /// Registers the controller-owned Apps server contributed by a host extension.
-    pub fn from_hosted_apps(
-        id: impl Into<String>,
-        contribution_order: usize,
-        config: McpServerConfig,
-    ) -> Self {
-        let host_owned_apps = config.is_local_environment();
-        Self::new(
-            CODEX_APPS_MCP_SERVER_NAME.to_string(),
-            McpServerSource::Extension {
-                id: id.into(),
-                host_owned_apps,
-            },
-            config,
-            RegistrationPrecedence::Extension(contribution_order),
-            McpCredentialPolicy::HostFallbackAllowed,
-        )
-    }
-
     fn new(
         name: String,
         source: McpServerSource,
@@ -292,8 +86,6 @@ impl McpServerRegistration {
 pub enum McpEnvironmentAuthority {
     /// The selected environment can run every registered server.
     Unrestricted,
-    /// An explicitly selected plugin can use its executor without attaching that executor.
-    SelectedPluginsOnly,
     /// The attachment is pending or failed, so its owner policy is not available.
     Unavailable,
 }
@@ -303,7 +95,6 @@ pub enum McpEnvironmentAuthority {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum McpServerConflictAction {
     Register(McpServerSource),
-    Remove(McpServerSource),
 }
 
 /// A same-tier name collision and the final outcome after all precedence is applied.
@@ -317,25 +108,18 @@ pub struct McpServerConflict {
 #[derive(Clone, Debug)]
 enum CatalogAction {
     Register(Box<McpServerRegistration>),
-    Remove {
-        name: String,
-        source: McpServerSource,
-        precedence: RegistrationPrecedence,
-    },
 }
 
 impl CatalogAction {
     fn name(&self) -> &str {
         match self {
             Self::Register(registration) => &registration.name,
-            Self::Remove { name, .. } => name,
         }
     }
 
     fn precedence(&self) -> RegistrationPrecedence {
         match self {
             Self::Register(registration) => registration.precedence,
-            Self::Remove { precedence, .. } => *precedence,
         }
     }
 
@@ -344,7 +128,6 @@ impl CatalogAction {
             Self::Register(registration) => {
                 McpServerConflictAction::Register(registration.source.clone())
             }
-            Self::Remove { source, .. } => McpServerConflictAction::Remove(source.clone()),
         }
     }
 }
@@ -374,53 +157,19 @@ impl McpCatalogBuilder {
         self.disabled_server_names.insert(name);
     }
 
-    pub fn remove_compatibility(&mut self, name: String, id: impl Into<String>) {
-        self.actions.push(CatalogAction::Remove {
-            name,
-            source: McpServerSource::Compatibility { id: id.into() },
-            precedence: RegistrationPrecedence::Compatibility,
-        });
-    }
-
-    pub fn remove_extension(
-        &mut self,
-        name: String,
-        id: impl Into<String>,
-        contribution_order: usize,
-    ) {
-        self.actions.push(CatalogAction::Remove {
-            name,
-            source: McpServerSource::Extension {
-                id: id.into(),
-                host_owned_apps: false,
-            },
-            precedence: RegistrationPrecedence::Extension(contribution_order),
-        });
-    }
-
     /// Applies environment authority before resolving immutable server registrations.
     pub fn build_with_environment_authority(
         mut self,
         mut authority_for_environment: impl FnMut(&str) -> McpEnvironmentAuthority,
     ) -> ResolvedMcpCatalog {
-        for action in &mut self.actions {
-            let CatalogAction::Register(registration) = action else {
-                continue;
-            };
-            // Controller-owned Apps and already-disabled servers are not attachment-owned.
-            if !registration.config.enabled
-                || registration
-                    .source
-                    .is_host_owned_apps(&registration.name, &registration.config)
-            {
+        for CatalogAction::Register(registration) in &mut self.actions {
+            // Already-disabled servers are not attachment-owned.
+            if !registration.config.enabled {
                 continue;
             }
 
             let allowed = match authority_for_environment(&registration.config.environment_id) {
                 McpEnvironmentAuthority::Unrestricted => true,
-                McpEnvironmentAuthority::SelectedPluginsOnly => {
-                    matches!(&registration.source, McpServerSource::SelectedPlugin(_))
-                }
                 McpEnvironmentAuthority::Unavailable => false,
             };
 
@@ -476,47 +225,33 @@ impl McpCatalogBuilder {
         let ema_idp = self.ema_idp;
         let servers = winners
             .into_iter()
-            .filter_map(|(name, action)| match action {
-                CatalogAction::Register(registration) => {
-                    let mut registration = *registration;
-                    let persist_disabled_name =
-                        registration.source.disabled_registration_is_name_veto()
-                            && !(matches!(
-                                registration.source,
-                                McpServerSource::Plugin(_) | McpServerSource::SelectedPlugin(_)
-                            ) && matches!(
-                                registration.config.auth,
-                                codex_config::McpServerAuth::EmaAuth
-                            ));
-                    if !registration.config.enabled || disabled_server_names.contains(&name) {
-                        registration.config.enabled = false;
-                        if persist_disabled_name {
-                            // Preserve legacy disabled winners across later runtime overlays.
-                            disabled_server_names.insert(name.clone());
-                        }
-                    }
-                    if matches!(
-                        registration.config.auth,
-                        codex_config::McpServerAuth::EmaAuth
-                    ) {
-                        let allowed = matches!(&registration.source, McpServerSource::Config)
-                            && ema_idp.as_ref().is_some_and(|idp| {
-                                registration.config.resolve_ema_registration(idp).is_ok()
-                            });
-                        // EMA denial must not become a persistent name veto.
-                        registration.config.enabled &= allowed;
-                    }
-                    Some((
-                        name,
-                        ResolvedMcpServer {
-                            source: registration.source,
-                            config: registration.config,
-                            credential_policy: registration.credential_policy,
-                            protocol_mode: registration.protocol_mode,
-                        },
-                    ))
+            .map(|(name, CatalogAction::Register(registration))| {
+                let mut registration = *registration;
+                if !registration.config.enabled || disabled_server_names.contains(&name) {
+                    registration.config.enabled = false;
+                    // Preserve legacy disabled winners across later runtime overlays.
+                    disabled_server_names.insert(name.clone());
                 }
-                CatalogAction::Remove { .. } => None,
+                if matches!(
+                    registration.config.auth,
+                    codex_config::McpServerAuth::EmaAuth
+                ) {
+                    let allowed = matches!(&registration.source, McpServerSource::Config)
+                        && ema_idp.as_ref().is_some_and(|idp| {
+                            registration.config.resolve_ema_registration(idp).is_ok()
+                        });
+                    // EMA denial must not become a persistent name veto.
+                    registration.config.enabled &= allowed;
+                }
+                (
+                    name,
+                    ResolvedMcpServer {
+                        source: registration.source,
+                        config: registration.config,
+                        credential_policy: registration.credential_policy,
+                        protocol_mode: registration.protocol_mode,
+                    },
+                )
             })
             .collect();
 
@@ -616,13 +351,7 @@ impl ResolvedMcpCatalog {
                 .expect("materialized MCP server must have a catalog registration");
             let source = previous.source.clone();
             let precedence = match &source {
-                McpServerSource::Plugin(_) => RegistrationPrecedence::Plugin(Reverse(0)),
-                McpServerSource::SelectedPlugin(_) => {
-                    RegistrationPrecedence::SelectedPlugin(Reverse(0))
-                }
                 McpServerSource::Config => RegistrationPrecedence::Config,
-                McpServerSource::Compatibility { .. } => RegistrationPrecedence::Compatibility,
-                McpServerSource::Extension { .. } => RegistrationPrecedence::Extension(0),
             };
             let credential_policy = previous.credential_policy();
             let mut registration =
@@ -631,29 +360,6 @@ impl ResolvedMcpCatalog {
             builder.register(registration);
         }
         builder.build()
-    }
-
-    /// Returns package attribution for each winning plugin-owned server.
-    pub fn plugin_attributions_by_server_name(&self) -> HashMap<String, McpPluginAttribution> {
-        self.servers
-            .iter()
-            .filter_map(|(name, server)| match server.source() {
-                McpServerSource::Plugin(attribution)
-                | McpServerSource::SelectedPlugin(attribution) => {
-                    Some((name.clone(), attribution.clone()))
-                }
-                McpServerSource::Config
-                | McpServerSource::Compatibility { .. }
-                | McpServerSource::Extension { .. } => None,
-            })
-            .collect()
-    }
-
-    /// Returns the names of winning servers supplied by thread-selected plugins.
-    pub(crate) fn selected_plugin_server_names(&self) -> impl Iterator<Item = &str> {
-        self.servers.iter().filter_map(|(name, server)| {
-            matches!(server.source(), McpServerSource::SelectedPlugin(_)).then_some(name.as_str())
-        })
     }
 
     pub fn conflicts(&self) -> &[McpServerConflict] {

@@ -21,37 +21,36 @@ pub fn validate_required_skills<'a>(
     if environments.peek().is_none() {
         return Ok(());
     }
-    let thread_state = thread_store.get::<SkillsThreadState>().ok_or_else(|| {
-        "Required skills cannot be validated because the skills extension is unavailable"
-            .to_string()
-    })?;
+    if thread_store.get::<SkillsThreadState>().is_none() {
+        return Err(
+            "Required skills cannot be validated because the skills extension is unavailable"
+                .to_string(),
+        );
+    }
     let executor = turn_store.get::<ExecutorSkillsStepState>();
-    thread_state.with_cloud_catalog(|cloud| {
-        for EnvironmentSkillRequirements {
-            environment_id,
-            skill_names,
-        } in environments
-        {
-            for name in skill_names {
-                let available = executor
-                    .iter()
-                    .flat_map(|state| &state.0.entries)
-                    .chain(cloud.into_iter().flat_map(|catalog| &catalog.entries))
-                    .any(|entry| {
-                        entry.enabled
-                            && entry.name == name.as_str()
-                            && entry
-                                .main_prompt
-                                .environment_path()
-                                .is_some_and(|(id, _)| id == environment_id)
-                    });
-                if !available {
-                    return Err(format!(
-                        "Required skill {name:?} from environment {environment_id:?} is unavailable"
-                    ));
-                }
+    for EnvironmentSkillRequirements {
+        environment_id,
+        skill_names,
+    } in environments
+    {
+        for name in skill_names {
+            let available = executor
+                .iter()
+                .flat_map(|state| &state.0.entries)
+                .any(|entry| {
+                    entry.enabled
+                        && entry.name == name.as_str()
+                        && entry
+                            .main_prompt
+                            .environment_path()
+                            .is_some_and(|(id, _)| id == environment_id)
+                });
+            if !available {
+                return Err(format!(
+                    "Required skill {name:?} from environment {environment_id:?} is unavailable"
+                ));
             }
         }
-        Ok(())
-    })
+    }
+    Ok(())
 }

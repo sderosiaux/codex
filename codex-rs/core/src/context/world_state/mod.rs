@@ -1,5 +1,4 @@
 mod agents_md;
-mod apps_instructions;
 mod base_instructions;
 mod collaboration_mode;
 mod context_window_guidance;
@@ -10,7 +9,6 @@ mod model_catalog;
 mod multi_agent_mode;
 mod multi_agent_usage_hint;
 mod persistent_mode;
-mod plugins_instructions;
 mod tools;
 mod top_level_tools;
 
@@ -33,7 +31,6 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 pub(crate) use agents_md::AgentsMdState;
-pub(crate) use apps_instructions::AppsInstructionsState;
 pub(crate) use base_instructions::BaseInstructionsState;
 pub(crate) use collaboration_mode::CollaborationModeState;
 pub(crate) use context_window_guidance::ContextWindowGuidanceState;
@@ -44,7 +41,6 @@ pub(crate) use model_catalog::ModelCatalogState;
 pub(crate) use multi_agent_mode::MultiAgentModeState;
 pub(crate) use multi_agent_usage_hint::MultiAgentUsageHintState;
 pub(crate) use persistent_mode::PersistentModeState;
-pub(crate) use plugins_instructions::PluginsInstructionsState;
 pub(crate) use tools::ToolsState;
 pub(crate) use top_level_tools::IncrementalToolsHint;
 pub(crate) use top_level_tools::TopLevelToolsState;

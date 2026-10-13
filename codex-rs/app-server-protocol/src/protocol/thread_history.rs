@@ -9,7 +9,6 @@ use crate::protocol::v2::CollabAgentToolCallStatus;
 use crate::protocol::v2::DynamicToolCallOutputContentItem;
 use crate::protocol::v2::DynamicToolCallStatus;
 use crate::protocol::v2::ImageReference;
-use crate::protocol::v2::McpToolCallAppContext;
 use crate::protocol::v2::McpToolCallError;
 use crate::protocol::v2::McpToolCallResult;
 use crate::protocol::v2::McpToolCallStatus;
@@ -746,19 +745,8 @@ impl ThreadHistoryBuilder {
                 .arguments
                 .clone()
                 .unwrap_or(serde_json::Value::Null),
-            app_context: payload
-                .connector_id
-                .clone()
-                .map(|connector_id| McpToolCallAppContext {
-                    connector_id,
-                    link_id: payload.link_id.clone(),
-                    resource_uri: payload.mcp_app_resource_uri.clone(),
-                    app_name: payload.app_name.clone(),
-                    action_name: payload.action_name.clone(),
-                }),
             mcp_app_resource_uri: payload.mcp_app_resource_uri.clone(),
             mcp_app_ui: payload.mcp_app_ui.clone(),
-            plugin_id: payload.plugin_id.clone(),
             read_only_hint: payload.read_only_hint,
             result: None,
             error: None,
@@ -804,19 +792,8 @@ impl ThreadHistoryBuilder {
                 .arguments
                 .clone()
                 .unwrap_or(serde_json::Value::Null),
-            app_context: payload
-                .connector_id
-                .clone()
-                .map(|connector_id| McpToolCallAppContext {
-                    connector_id,
-                    link_id: payload.link_id.clone(),
-                    resource_uri: payload.mcp_app_resource_uri.clone(),
-                    app_name: payload.app_name.clone(),
-                    action_name: payload.action_name.clone(),
-                }),
             mcp_app_resource_uri: payload.mcp_app_resource_uri.clone(),
             mcp_app_ui: payload.mcp_app_ui.clone(),
-            plugin_id: payload.plugin_id.clone(),
             read_only_hint: payload.read_only_hint,
             result,
             error,

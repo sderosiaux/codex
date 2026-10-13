@@ -23,7 +23,6 @@ pub use feature_configs::CurrentTimeSource;
 pub use feature_configs::MultiAgentV2ConfigToml;
 pub use feature_configs::NonPrefixedMcpToolNamesConfigToml;
 pub use feature_configs::RemoteMessageBoardConfigToml;
-use feature_configs::RemovedAppsMcpPathOverrideConfigToml;
 pub use feature_configs::RolloutBudgetConfigToml;
 pub use feature_configs::SleepToolConfigToml;
 pub use feature_configs::SleepToolMode;
@@ -162,40 +161,24 @@ pub enum Feature {
     InstantInterrupt,
     /// Enable shared discussion tools for an agent tree.
     AgentMessageBoard,
-    /// Enable apps.
-    Apps,
     /// Route first-party ChatGPT requests through PSP.
     Psp,
-    /// Enable MCP apps.
-    EnableMcpApps,
     /// Enable MCP protocol version 2026-07-28 support.
     Mcp20260728,
-    /// Enable MCP protocol version 2026-07-28 for the host-owned Codex Apps server.
-    CodexAppsMcp20260728,
     /// Let RMCP coordinate OAuth refresh through the configured credential store.
     McpOAuthRefreshCoordination,
     /// Enable enterprise refresh-token authorization for configured MCP resources.
     UseXaa,
-    /// Removed compatibility flag for the legacy Apps MCP path override.
-    AppsMcpPathOverride,
     /// Describe deferred tool namespaces in the model-visible world state.
     DeferredToolWorldState,
     /// Track top-level tool definitions in world state and emit incremental context updates.
     IncrementalTools,
     /// Expose MCP model-visible namespaces without the legacy `mcp__` prefix.
     NonPrefixedMcpToolNames,
-    /// Enable discoverable tool suggestions for apps.
-    ToolSuggest,
-    /// Include recommended plugins in model-visible context.
-    RecommendedPlugins,
-    /// Enable plugins.
-    Plugins,
     /// Discover selected-root plugin and skill manifests through one high-level exec-server RPC.
     ExecutorCapabilityDiscovery,
     /// Skip host skill snapshots when no registered contributor requires them.
     SkipHostSkillDiscovery,
-    /// Enable the PS-backed remote plugin catalog.
-    RemotePlugin,
     /// Enable extension-backed image generation.
     ImageGeneration,
     /// Tell the model when a prompt image was resized and include its dimensions.
@@ -226,10 +209,6 @@ pub enum Feature {
     CurrentTimeReminder,
     /// Report failed clock reads to the model without failing the turn.
     NonfatalClockReadErrors,
-    /// Prompt Codex Apps connector auth failures through MCP URL elicitations.
-    AuthElicitation,
-    /// Enable native artifact tools.
-    Artifact,
     /// Enable Fast mode selection in the TUI and request layer.
     FastMode,
     /// Enable Ultra Fast mode independently of Fast mode.
@@ -341,16 +320,6 @@ impl Features {
         reasoning_effort == Some(&ReasoningEffort::Persistent)
     }
 
-    pub fn apps_enabled_for_auth(&self, has_chatgpt_auth: bool) -> bool {
-        self.enabled(Feature::Apps) && has_chatgpt_auth
-    }
-
-    pub fn plugin_recommendations_enabled(&self) -> bool {
-        self.enabled(Feature::Apps)
-            && self.enabled(Feature::Plugins)
-            && (self.enabled(Feature::ToolSuggest) || self.enabled(Feature::RecommendedPlugins))
-    }
-
     pub fn enable(&mut self, f: Feature) -> &mut Self {
         self.enabled.insert(f);
         self
@@ -428,7 +397,7 @@ impl Features {
                 "apply_patch_freeform" => {
                     continue;
                 }
-                "tool_search" | "tool_search_always_defer_mcp_tools" | "apps_mcp_path_override" => {
+                "tool_search" | "tool_search_always_defer_mcp_tools" => {
                     continue;
                 }
                 "image_detail_original" | "resize_all_images" | "item_ids" => {
@@ -572,9 +541,6 @@ pub struct FeaturesToml {
     pub current_time_reminder: Option<FeatureToml<CurrentTimeReminderConfigToml>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sleep_tool: Option<FeatureToml<SleepToolConfigToml>>,
-    #[serde(default, rename = "apps_mcp_path_override", skip_serializing)]
-    #[schemars(skip)]
-    removed_apps_mcp_path_override: Option<FeatureToml<RemovedAppsMcpPathOverrideConfigToml>>,
     /// Boolean feature toggles keyed by canonical or legacy feature name.
     #[serde(flatten)]
     entries: BTreeMap<String, bool>,
@@ -898,32 +864,14 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: false,
     },
     FeatureSpec {
-        id: Feature::Apps,
-        key: "apps",
-        stage: Stage::Stable,
-        default_enabled: true,
-    },
-    FeatureSpec {
         id: Feature::Psp,
         key: "psp",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
     },
     FeatureSpec {
-        id: Feature::EnableMcpApps,
-        key: "enable_mcp_apps",
-        stage: Stage::UnderDevelopment,
-        default_enabled: false,
-    },
-    FeatureSpec {
         id: Feature::Mcp20260728,
         key: "mcp_2026_07_28",
-        stage: Stage::UnderDevelopment,
-        default_enabled: false,
-    },
-    FeatureSpec {
-        id: Feature::CodexAppsMcp20260728,
-        key: "codex_apps_mcp_2026_07_28",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
     },
@@ -937,12 +885,6 @@ pub const FEATURES: &[FeatureSpec] = &[
         id: Feature::UseXaa,
         key: "use_xaa",
         stage: Stage::UnderDevelopment,
-        default_enabled: false,
-    },
-    FeatureSpec {
-        id: Feature::AppsMcpPathOverride,
-        key: "apps_mcp_path_override",
-        stage: Stage::Removed,
         default_enabled: false,
     },
     FeatureSpec {
@@ -964,24 +906,6 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: false,
     },
     FeatureSpec {
-        id: Feature::ToolSuggest,
-        key: "tool_suggest",
-        stage: Stage::Stable,
-        default_enabled: true,
-    },
-    FeatureSpec {
-        id: Feature::RecommendedPlugins,
-        key: "recommended_plugins",
-        stage: Stage::Stable,
-        default_enabled: false,
-    },
-    FeatureSpec {
-        id: Feature::Plugins,
-        key: "plugins",
-        stage: Stage::Stable,
-        default_enabled: true,
-    },
-    FeatureSpec {
         id: Feature::ExecutorCapabilityDiscovery,
         key: "executor_capability_discovery",
         stage: Stage::UnderDevelopment,
@@ -992,12 +916,6 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "skip_host_skill_discovery",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
-    },
-    FeatureSpec {
-        id: Feature::RemotePlugin,
-        key: "remote_plugin",
-        stage: Stage::Stable,
-        default_enabled: true,
     },
     FeatureSpec {
         id: Feature::ImageGeneration,
@@ -1086,18 +1004,6 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::NonfatalClockReadErrors,
         key: "nonfatal_clock_read_errors",
-        stage: Stage::UnderDevelopment,
-        default_enabled: false,
-    },
-    FeatureSpec {
-        id: Feature::AuthElicitation,
-        key: "auth_elicitation",
-        stage: Stage::Stable,
-        default_enabled: true,
-    },
-    FeatureSpec {
-        id: Feature::Artifact,
-        key: "artifact",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
     },

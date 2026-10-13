@@ -6,7 +6,6 @@ use codex_skills::normalize_skill_path;
 
 use crate::HostSkillsSnapshot;
 use crate::fragments::SkillInstructions;
-use crate::render::truncate_main_prompt_contents;
 
 /// Host skill prompts already supplied or superseded by an extension.
 ///
@@ -76,17 +75,6 @@ impl HostSkillsSnapshot {
         for skill in selected_skills {
             match self.read_skill_text(skill).await {
                 Ok(contents) => {
-                    let (contents, truncated) = if self.outcome().is_agent_plugin_skill(skill) {
-                        truncate_main_prompt_contents(&contents)
-                    } else {
-                        (contents, false)
-                    };
-                    if truncated {
-                        prompts.warnings.push(format!(
-                            "Skill `{}` exceeded the main prompt context limit and was truncated.",
-                            skill.name
-                        ));
-                    }
                     prompts.fragments.push(Box::new(SkillInstructions {
                         name: skill.name.clone(),
                         path: skill.path_to_skills_md.inferred_native_path_string(),

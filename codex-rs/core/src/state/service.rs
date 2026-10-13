@@ -15,12 +15,9 @@ use crate::tools::handlers::ToolSearchHandlerCache;
 use crate::unified_exec::UnifiedExecProcessManager;
 use arc_swap::ArcSwap;
 use codex_attachment_store::AttachmentStore;
-use codex_core_plugins::PluginsManager;
 use codex_extension_api::ExtensionData;
-use codex_extension_api::ExtensionDataInit;
 use codex_extension_api::ExtensionRegistry;
 use codex_hooks::Hooks;
-use codex_http_client::RouteAwareClientPool;
 use codex_login::AuthManager;
 use codex_mcp::McpRuntime;
 use codex_models_manager::manager::SharedModelsManager;
@@ -45,15 +42,12 @@ pub(crate) struct SessionServices {
     pub(crate) user_shell: Arc<crate::shell::Shell>,
     pub(crate) show_raw_agent_reasoning: bool,
     pub(crate) auth_manager: Arc<AuthManager>,
-    /// Upload-only clients shared across turns without logging signed blob URLs.
-    pub(crate) openai_file_upload_client_pool: RouteAwareClientPool,
     pub(crate) models_manager: SharedModelsManager,
     pub(crate) git_root_discovery: Arc<GitRootDiscovery>,
     pub(crate) session_telemetry: SessionTelemetry,
     pub(crate) runtime_handle: Handle,
     pub(crate) skills_service: Arc<HostSkillsService>,
     pub(crate) agents_md_manager: Arc<AgentsMdManager>,
-    pub(crate) plugins_manager: Arc<PluginsManager>,
     pub(crate) mcp_manager: Arc<McpManager>,
     pub(crate) extensions: Arc<ExtensionRegistry<crate::config::Config>>,
     pub(crate) session_extension_data: ExtensionData,
@@ -63,7 +57,6 @@ pub(crate) struct SessionServices {
     /// Roots supplied when the thread started or loaded from saved history.
     /// Keep roots for unselected environments so selecting them again restores their capabilities.
     pub(crate) selected_capability_roots: Vec<SelectedCapabilityRoot>,
-    pub(crate) mcp_thread_init: ExtensionDataInit,
     pub(crate) agent_control: Arc<dyn AgentControl>,
     pub(crate) local_agent_runtime: LocalAgentRuntime,
     pub(crate) state_db: Option<StateDbHandle>,

@@ -28,7 +28,6 @@ use codex_protocol::capabilities::SelectedCapabilityRoot;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::mcp::McpAttribution;
 use codex_protocol::mcp::McpAttributionStatus;
-use codex_protocol::mcp::McpResourceOriginCheckpoint;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
@@ -258,7 +257,6 @@ pub struct CompactedItem {
     pub message: String,
     pub replacement_history: Option<Vec<ResponseItemEnvelope>>,
     pub retained_context: Option<RetainedContext>,
-    pub mcp_resource_origins: Option<McpResourceOriginCheckpoint>,
     pub window_number: Option<u64>,
     pub first_window_id: Option<String>,
     pub previous_window_id: Option<String>,
@@ -494,34 +492,6 @@ fn session_cwd_from_items(items: &[RolloutItem]) -> Option<PathBuf> {
         RolloutItem::SessionMeta(meta_line) => Some(meta_line.meta.cwd.clone()),
         _ => None,
     })
-}
-
-/// Returns a thread's latest plugin selection, with a turn-context fallback.
-///
-/// Forked history may contain ancestor snapshots, and compaction may append a
-/// frozen turn context after an update. Neither can replace thread-owned settings.
-/// Without an owned snapshot, only the latest turn context supplies the initial
-/// selection; a missing field must not resurrect a selection from an older turn.
-pub fn latest_disabled_plugin_ids(items: &[RolloutItem], thread_id: ThreadId) -> Option<&[String]> {
-    if let Some(ids) = items.iter().rev().find_map(|item| {
-        if let RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) = item
-            && event.thread_id == Some(thread_id)
-        {
-            Some(event.thread_settings.disabled_plugin_ids.as_slice())
-        } else {
-            None
-        }
-    }) {
-        return Some(ids);
-    }
-    items
-        .iter()
-        .rev()
-        .find_map(|item| match item {
-            RolloutItem::TurnContext(context) => Some(context),
-            _ => None,
-        })
-        .and_then(|context| context.disabled_plugin_ids.as_deref())
 }
 
 fn multi_agent_version_from_items(

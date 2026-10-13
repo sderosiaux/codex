@@ -2,10 +2,8 @@ use std::sync::Arc;
 
 use super::session::Session;
 use super::step_context::StepContext;
-use crate::connectors;
 use crate::context::TokenBudgetContext;
 use crate::context::world_state::AgentsMdState;
-use crate::context::world_state::AppsInstructionsState;
 use crate::context::world_state::BaseInstructionsState;
 use crate::context::world_state::CollaborationModeState;
 use crate::context::world_state::ContextWindowGuidanceState;
@@ -16,12 +14,10 @@ use crate::context::world_state::ModelInstructionsState;
 use crate::context::world_state::MultiAgentModeState;
 use crate::context::world_state::MultiAgentUsageHintState;
 use crate::context::world_state::PersistentModeState;
-use crate::context::world_state::PluginsInstructionsState;
 use crate::context::world_state::ToolsState;
 use crate::context::world_state::TopLevelToolsState;
 use crate::context::world_state::WorldState;
 use crate::tools::handlers::multi_agents_spec::MULTI_AGENT_V1_NAMESPACE;
-use codex_connectors::AppToolPolicyEvaluator;
 use codex_extension_api::WorldStateContributionInput;
 use codex_features::Feature;
 use codex_prompts::ResolvedModelMessages;
@@ -229,27 +225,6 @@ impl Session {
                     .config
                     .features
                     .enabled(Feature::DeferredExecutor),
-        ));
-        let apps_available =
-            if turn_context.config.include_apps_instructions && turn_context.apps_enabled() {
-                AppToolPolicyEvaluator::new(&turn_context.config.config_layer_stack)
-                    .apply_app_enabled_state(connectors::accessible_connectors_from_mcp_tools(
-                        step_context.mcp.tools(),
-                    ))
-                    .into_iter()
-                    .any(|connector| connector.is_accessible && connector.is_enabled)
-            } else {
-                false
-            };
-        let apps_usage_instructions_available =
-            apps_available && model_info.include_apps_usage_instructions;
-        world_state.add_section(AppsInstructionsState::new(
-            apps_usage_instructions_available,
-        ));
-        let plugins_usage_instructions_available =
-            step_context.mcp.plugins_available() && model_info.include_plugin_usage_instructions;
-        world_state.add_section(PluginsInstructionsState::new(
-            plugins_usage_instructions_available,
         ));
         if turn_context
             .config

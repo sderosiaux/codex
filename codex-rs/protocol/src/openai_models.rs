@@ -410,10 +410,6 @@ pub struct ModelInfo {
     pub model_messages: Option<ModelMessages>,
     #[serde(default)]
     pub include_skills_usage_instructions: bool,
-    #[serde(default)]
-    pub include_plugin_usage_instructions: bool,
-    #[serde(default = "default_true")]
-    pub include_apps_usage_instructions: bool,
     /// Whether the model accepts the Responses API `reasoning.summary` parameter.
     #[serde(default = "default_true", skip_serializing_if = "is_true")]
     pub supports_reasoning_summary_parameter: bool,

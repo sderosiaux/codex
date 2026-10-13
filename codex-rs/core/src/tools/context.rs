@@ -25,7 +25,6 @@ use codex_utils_output_truncation::with_serialization_allowance;
 use serde_json::Value as JsonValue;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
-use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -48,7 +47,6 @@ pub type SharedTurnDiffTracker = Arc<Mutex<TurnDiffTracker>>;
 #[derive(Default)]
 pub(crate) struct ToolCallState {
     pub(crate) terminal_outcome_reached: AtomicBool,
-    pub(crate) delivered_assistant_message: OnceLock<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

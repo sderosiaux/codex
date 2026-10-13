@@ -16,7 +16,6 @@ pub(crate) mod runtime;
 pub(crate) mod runtimes;
 pub(crate) mod spec_plan;
 mod tool_namespaces_info;
-mod user_messaging;
 
 use std::borrow::Cow;
 

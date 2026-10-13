@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::Weak;
@@ -16,10 +15,10 @@ use codex_protocol::openai_models::ModelInfo;
 
 use crate::state::SkillsSessionState;
 
-/// Attributes a successful host skill invocation to its turn's plugin latency metrics.
-pub fn record_plugin_turn_usage(turn_store: &ExtensionData, plugin_id: Option<&str>) {
+/// Attributes a successful host skill invocation to its turn's latency metrics.
+pub fn record_skill_turn_usage(turn_store: &ExtensionData) {
     if let Some(turn) = turn_store.get::<SkillTurnMetrics>() {
-        turn.record_plugin(plugin_id);
+        turn.record_skill_use();
     }
 }
 
@@ -33,21 +32,19 @@ pub(crate) struct SkillTurnMetrics {
 
 #[derive(Default)]
 struct TurnUsage {
-    plugins: HashSet<String>,
+    used_skill: bool,
     failed: bool,
 }
 
 impl SkillTurnMetrics {
-    pub(crate) fn record_plugin(&self, plugin_id: Option<&str>) {
+    pub(crate) fn record_skill_use(&self) {
         if let Some(usage) = self
             .usage
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_mut()
         {
-            usage
-                .plugins
-                .insert(plugin_id.unwrap_or("unattributed").to_string());
+            usage.used_skill = true;
         }
     }
 
@@ -60,6 +57,9 @@ impl SkillTurnMetrics {
         else {
             return;
         };
+        if !usage.used_skill {
+            return;
+        }
         let Some(metrics) = session_store
             .get::<SkillsSessionState>()
             .and_then(|state| state.extension_metrics.clone())
@@ -74,19 +74,15 @@ impl SkillTurnMetrics {
         // Seconds keep multi-minute turns within the standard histogram buckets.
         // Round up so integer-second bucket boundaries classify fractional durations correctly.
         let duration_seconds = self.started_at.elapsed().as_secs_f64().ceil() as i64;
-        for plugin_id in usage.plugins {
-            let plugin_id = sanitize_metric_tag_value(&plugin_id);
-            metrics.histogram(
-                "codex.skill.turn.duration_seconds",
-                duration_seconds,
-                &[
-                    ("plugin_id", plugin_id.as_str()),
-                    ("model_slug", self.model_slug.as_str()),
-                    ("reasoning_effort", self.reasoning_effort.as_str()),
-                    ("status", status),
-                ],
-            );
-        }
+        metrics.histogram(
+            "codex.skill.turn.duration_seconds",
+            duration_seconds,
+            &[
+                ("model_slug", self.model_slug.as_str()),
+                ("reasoning_effort", self.reasoning_effort.as_str()),
+                ("status", status),
+            ],
+        );
     }
 }
 

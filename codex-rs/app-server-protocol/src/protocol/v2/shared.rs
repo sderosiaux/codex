@@ -39,10 +39,6 @@ macro_rules! v2_enum_from_core {
 
 pub(super) use v2_enum_from_core;
 
-pub(super) const fn default_enabled() -> bool {
-    true
-}
-
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]

@@ -7,19 +7,15 @@ use std::num::NonZeroU64;
 use crate::HooksToml;
 use crate::profile_toml::ConfigProfile;
 use crate::types::AnalyticsConfigToml;
-use crate::types::AppsConfigToml;
 use crate::types::AuthCredentialsStoreMode;
 use crate::types::History;
-use crate::types::MarketplaceConfig;
 use crate::types::McpEnterpriseManagedAuthConfig;
 use crate::types::McpServerConfig;
 use crate::types::MemoriesToml;
 use crate::types::OAuthCredentialsStoreMode;
 use crate::types::OtelConfigToml;
-use crate::types::PluginsConfigToml;
 use crate::types::ShellEnvironmentPolicyToml;
 use crate::types::SkillsConfig;
-use crate::types::ToolSuggestConfig;
 use codex_features::FeaturesToml;
 use codex_model_provider_info::AMAZON_BEDROCK_PROVIDER_ID;
 use codex_model_provider_info::AMAZON_BEDROCK_RUNTIME_PROVIDER_ID;
@@ -116,30 +112,6 @@ of strings; comma-separated strings are not supported. Use \
     }
 }
 
-/// Orchestrator-owned feature settings.
-#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
-#[schemars(deny_unknown_fields)]
-pub struct OrchestratorToml {
-    /// Legacy no-op setting retained for compatibility. Use `cloud.skills` to configure cloud skills.
-    pub skills: Option<FeatureToggleToml>,
-    pub mcp: Option<FeatureToggleToml>,
-}
-
-/// Cloud-owned feature settings.
-#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
-#[schemars(deny_unknown_fields)]
-pub struct CloudToml {
-    /// Cloud skills are permitted by default; the host must supply a cloud provider.
-    pub skills: Option<FeatureToggleToml>,
-}
-
-/// Optional enablement of a configured feature.
-#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
-#[schemars(deny_unknown_fields)]
-pub struct FeatureToggleToml {
-    pub enabled: Option<bool>,
-}
-
 /// Base config deserialized from ~/.codex/config.toml.
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
@@ -191,9 +163,6 @@ pub struct ConfigToml {
     /// Developer instructions inserted as a `developer` role message.
     #[serde(default)]
     pub developer_instructions: Option<String>,
-
-    /// Whether to inject the `<apps_instructions>` developer block.
-    pub include_apps_instructions: Option<bool>,
 
     /// Whether to inject the `<collaboration_mode>` developer block.
     pub include_collaboration_mode_instructions: Option<bool>,
@@ -344,17 +313,8 @@ pub struct ConfigToml {
     /// Base URL for requests to ChatGPT (as opposed to the OpenAI API).
     pub chatgpt_base_url: Option<String>,
 
-    /// Optional product SKU forwarded on host-owned Codex Apps MCP requests.
-    pub apps_mcp_product_sku: Option<String>,
-
     /// Bounded, product-owned metadata attached to every Responses API request.
     pub responses_api_metadata: Option<BTreeMap<String, String>>,
-
-    /// Orchestrator-owned feature settings.
-    pub orchestrator: Option<OrchestratorToml>,
-
-    /// Cloud-owned feature settings.
-    pub cloud: Option<CloudToml>,
 
     /// Base URL override for the built-in `openai` model provider.
     pub openai_base_url: Option<String>,
@@ -373,9 +333,6 @@ pub struct ConfigToml {
     /// Nested tools section for feature toggles
     pub tools: Option<ToolsToml>,
 
-    /// Additional discoverable tools that can be suggested for installation.
-    pub tool_suggest: Option<ToolSuggestConfig>,
-
     /// Agent-related settings (thread limits, etc.).
     pub agents: Option<AgentsToml>,
 
@@ -390,14 +347,6 @@ pub struct ConfigToml {
 
     /// Lifecycle hooks configured inline in TOML plus user-level overrides.
     pub hooks: Option<HooksToml>,
-
-    /// Default and per-plugin settings keyed by exact `<plugin>@<marketplace>` IDs.
-    #[serde(default)]
-    pub plugins: PluginsConfigToml,
-
-    /// User-level marketplace entries keyed by marketplace name.
-    #[serde(default)]
-    pub marketplaces: HashMap<String, MarketplaceConfig>,
 
     /// Centralized feature flags (new). Prefer this over individual toggles.
     #[serde(default)]
@@ -422,10 +371,6 @@ pub struct ConfigToml {
     /// Custom OTLP metrics exporters are controlled by `otel.metrics_exporter`.
     /// When unset, the default depends on the client.
     pub analytics: Option<AnalyticsConfigToml>,
-
-    /// Settings for app-specific controls.
-    #[serde(default)]
-    pub apps: Option<AppsConfigToml>,
 
     /// OTEL configuration.
     pub otel: Option<OtelConfigToml>,

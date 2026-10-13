@@ -7,8 +7,6 @@ mod client_error;
 mod client_telemetry;
 mod client_transport;
 mod connection;
-#[path = "discoverV2/mod.rs"]
-mod discover_v2;
 mod environment;
 mod environment_bootstrap;
 mod environment_config;

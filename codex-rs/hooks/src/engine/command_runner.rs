@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::future::Future;
@@ -129,8 +128,8 @@ impl CommandHookRuntime {
         let runtime = self.clone();
         self.schedule_async_task(async move {
             let result = match &handler.kind {
-                ConfiguredHandlerKind::Command { command, env, .. } => {
-                    run_command(&runtime, &handler, command, env, &input_json, &cwd).await
+                ConfiguredHandlerKind::Command { command, .. } => {
+                    run_command(&runtime, &handler, command, &input_json, &cwd).await
                 }
                 ConfiguredHandlerKind::McpTool { .. } => return,
             };
@@ -215,14 +214,13 @@ pub(crate) async fn run_command(
     runtime: &CommandHookRuntime,
     handler: &ConfiguredHandler,
     command_line: &str,
-    env: &HashMap<String, String>,
     input_json: &str,
     cwd: &Path,
 ) -> HandlerRunResult {
     let started_at = chrono::Utc::now().timestamp();
     let started = Instant::now();
 
-    let mut command = build_command(&runtime.shell, command_line, &runtime.environment, env);
+    let mut command = build_command(&runtime.shell, command_line, &runtime.environment);
     command.current_dir(cwd);
 
     #[cfg(windows)]
@@ -385,7 +383,6 @@ fn build_command(
     shell: &CommandShell,
     command_line: &str,
     environment: &[(OsString, OsString)],
-    env: &HashMap<String, String>,
 ) -> Command {
     let mut command = if shell.program.is_empty() {
         Command::new(default_shell_program(environment))
@@ -421,16 +418,12 @@ fn build_command(
         .stderr(Stdio::piped())
         .kill_on_drop(true);
 
-    // Both launchers start with an empty environment. Replay the session snapshot
-    // before hook overrides, filtering restricted names from both sources.
+    // Both launchers start with an empty environment. Replay the session snapshot,
+    // filtering restricted names.
     command.envs(
         environment
             .iter()
             .map(|(key, value)| (key.as_os_str(), value.as_os_str()))
-            .chain(
-                env.iter()
-                    .map(|(key, value)| (OsStr::new(key), OsStr::new(value))),
-            )
             .filter(|(key, _)| !key.to_str().is_some_and(is_non_inheritable_env_var)),
     );
     command

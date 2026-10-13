@@ -12,7 +12,6 @@ use codex_diagnostics::Gauge;
 use codex_extension_api::ThreadIdleCause;
 use futures::future::BoxFuture;
 use tokio::select;
-use tokio::sync::Mutex;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::AbortOnDropHandle;
@@ -36,7 +35,6 @@ use crate::session::turn_context::TurnContext;
 use crate::state::ActiveTurn;
 use crate::state::RunningTask;
 use crate::state::TaskKind;
-use crate::state::TurnState;
 use codex_context_fragments::RenderedFragment;
 use codex_otel::SessionTelemetry;
 use codex_otel::TURN_E2E_DURATION_METRIC;
@@ -269,7 +267,6 @@ impl Session {
         input: Vec<TurnInput>,
         task: T,
     ) {
-        self.activate_plugin_selection(&turn_context).await;
         // Inherited or recovered roots are applied before task start. Otherwise this
         // task owns its turn, including background work. Later mail cannot change it.
         turn_context
@@ -528,13 +525,8 @@ impl Session {
             let task = active_turn.task.take();
             aborted_turn = task.is_some();
             if let Some(task) = task {
-                self.handle_task_abort(
-                    task,
-                    reason.clone(),
-                    &active_turn.turn_state,
-                    /*error*/ None,
-                )
-                .await;
+                self.handle_task_abort(task, reason.clone(), /*error*/ None)
+                    .await;
             }
             if aborted_turn {
                 active_turn_to_clear = Some(active_turn);
@@ -559,8 +551,7 @@ impl Session {
     ) {
         let task = active_turn.task.take();
         if let Some(task) = task {
-            self.handle_task_abort(task, reason.clone(), &active_turn.turn_state, error)
-                .await;
+            self.handle_task_abort(task, reason.clone(), error).await;
         }
         // Let interrupted tasks observe cancellation before dropping pending requests, or an
         // in-flight user-input wait can surface as a model-visible rejection before TurnAborted.
@@ -738,7 +729,7 @@ impl Session {
         };
         let event = if let Some(reason) = abort_reason {
             if reason == TurnAbortReason::Interrupted {
-                run_turn_interrupt_hooks(self, &turn_context, &turn_state).await;
+                run_turn_interrupt_hooks(self, &turn_context).await;
             }
             self.emit_turn_abort_lifecycle(reason.clone(), turn_context.extension_data.as_ref())
                 .await;
@@ -832,7 +823,6 @@ impl Session {
         self: &Arc<Self>,
         task: RunningTask,
         reason: TurnAbortReason,
-        turn_state: &Mutex<TurnState>,
         error: Option<ErrorEvent>,
     ) {
         let sub_id = task.turn_context.sub_id.clone();
@@ -885,7 +875,7 @@ impl Session {
         }
 
         if reason == TurnAbortReason::Interrupted {
-            run_turn_interrupt_hooks(self, &task.turn_context, turn_state).await;
+            run_turn_interrupt_hooks(self, &task.turn_context).await;
         }
 
         let started_at = task

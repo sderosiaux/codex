@@ -71,7 +71,7 @@ feature-depth = 1
 # output a note when they are encountered.
 ignore = [
     # Each exception must identify the dependency path and removal condition.
-    { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml 0.2.11 is unmaintained; pulled in via serde_yaml 0.9 by skills, ext/skills and core-plugins; no patched release; remove when these users migrate off serde_yaml/unsafe-libyaml" },
+    { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml 0.2.11 is unmaintained; pulled in via serde_yaml 0.9 by skills and ext/skills; no patched release; remove when these users migrate off serde_yaml/unsafe-libyaml" },
     { id = "RUSTSEC-2025-0057", reason = "fxhash is unmaintained; pulled in via bm25 used by core tool search; remove when bm25 drops fxhash" },
 ]
 # If this is true, then cargo deny will use the git executable to fetch advisory database.

@@ -43,14 +43,6 @@ pub fn is_node_repl_backed_server(server: &str) -> bool {
     matches!(server, "node_repl" | "cua_repl")
 }
 
-/// Returns whether an MCP server or registered connector is Node REPL-backed.
-/// Callers must supply connector identity from registered tool metadata, never
-/// from tool arguments or provider-supplied elicitation metadata.
-pub fn is_node_repl_backed_connector(server: &str, connector_id: Option<&str>) -> bool {
-    is_node_repl_backed_server(server)
-        || server == "codex_apps" && connector_id == Some("connector_openai_browser")
-}
-
 /// Recognizes Node REPL-backed tools in model-visible MCP namespaces or legacy
 /// flat tool names. An explicit namespace takes precedence over the tool name.
 pub fn is_node_repl_backed_tool(name: &str, namespace: Option<&str>) -> bool {
@@ -102,10 +94,6 @@ pub enum McpAttributionErrorReason {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct McpAttributionSource {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub connector_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub plugin_id: Option<String>,
     pub server_name: String,
     pub tool_name: String,
     pub first_turn_id: String,
@@ -136,30 +124,6 @@ where
 {
     let value = serde_json::Value::deserialize(deserializer)?;
     Ok(serde_json::from_value(value).ok())
-}
-
-/// Bounded app-resource provenance retained across a compaction checkpoint.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct McpResourceOriginCheckpoint {
-    pub origins: Vec<McpResourceOrigin>,
-    pub turns: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub current_turn_id: Option<String>,
-}
-
-/// The original app, account, tool, and URI that authorize one widget read.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct McpResourceOrigin {
-    pub call_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub turn_id: Option<String>,
-    pub tool: String,
-    pub connector_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub link_id: Option<String>,
-    pub uri: String,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub ambiguous_account: bool,
 }
 
 /// Client extensions that must not be advertised to MCP servers.

@@ -42,7 +42,6 @@ pub async fn build_prompt_input(
         &config,
         Arc::clone(&auth_manager),
         crate::thread_manager::build_models_manager(&config, Arc::clone(&auth_manager)),
-        crate::CodexAppsToolsCache::default(),
         SessionSource::Exec,
         Arc::new(
             EnvironmentManager::from_codex_home(

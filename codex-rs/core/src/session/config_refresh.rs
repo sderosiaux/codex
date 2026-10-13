@@ -20,7 +20,6 @@ impl Session {
             .clone();
         config.disable_mcp_enterprise_auth();
         state.session_configuration.original_config_do_not_use = Arc::new(config);
-        self.services.mcp_runtime.invalidate_resource_caches();
         self.mark_mcp_runtime_dirty();
         drop(state);
         self.schedule_mcp_prewarm();
@@ -78,11 +77,10 @@ impl Session {
                 }
             };
         if !matches!(scope, RuntimeConfigRefresh::UserFiles) {
-            for feature in [Feature::Mcp20260728, Feature::CodexAppsMcp20260728] {
-                config
-                    .features
-                    .set_enabled(feature, next_config.features.enabled(feature));
-            }
+            config.features.set_enabled(
+                Feature::Mcp20260728,
+                next_config.features.enabled(Feature::Mcp20260728),
+            );
         }
         let config = Arc::new(config);
         let notify_contributors = !matches!(scope, RuntimeConfigRefresh::Mcp)
@@ -104,7 +102,6 @@ impl Session {
             }
             if matches!(scope, RuntimeConfigRefresh::UserFiles) {
                 self.services.skills_service.clear_cache();
-                self.services.plugins_manager.clear_cache();
             }
             // A host refresh carries current rollout settings for recording. A
             // legacy file reload uses its original snapshot and bypasses this path.
@@ -116,9 +113,6 @@ impl Session {
             let previous_config = notify_contributors
                 .then(|| self.build_effective_session_config(&state.session_configuration));
             state.session_configuration.original_config_do_not_use = Arc::clone(&config);
-            if matches!(scope, RuntimeConfigRefresh::Mcp) {
-                self.services.mcp_runtime.invalidate_resource_caches();
-            }
             self.mark_mcp_runtime_dirty();
             let new_config = notify_contributors
                 .then(|| self.build_effective_session_config(&state.session_configuration));

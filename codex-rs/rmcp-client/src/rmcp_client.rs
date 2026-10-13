@@ -51,7 +51,6 @@ use rmcp::model::RequestMetaObject;
 use rmcp::model::RequestParamsMeta;
 use rmcp::model::ServerPeerInfo;
 use rmcp::model::ServerResult;
-use rmcp::model::Tool;
 use rmcp::service::ClientCacheConfig;
 use rmcp::service::ClientServiceExt;
 use rmcp::service::RequestHandle;
@@ -370,18 +369,6 @@ impl From<ElicitationResponse> for ElicitResult {
 pub type SendElicitation = Box<
     dyn Fn(RequestId, Elicitation) -> BoxFuture<'static, Result<ElicitationResponse>> + Send + Sync,
 >;
-
-pub struct ToolWithConnectorId {
-    pub tool: Tool,
-    pub connector_id: Option<String>,
-    pub connector_name: Option<String>,
-    pub connector_description: Option<String>,
-}
-
-pub struct ListToolsWithConnectorIdResult {
-    pub next_cursor: Option<String>,
-    pub tools: Vec<ToolWithConnectorId>,
-}
 
 /// An active Plugin Runtime event request and its request-scoped notifications.
 pub struct CancellableEventStreamRequest {
@@ -703,45 +690,6 @@ impl RmcpClient {
             .await?;
         self.persist_oauth_tokens().await;
         Ok(result)
-    }
-
-    #[instrument(level = "trace", skip_all)]
-    pub async fn list_tools_with_connector_ids(
-        &self,
-        params: Option<PaginatedRequestParams>,
-        timeout: Option<Duration>,
-    ) -> Result<ListToolsWithConnectorIdResult> {
-        let result = self.list_tools(params, timeout).await?;
-        let tools = result
-            .tools
-            .into_iter()
-            .map(|tool| {
-                let meta = tool.meta.as_ref();
-                let connector_id = Self::meta_string(meta, "connector_id");
-                let connector_name = Self::meta_string(meta, "connector_name")
-                    .or_else(|| Self::meta_string(meta, "connector_display_name"));
-                let connector_description = Self::meta_string(meta, "connector_description")
-                    .or_else(|| Self::meta_string(meta, "connectorDescription"));
-                Ok(ToolWithConnectorId {
-                    tool,
-                    connector_id,
-                    connector_name,
-                    connector_description,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        Ok(ListToolsWithConnectorIdResult {
-            next_cursor: result.next_cursor,
-            tools,
-        })
-    }
-
-    fn meta_string(meta: Option<&rmcp::model::MetaObject>, key: &str) -> Option<String> {
-        meta.and_then(|meta| meta.get(key))
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
     }
 
     pub async fn list_resources(

@@ -42,7 +42,6 @@ pub struct ConfigProfile {
     #[schemars(skip)]
     pub js_repl_node_module_dirs: Option<Vec<AbsolutePathBuf>>,
     pub experimental_compact_prompt_file: Option<AbsolutePathBuf>,
-    pub include_apps_instructions: Option<bool>,
     pub include_collaboration_mode_instructions: Option<bool>,
     pub include_environment_context: Option<bool>,
     pub include_environment_context_time: Option<bool>,

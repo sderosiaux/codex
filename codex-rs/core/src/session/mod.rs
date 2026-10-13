@@ -25,7 +25,6 @@ use crate::context::ContextualUserFragment;
 use crate::context::DeveloperInstructions;
 use crate::context::ModelSwitchInstructions;
 use crate::context::MultiAgentRoleInstructions;
-use crate::context::RecommendedPluginsInstructions;
 use crate::context::world_state::Placement;
 use crate::context::world_state::WorldState;
 use crate::context::world_state::WorldStateSnapshot;
@@ -54,7 +53,6 @@ use chrono::Utc;
 use codex_async_utils::OrCancelExt;
 use codex_attachment_store::AttachmentStore;
 use codex_attachment_store::InlineAttachmentStore;
-use codex_connectors::connector_runtime_context_key;
 use codex_context_fragments::RenderedFragment;
 use codex_exec_server::Environment;
 use codex_exec_server::EnvironmentManager;
@@ -73,7 +71,6 @@ use codex_hooks::HooksConfig;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_login::auth_env_telemetry::collect_auth_env_telemetry;
-use codex_mcp::McpResourceClient;
 use codex_mcp::McpRuntime;
 use codex_mcp::McpRuntimeContext;
 use codex_mcp::McpRuntimeInput;
@@ -93,8 +90,6 @@ use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::dynamic_tools::DynamicToolResponse;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
-use codex_protocol::elicitation::ElicitationRequest;
-use codex_protocol::elicitation::ElicitationRequestEvent;
 use codex_protocol::items::EnteredReviewModeItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::items::UserMessageItem;
@@ -200,7 +195,6 @@ mod mcp_prewarm;
 mod mcp_refresh;
 mod mcp_runtime;
 pub(crate) mod multi_agents;
-mod plugin_selection;
 mod retained_context;
 mod review;
 mod rollout_budget;
@@ -232,9 +226,7 @@ use self::session::SessionSettingsCommit;
 pub(crate) use self::session::SessionSettingsUpdate;
 use self::turn_context::TurnContext;
 
-use crate::mcp::McpEnvironmentScope;
 use crate::mcp::McpManager;
-use crate::mcp::McpThreadIdentity;
 use crate::rollout::map_session_init_error;
 use crate::session::startup_prewarm::SessionStartupPrewarmHandle;
 use crate::shell;
@@ -248,8 +240,6 @@ use crate::tasks::ReviewTask;
 use crate::turn_timing::TurnTimingState;
 use crate::turn_timing::record_turn_ttfm_metric;
 use crate::unified_exec::UnifiedExecProcessManager;
-use codex_core_plugins::PluginsManager;
-use codex_core_plugins::RecommendedPluginCandidatesInput;
 use codex_git_utils::get_git_repo_root;
 use codex_history::CodexHarnessMetadata;
 use codex_history::CompactedItem;
@@ -347,12 +337,10 @@ pub(crate) struct SessionSpawnArgs {
     pub(crate) git_root_discovery: Arc<GitRootDiscovery>,
     pub(crate) environment_manager: Arc<EnvironmentManager>,
     pub(crate) skills_service: Arc<HostSkillsService>,
-    pub(crate) plugins_manager: Arc<PluginsManager>,
     pub(crate) mcp_manager: Arc<McpManager>,
     pub(crate) extensions: Arc<codex_extension_api::ExtensionRegistry<crate::config::Config>>,
     pub(crate) conversation_history: InitialHistory,
     pub(crate) history_initialization: HistoryInitialization,
-    pub(crate) disabled_plugin_ids: Option<Vec<String>>,
     pub(crate) requested_history_mode: Option<ThreadHistoryMode>,
     pub(crate) fork_persistence: ForkPersistence,
     pub(crate) session_source: SessionSource,
@@ -451,12 +439,10 @@ impl Session {
             git_root_discovery,
             environment_manager,
             skills_service,
-            plugins_manager,
             mcp_manager,
             extensions,
             conversation_history,
             history_initialization,
-            disabled_plugin_ids,
             requested_history_mode,
             fork_persistence,
             session_source,
@@ -607,22 +593,6 @@ impl Session {
         } else {
             dynamic_tools
         };
-        let disabled_plugin_ids = disabled_plugin_ids.unwrap_or_else(|| {
-            let settings_owner = match &conversation_history {
-                InitialHistory::Resumed(resumed) => Some(resumed.conversation_id),
-                InitialHistory::Forked(_) => forked_from_thread_id,
-                InitialHistory::New | InitialHistory::Cleared => None,
-            };
-            settings_owner
-                .and_then(|thread_id| {
-                    codex_history::latest_disabled_plugin_ids(
-                        conversation_history.get_rollout_items(),
-                        thread_id,
-                    )
-                })
-                .map(<[String]>::to_vec)
-                .unwrap_or_default()
-        });
         // TODO (aibrahim): Consolidate config.model and config.model_reasoning_effort into config.collaboration_mode
         // to avoid extracting these fields separately and constructing CollaborationMode here.
         let persisted_collaboration_mode = match &conversation_history {
@@ -698,7 +668,6 @@ impl Session {
             runtime_workspace_roots: config.workspace_roots.clone(),
             codex_home: config.codex_home.clone(),
             thread_name: None,
-            disabled_plugin_ids,
             original_config_do_not_use: Arc::clone(&config),
             metrics_service_name,
             app_server_client_name: None,
@@ -738,7 +707,6 @@ impl Session {
             fork_persistence,
             session_source_clone,
             skills_service,
-            plugins_manager,
             mcp_manager.clone(),
             extensions,
             thread_extension_init,
@@ -1701,28 +1669,20 @@ impl Session {
 
     pub(crate) async fn refresh_hooks(&self, mut config: Arc<Config>) {
         loop {
-            let disabled_plugin_ids = self.state.lock().await.active_disabled_plugin_ids.clone();
             let environments = self.services.turn_environments.snapshot().await;
-            let hooks_config = build_hooks_config(
-                config.as_ref(),
-                self.services.plugins_manager.as_ref(),
-                environments.single_local_environment(),
-                &disabled_plugin_ids,
-            )
-            .await;
+            let hooks_config =
+                build_hooks_config(config.as_ref(), environments.single_local_environment());
 
             let state = self.state.lock().await;
             if Arc::ptr_eq(
                 &state.session_configuration.original_config_do_not_use,
                 &config,
-            ) && state.active_disabled_plugin_ids == disabled_plugin_ids
-            {
+            ) {
                 let hooks = self.hooks().reconfigured(hooks_config);
                 self.services.hooks.store(Arc::new(hooks));
                 return;
             }
-            // Unrelated updates can replace the owner too. Rebuild current inputs
-            // so they cannot strand a pending plugin-policy refresh.
+            // Unrelated updates can replace the owner too. Rebuild from current inputs.
             config = Arc::clone(&state.session_configuration.original_config_do_not_use);
         }
     }
@@ -1749,7 +1709,7 @@ impl Session {
     }
 
     pub(crate) async fn reload_user_config_layer(&self) {
-        // Refresh layer-backed runtime state for an existing session, including enabled plugin,
+        // Refresh layer-backed runtime state for an existing session, including
         // skill, hook, and MCP feature state. Other feature gates and legacy notify settings
         // remain session-static.
         //
@@ -1967,7 +1927,6 @@ impl Session {
     }
 
     async fn send_event_raw_with_persistence(&self, event: Event, persist: bool) {
-        self.services.mcp_runtime.observe_event(&event.msg);
         // Persist the event into rollout storage; the store applies its persistence policy.
         if persist {
             let rollout_items = vec![RolloutItem::EventMsg(event.msg.clone())];
@@ -2481,7 +2440,6 @@ impl Session {
             turn_context,
             cancellation_token,
             /*required_servers*/ &[],
-            /*required_plugins*/ &HashSet::new(),
         )
         .await
     }
@@ -2492,15 +2450,9 @@ impl Session {
         turn_context: Arc<TurnContext>,
         cancellation_token: &CancellationToken,
         required_servers: &[String],
-        required_plugins: &HashSet<String>,
     ) -> CodexResult<Arc<StepContext>> {
         let step_context = self
-            .capture_step_context_inner(
-                turn_context,
-                cancellation_token,
-                required_servers,
-                required_plugins,
-            )
+            .capture_step_context_inner(turn_context, cancellation_token, required_servers)
             .await?;
         self.set_last_known_step_context(&step_context).await;
         Ok(step_context)
@@ -2517,7 +2469,6 @@ impl Session {
             turn_context,
             cancellation_token,
             /*required_servers*/ &[],
-            /*required_plugins*/ &HashSet::new(),
         )
         .await
     }
@@ -2528,7 +2479,6 @@ impl Session {
         turn_context: Arc<TurnContext>,
         cancellation_token: &CancellationToken,
         required_servers: &[String],
-        required_plugins: &HashSet<String>,
     ) -> CodexResult<Arc<StepContext>> {
         // Read the step's model and record its environments together so an update cannot split them.
         // Wait for executor startup below, after releasing the lock.
@@ -2603,38 +2553,9 @@ impl Session {
             if let Some(discovery) = &executor_capability_discovery {
                 extension_data.insert(discovery.as_ref().clone());
             }
-            let (mcp, prepared_recommendations) = tokio::join!(
-                // MCP refresh can be large; keep it off the sampling request's stack.
-                Box::pin(self.mcp_runtime_for_step(
-                    turn_context.as_ref(),
-                    &selected_capability_roots,
-                    required_servers,
-                    required_plugins,
-                )),
-                turn::prepare_tool_recommendations(self.as_ref(), turn_context.as_ref()),
-            );
-            // A step keeps the plugins from the environments it captured, even if shared MCP
-            // moves on to another environment. Its skill tools and the model use this same copy.
-            // Policy follows this step's MCP binding, which may have refreshed mid-turn.
-            let selected_plugins = self
-                .services
-                .mcp_manager
-                .selected_plugins_for_step(
-                    codex_extension_api::McpServerContributionContext::for_step(
-                        turn_context.config.as_ref(),
-                        &self.services.mcp_thread_init,
-                        &self.services.thread_extension_data,
-                        &turn_context.originator,
-                        &ready_selected_capability_roots,
-                        executor_capability_discovery.as_deref(),
-                    )
-                    .with_session_source(&turn_context.session_source)
-                    .with_selected_environments(&environments.all_selections()),
-                    &mcp.config().plugins,
-                    &turn_context.disabled_plugin_ids,
-                )
-                .await;
-            extension_data.insert(selected_plugins);
+            // MCP refresh can be large; keep it off the sampling request's stack.
+            let mcp =
+                Box::pin(self.mcp_runtime_for_step(turn_context.as_ref(), required_servers)).await;
             let tool_router = turn::built_tools(
                 self.as_ref(),
                 turn_context.as_ref(),
@@ -2642,7 +2563,6 @@ impl Session {
                 &environments,
                 &mcp,
                 &extension_data,
-                prepared_recommendations,
             )
             .await?;
             Ok::<_, CodexErr>((
@@ -2854,7 +2774,6 @@ impl Session {
                 message: metadata.message,
                 replacement_history: Some(replacement_history),
                 retained_context: Some(state.history.retained_context().clone()),
-                mcp_resource_origins: self.services.mcp_runtime.resource_origin_checkpoint(),
                 window_number: Some(metadata.window_number),
                 first_window_id: Some(metadata.window_ids.first_window_id.to_string()),
                 previous_window_id: metadata
@@ -3000,32 +2919,6 @@ impl Session {
             developer_sections
                 .push(DeveloperInstructions::new(developer_instructions).render_fragment());
         }
-        let loaded_plugins = self
-            .services
-            .plugins_manager
-            .plugins_for_config(&turn_context.config.plugins_config_input())
-            .await
-            .without_plugins(&turn_context.disabled_plugin_ids);
-        let recommended_plugin_candidates = if turn_context
-            .config
-            .features
-            .plugin_recommendations_enabled()
-        {
-            let auth = self.services.auth_manager.auth().await;
-            let plugins_config = turn_context.config.plugins_config_input();
-            self.services
-                .plugins_manager
-                .recommended_plugin_candidates_for_config(RecommendedPluginCandidatesInput {
-                    plugins_config: &plugins_config,
-                    loaded_plugins: &loaded_plugins,
-                    auth: auth.as_ref(),
-                    disabled_tools: &turn_context.config.tool_suggest.disabled_tools,
-                    app_server_client_name: turn_context.app_server_client_name.as_deref(),
-                })
-                .await
-        } else {
-            None
-        };
         let context_contributors = self.services.extensions.context_contributors().to_vec();
         for contributor in &context_contributors {
             for fragment in contributor
@@ -3161,14 +3054,6 @@ impl Session {
                     "user" => contextual_user_sections.push(fragment.render_fragment()),
                     _ => {}
                 }
-            }
-
-            if next_item.is_none()
-                && let Some(recommended_plugins) = recommended_plugin_candidates
-                    .as_deref()
-                    .and_then(RecommendedPluginsInstructions::from_plugins)
-            {
-                developer_sections.push(recommended_plugins.render_fragment());
             }
 
             if let Some(developer_message) = crate::context_manager::updates::build_rendered_message(
@@ -3805,13 +3690,8 @@ fn apply_prepared_image_file_ids(
     }
 }
 
-/// Builds hook configuration for one config snapshot, including any enabled plugin hooks.
-async fn build_hooks_config(
-    config: &Config,
-    plugins_manager: &PluginsManager,
-    environment: Option<&TurnEnvironment>,
-    disabled_plugin_ids: &[String],
-) -> HooksConfig {
+/// Builds hook configuration for one config snapshot.
+fn build_hooks_config(config: &Config, environment: Option<&TurnEnvironment>) -> HooksConfig {
     let (hook_shell_program, hook_shell_argv) = environment
         .and_then(|environment| environment.shell.as_ref())
         .map(|shell| {
@@ -3821,19 +3701,10 @@ async fn build_hooks_config(
             (Some(program), argv)
         })
         .unwrap_or_default();
-    let plugins_input = config.plugins_config_input();
-    let plugin_outcome = plugins_manager
-        .plugins_for_config(&plugins_input)
-        .await
-        .without_plugins(disabled_plugin_ids);
-    let plugin_hook_sources = plugin_outcome.effective_plugin_hook_sources();
-    let plugin_hook_load_warnings = plugin_outcome.effective_plugin_hook_warnings();
     HooksConfig {
         legacy_notify_argv: config.notify.clone(),
         feature_enabled: config.features.enabled(Feature::CodexHooks),
         config_layer_stack: Some(config.config_layer_stack.clone()),
-        plugin_hook_sources,
-        plugin_hook_load_warnings,
         shell_program: hook_shell_program,
         shell_args: hook_shell_argv,
     }

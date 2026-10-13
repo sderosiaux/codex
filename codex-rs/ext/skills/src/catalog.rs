@@ -6,29 +6,17 @@ use std::sync::Arc;
 /// Source authority that owns a skill package and must be used to read it.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum SkillSourceKind {
-    /// Codex-hosted skills, including bundled, user, repo, plugin-installed,
-    /// and downloaded/materialized remote skills.
+    /// Codex-hosted skills: bundled, user, and repo skills.
     Host,
     /// Skills owned by an execution environment.
     Executor,
-    /// Skills owned by the cloud rather than an execution environment.
-    Cloud,
-    /// Extension-private source kind for future providers that do not fit an
-    /// existing transport category.
-    Custom(String),
 }
 
 impl SkillSourceKind {
-    pub fn custom(kind: impl Into<String>) -> Self {
-        Self::Custom(kind.into())
-    }
-
     fn as_str(&self) -> &str {
         match self {
             Self::Host => "host",
             Self::Executor => "executor",
-            Self::Cloud => "cloud",
-            Self::Custom(kind) => kind,
         }
     }
 }
@@ -179,7 +167,6 @@ pub struct SkillCatalogEntry {
     pub main_prompt: SkillResourceId,
     pub display_path: Option<String>,
     pub canonical_skill_id: Option<String>,
-    pub plugin_id: Option<String>,
     pub analytics_scope: Option<SkillScope>,
     alias_root: Option<String>,
     alias_root_order: Option<usize>,
@@ -206,7 +193,6 @@ impl SkillCatalogEntry {
             main_prompt,
             display_path: None,
             canonical_skill_id: None,
-            plugin_id: None,
             analytics_scope: None,
             alias_root: None,
             alias_root_order: None,

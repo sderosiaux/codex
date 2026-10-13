@@ -9,9 +9,8 @@ use codex_config::TomlValue;
 /// user preferences.
 ///
 /// This intentionally reads only user and session flag layers, including
-/// disabled layers, to match the skills config behavior. Project, managed, and
-/// plugin layers can discover hooks, but they do not get to write user hook
-/// state.
+/// disabled layers, to match the skills config behavior. Project and managed
+/// layers can discover hooks, but they do not get to write user hook state.
 pub fn hook_states_from_stack(
     config_layer_stack: Option<&ConfigLayerStack>,
 ) -> HashMap<String, HookStateToml> {

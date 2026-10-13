@@ -1,5 +1,4 @@
 mod config_rules;
-mod declarations;
 mod engine;
 pub(crate) mod events;
 mod legacy_notify;
@@ -12,8 +11,6 @@ mod types;
 use codex_protocol::protocol::HookEventName;
 
 pub use config_rules::hook_states_from_stack;
-pub use declarations::PluginHookDeclaration;
-pub use declarations::plugin_hook_declarations;
 pub use engine::HookListEntry;
 pub use engine::HookListEntryHandler;
 pub use engine::dispatcher::hook_execution_mode_label;

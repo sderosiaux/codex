@@ -20,11 +20,6 @@ use codex_config::types::History;
 use codex_config::types::McpServerConfig;
 use codex_config::types::MemoriesConfig;
 use codex_config::types::OAuthCredentialsStoreMode;
-use codex_config::types::ToolSuggestConfig;
-use codex_config::types::ToolSuggestDisabledTool;
-use codex_config::types::ToolSuggestDiscoverable;
-use codex_core_plugins::PluginLoadOutcome;
-use codex_core_plugins::PluginsConfigInput;
 use codex_exec_server::ExecutorFileSystem;
 use codex_exec_server::LOCAL_FS;
 use codex_exec_server::ReadFileOptions;
@@ -46,7 +41,6 @@ use codex_login::AuthManagerConfig;
 use codex_login::AuthRouteConfig;
 use codex_mcp::DEFAULT_OPTIONAL_MCP_STARTUP_GRACE;
 use codex_mcp::McpConfig;
-use codex_mcp::McpPluginAttribution;
 use codex_mcp::McpProtocolMode;
 use codex_mcp::McpServerRegistration;
 use codex_mcp::ResolvedMcpCatalog;
@@ -79,8 +73,6 @@ use codex_utils_absolute_path::AbsolutePathBufGuard;
 use codex_utils_path_uri::PathUri;
 use http::HeaderValue;
 use rmcp::model::ElicitationCapability;
-use rmcp::model::FormElicitationCapability;
-use rmcp::model::UrlElicitationCapability;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -208,9 +200,6 @@ pub struct Config {
     /// Provenance for how this [`Config`] was derived (merged layers).
     pub config_layer_stack: ConfigLayerStack,
 
-    /// Plugin settings resolved with this snapshot, before capability admission.
-    pub plugins: codex_config::types::PluginsConfigToml,
-
     /// Warnings collected during config load that should be shown on startup.
     pub startup_warnings: Vec<String>,
 
@@ -278,9 +267,6 @@ pub struct Config {
     /// Developer instructions override injected as a separate message.
     pub developer_instructions: Option<String>,
 
-    /// Whether to inject the `<apps_instructions>` developer block.
-    pub include_apps_instructions: bool,
-
     /// Whether to inject the `<collaboration_mode>` developer block.
     pub include_collaboration_mode_instructions: bool,
 
@@ -289,12 +275,6 @@ pub struct Config {
 
     /// Optional token budget override for the available-skills catalog.
     pub skill_max_context_tokens: Option<NonZeroUsize>,
-
-    /// Whether cloud skills are discovered and exposed to the model.
-    pub cloud_skill_enabled: bool,
-
-    /// Whether orchestrator-owned MCP tools are exposed to the model.
-    pub orchestrator_mcp_enabled: bool,
 
     /// Whether to inject the `<environment_context>` user block.
     pub include_environment_context: bool,
@@ -467,9 +447,6 @@ pub struct Config {
     /// Whether Codex-owned clients should respect host system proxy settings.
     pub respect_system_proxy: bool,
 
-    /// Optional product SKU forwarded to the host-owned apps MCP server.
-    pub apps_mcp_product_sku: Option<String>,
-
     /// Bounded, product-owned metadata attached to every Responses API request.
     pub responses_api_metadata: BTreeMap<String, String>,
 
@@ -534,9 +511,6 @@ pub struct Config {
     /// Custom OTLP metrics exporters are controlled by `otel.metrics_exporter`.
     /// Voluntarily left as Optional because the default value might depend on the client.
     pub analytics_enabled: Option<bool>,
-
-    /// Configured discoverable tools for tool suggestions.
-    pub tool_suggest: ToolSuggestConfig,
 
     /// OTEL configuration (exporter type, endpoint, headers, etc.).
     pub otel: codex_config::types::OtelConfig,
@@ -1012,82 +986,12 @@ impl Config {
         }
     }
 
-    /// Build the plugin-manager input from the effective config.
-    pub fn plugins_config_input(&self) -> PluginsConfigInput {
-        PluginsConfigInput::new(
-            self.config_layer_stack.clone(),
-            self.plugins.clone(),
-            self.model_provider_id.clone(),
-            self.features.enabled(Feature::Plugins),
-            self.features.enabled(Feature::RemotePlugin),
-            self.chatgpt_base_url.clone(),
-            self.http_client_factory(),
-            self.apps_mcp_product_sku.clone(),
-        )
-    }
-
-    pub async fn to_mcp_config(
-        &self,
-        plugins_manager: &codex_core_plugins::PluginsManager,
-    ) -> McpConfig {
-        self.to_mcp_config_with_plugin_registrations(
-            plugins_manager,
-            std::iter::empty::<McpServerRegistration>(),
-        )
-        .await
-    }
-
-    pub(crate) async fn to_mcp_config_with_plugin_registrations(
-        &self,
-        plugins_manager: &codex_core_plugins::PluginsManager,
-        additional_plugin_registrations: impl IntoIterator<Item = McpServerRegistration>,
-    ) -> McpConfig {
-        let plugins_input = self.plugins_config_input();
-        let loaded_plugins = plugins_manager.plugins_for_config(&plugins_input).await;
-        self.to_mcp_config_with_loaded_plugins(&loaded_plugins, additional_plugin_registrations)
-    }
-
-    pub(crate) fn to_mcp_config_with_loaded_plugins(
-        &self,
-        loaded_plugins: &PluginLoadOutcome,
-        additional_plugin_registrations: impl IntoIterator<Item = McpServerRegistration>,
-    ) -> McpConfig {
+    pub fn to_mcp_config(&self) -> McpConfig {
         let mut catalog = ResolvedMcpCatalog::builder();
         if self.features.enabled(Feature::UseXaa)
             && let Some(auth) = &self.mcp_enterprise_managed_auth
         {
             catalog.enable_ema(auth.idp.clone());
-        }
-        for (plugin_order, plugin) in loaded_plugins
-            .plugins()
-            .iter()
-            .filter(|plugin| plugin.is_active())
-            .enumerate()
-        {
-            let plugin_mcp_servers = plugin.mcp_servers.clone();
-            let attribution = if plugin.is_agent_plugin() {
-                McpPluginAttribution::agent_plugin(
-                    plugin.config_name.clone(),
-                    plugin.display_name().to_string(),
-                )
-            } else {
-                McpPluginAttribution::new(
-                    plugin.config_name.clone(),
-                    plugin.display_name().to_string(),
-                )
-            }
-            .with_host_root(PathUri::from_abs_path(&plugin.root));
-            for (name, plugin_server) in plugin_mcp_servers {
-                catalog.register(McpServerRegistration::from_plugin(
-                    name,
-                    attribution.clone(),
-                    plugin_order,
-                    plugin_server,
-                ));
-            }
-        }
-        for registration in additional_plugin_registrations {
-            catalog.register(registration);
         }
         for (name, server) in &self.mcp_servers {
             catalog.register(McpServerRegistration::from_config(
@@ -1098,7 +1002,6 @@ impl Config {
 
         McpConfig {
             chatgpt_base_url: self.chatgpt_base_url.clone(),
-            apps_mcp_product_sku: self.apps_mcp_product_sku.clone(),
             requires_read_only_mcp_tools: false,
             codex_home: self.codex_home.to_path_buf(),
             mcp_enterprise_managed_auth: self.mcp_enterprise_managed_auth.clone(),
@@ -1117,10 +1020,7 @@ impl Config {
             skill_mcp_dependency_install_enabled: self
                 .features
                 .enabled(Feature::SkillMcpDependencyInstall),
-            config_layer_stack: self.config_layer_stack.clone(),
-            plugins: self.plugins.clone(),
             environment_cwds: HashMap::new(),
-            apps_enabled: self.features.enabled(Feature::Apps),
             prefix_mcp_tool_names: self.prefix_mcp_tool_names(),
             non_prefixed_mcp_tool_servers: if self
                 .features
@@ -1133,25 +1033,10 @@ impl Config {
                 Vec::new()
             },
             protocol_mode: self.mcp_protocol_mode(),
-            host_owned_apps_protocol_mode: if self.features.enabled(Feature::CodexAppsMcp20260728) {
-                McpProtocolMode::V20260728
-            } else {
-                McpProtocolMode::Legacy
-            },
-            client_elicitation_capability: if self.features.enabled(Feature::AuthElicitation) {
-                ElicitationCapability::new()
-                    .with_form(FormElicitationCapability::new())
-                    .with_url(UrlElicitationCapability::new())
-            } else {
-                // https://modelcontextprotocol.io/specification/2025-06-18/client/elicitation#capabilities
-                // indicates this should be an empty object.
-                ElicitationCapability::default()
-            },
+            // https://modelcontextprotocol.io/specification/2025-06-18/client/elicitation#capabilities
+            // indicates this should be an empty object.
+            client_elicitation_capability: ElicitationCapability::default(),
             mcp_server_catalog: catalog.build(),
-            connector_snapshot:
-                codex_connectors::ConnectorSnapshot::from_plugin_capability_summaries(
-                    loaded_plugins.capability_summaries(),
-                ),
         }
     }
 
@@ -1487,83 +1372,6 @@ pub fn set_default_oss_provider(codex_home: &Path, provider: &str) -> std::io::R
         .map_err(|err| std::io::Error::other(format!("failed to persist config.toml: {err}")))
 }
 
-fn resolve_tool_suggest_config(
-    config_toml: &ConfigToml,
-    config_layer_stack: &ConfigLayerStack,
-) -> ToolSuggestConfig {
-    resolve_tool_suggest_config_from_config(config_toml.tool_suggest.as_ref(), config_layer_stack)
-}
-
-pub(crate) fn resolve_tool_suggest_config_from_layer_stack(
-    config_layer_stack: &ConfigLayerStack,
-) -> ToolSuggestConfig {
-    let tool_suggest = config_layer_stack
-        .effective_config()
-        .get("tool_suggest")
-        .cloned()
-        .and_then(|value| value.try_into::<ToolSuggestConfig>().ok());
-    resolve_tool_suggest_config_from_config(tool_suggest.as_ref(), config_layer_stack)
-}
-
-fn resolve_tool_suggest_config_from_config(
-    tool_suggest: Option<&ToolSuggestConfig>,
-    config_layer_stack: &ConfigLayerStack,
-) -> ToolSuggestConfig {
-    let discoverables = tool_suggest
-        .into_iter()
-        .flat_map(|tool_suggest| tool_suggest.discoverables.iter())
-        .filter_map(|discoverable| {
-            let trimmed = discoverable.id.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(ToolSuggestDiscoverable {
-                    kind: discoverable.kind,
-                    id: trimmed.to_string(),
-                })
-            }
-        })
-        .collect();
-    let mut seen_disabled_tools = HashSet::new();
-    let mut disabled_tools = Vec::new();
-    let mut add_disabled_tool = |disabled_tool: ToolSuggestDisabledTool| {
-        if let Some(disabled_tool) = disabled_tool.normalized()
-            && seen_disabled_tools.insert(disabled_tool.clone())
-        {
-            disabled_tools.push(disabled_tool);
-        }
-    };
-
-    let mut layers = config_layer_stack.layers_low_to_high().peekable();
-    if layers.peek().is_none() {
-        for disabled_tool in tool_suggest
-            .into_iter()
-            .flat_map(|tool_suggest| tool_suggest.disabled_tools.iter().cloned())
-        {
-            add_disabled_tool(disabled_tool);
-        }
-    } else {
-        for layer in layers {
-            let Some(tool_suggest) = layer
-                .config
-                .get("tool_suggest")
-                .cloned()
-                .and_then(|value| value.try_into::<ToolSuggestConfig>().ok())
-            else {
-                continue;
-            };
-            for disabled_tool in tool_suggest.disabled_tools {
-                add_disabled_tool(disabled_tool);
-            }
-        }
-    }
-
-    ToolSuggestConfig {
-        discoverables,
-        disabled_tools,
-    }
-}
-
 fn thread_store_config(thread_store: Option<ThreadStoreToml>) -> ThreadStoreConfig {
     match thread_store {
         Some(ThreadStoreToml::Local {}) => ThreadStoreConfig::Local,
@@ -1654,10 +1462,6 @@ fn resolve_update_plan_enabled(config_toml: &ConfigToml) -> bool {
         .as_ref()
         .and_then(|tools| tools.update_plan.as_ref())
         .is_some_and(|config| config.enabled)
-}
-
-fn resolve_feature_enabled(feature: Option<&codex_config::config_toml::FeatureToggleToml>) -> bool {
-    feature.and_then(|feature| feature.enabled).unwrap_or(true)
 }
 
 fn resolve_multi_agent_v2_config(config_toml: &ConfigToml) -> MultiAgentV2Config {
@@ -2081,15 +1885,6 @@ impl Config {
                 std::io::Error::new(std::io::ErrorKind::InvalidInput, message)
             })?;
         }
-        let orchestrator = cfg.orchestrator.as_ref();
-        let cloud_skill_enabled = cfg
-            .cloud
-            .as_ref()
-            .and_then(|cloud| cloud.skills.as_ref())
-            .and_then(|skills| skills.enabled)
-            .unwrap_or(true);
-        let orchestrator_mcp_enabled =
-            resolve_feature_enabled(orchestrator.and_then(|value| value.mcp.as_ref()));
         let mut startup_warnings = config_layer_stack
             .startup_warnings()
             .unwrap_or_default()
@@ -2121,7 +1916,6 @@ impl Config {
             ));
         }
 
-        let tool_suggest = resolve_tool_suggest_config(&cfg, &config_layer_stack);
         let feature_overrides = FeatureOverrides {
             web_search_request: override_tools_web_search_request,
         };
@@ -2412,7 +2206,6 @@ impl Config {
             .as_ref()
             .map(|_| BaseInstructionsProvenance::Custom);
         let developer_instructions = developer_instructions.or(cfg.developer_instructions);
-        let include_apps_instructions = cfg.include_apps_instructions.unwrap_or(true);
         let include_collaboration_mode_instructions =
             cfg.include_collaboration_mode_instructions.unwrap_or(true);
         let include_skill_instructions = cfg
@@ -2454,7 +2247,6 @@ impl Config {
             .unwrap_or_else(|| codex_home.clone());
         let otel = otel::resolve_config(cfg.otel.unwrap_or_default(), &mut startup_warnings);
         let config = Self {
-            plugins: cfg.plugins,
             model,
             service_tier,
             review_model,
@@ -2480,12 +2272,9 @@ impl Config {
             personality,
             developer_instructions,
             compact_prompt,
-            include_apps_instructions,
             include_collaboration_mode_instructions,
             include_skill_instructions,
             skill_max_context_tokens,
-            cloud_skill_enabled,
-            orchestrator_mcp_enabled,
             include_environment_context,
             include_environment_context_time,
             // The config.toml omits "_mode" because it's a config file. However, "_mode"
@@ -2570,7 +2359,6 @@ impl Config {
                 .chatgpt_base_url
                 .unwrap_or("https://chatgpt.com/backend-api/".to_string()),
             respect_system_proxy,
-            apps_mcp_product_sku: cfg.apps_mcp_product_sku.clone(),
             responses_api_metadata: cfg.responses_api_metadata.unwrap_or_default(),
             experimental_thread_store: thread_store_config(cfg.experimental_thread_store),
             forced_chatgpt_workspace_id,
@@ -2595,7 +2383,6 @@ impl Config {
                 .suppress_unstable_features_warning
                 .unwrap_or(false),
             analytics_enabled: cfg.analytics.as_ref().and_then(|a| a.enabled),
-            tool_suggest,
             otel,
         };
         Ok(config)

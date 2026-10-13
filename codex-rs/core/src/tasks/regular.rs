@@ -70,7 +70,7 @@ impl SessionTask for RegularTask {
                 .await;
             // Even cancelled discovery may have cleared the previous account's catalog.
             if prepares_mcp {
-                sess.request_mcp_runtime_reprojection();
+                sess.request_mcp_runtime_refresh();
             }
             if preparation.is_err() {
                 return SessionStartupPrewarmResolution::Cancelled;

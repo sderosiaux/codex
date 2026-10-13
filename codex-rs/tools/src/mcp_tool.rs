@@ -2,42 +2,22 @@ use crate::ToolDefinition;
 use crate::ToolOutputSchema;
 use crate::json_schema::parse_tool_input_schema_with_max_bytes;
 use crate::parse_tool_input_schema;
-use codex_utils_string::take_bytes_at_char_boundary;
 use serde_json::Value as JsonValue;
 use serde_json::json;
 
-const MAX_MCP_TOOL_DESCRIPTION_BYTES: usize = 1_000;
-
 pub fn parse_mcp_tool(tool: &rmcp::model::Tool) -> Result<ToolDefinition, serde_json::Error> {
-    parse_mcp_tool_with_description_limit(
-        tool, /*description_limit*/ None, /*schema_max_bytes*/ None,
-    )
+    parse_mcp_tool_with_optional_schema_max_bytes(tool, /*schema_max_bytes*/ None)
 }
 
 pub(crate) fn parse_mcp_tool_with_schema_max_bytes(
     tool: &rmcp::model::Tool,
     schema_max_bytes: usize,
 ) -> Result<ToolDefinition, serde_json::Error> {
-    parse_mcp_tool_with_description_limit(
-        tool,
-        /*description_limit*/ None,
-        Some(schema_max_bytes),
-    )
+    parse_mcp_tool_with_optional_schema_max_bytes(tool, Some(schema_max_bytes))
 }
 
-pub fn parse_agent_plugin_mcp_tool(
+fn parse_mcp_tool_with_optional_schema_max_bytes(
     tool: &rmcp::model::Tool,
-) -> Result<ToolDefinition, serde_json::Error> {
-    parse_mcp_tool_with_description_limit(
-        tool,
-        Some(MAX_MCP_TOOL_DESCRIPTION_BYTES),
-        /*schema_max_bytes*/ None,
-    )
-}
-
-fn parse_mcp_tool_with_description_limit(
-    tool: &rmcp::model::Tool,
-    description_limit: Option<usize>,
     schema_max_bytes: Option<usize>,
 ) -> Result<ToolDefinition, serde_json::Error> {
     let mut serialized_input_schema = serde_json::Value::Object(tool.input_schema.as_ref().clone());
@@ -61,14 +41,7 @@ fn parse_mcp_tool_with_description_limit(
     };
     Ok(ToolDefinition {
         name: tool.name.to_string(),
-        description: tool
-            .description
-            .as_deref()
-            .map(|description| match description_limit {
-                Some(limit) => take_bytes_at_char_boundary(description, limit).to_string(),
-                None => description.to_string(),
-            })
-            .unwrap_or_default(),
+        description: tool.description.as_deref().unwrap_or_default().to_string(),
         input_schema,
         output_schema: Some(ToolOutputSchema::from_mcp_output_schema(
             tool.output_schema.clone(),

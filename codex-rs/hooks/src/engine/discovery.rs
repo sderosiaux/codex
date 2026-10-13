@@ -12,8 +12,6 @@ use codex_config::HookHandlerConfig;
 use codex_config::HookStateToml;
 use codex_config::HooksFile;
 use codex_config::MatcherGroup;
-use codex_plugin::PluginHookSource;
-use codex_plugin::is_allowlisted_bundled_cleanup_hook;
 use codex_protocol::protocol::HookEventName;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use serde::Deserialize;
@@ -29,7 +27,6 @@ use crate::events::common::matcher_pattern_for_event;
 use crate::events::session_end::SESSION_END_DEFAULT_TIMEOUT_SEC;
 use crate::events::session_end::SESSION_END_MAX_TIMEOUT_SEC;
 use crate::output_spill::AdditionalContextLimit;
-use crate::output_spill::DEFAULT_HOOK_OUTPUT_TOKEN_LIMIT;
 use codex_protocol::protocol::HookSource;
 
 pub(crate) struct DiscoveryResult {
@@ -43,26 +40,19 @@ struct HookHandlerSource<'a> {
     key_source: String,
     source: HookSource,
     hook_states: &'a HashMap<String, HookStateToml>,
-    env: HashMap<String, String>,
-    plugin_id: Option<String>,
 }
 
 struct NormalizedHandler {
-    config: HookHandlerConfig,
     kind: ConfiguredHandlerKind,
     timeout_sec: u64,
     status_message: Option<String>,
     additional_context_limit: Option<usize>,
 }
 
-pub(crate) fn discover_handlers(
-    config_layer_stack: Option<&ConfigLayerStack>,
-    plugin_hook_sources: Vec<PluginHookSource>,
-    plugin_hook_load_warnings: Vec<String>,
-) -> DiscoveryResult {
+pub(crate) fn discover_handlers(config_layer_stack: Option<&ConfigLayerStack>) -> DiscoveryResult {
     let mut handlers = Vec::new();
     let mut hook_entries = Vec::new();
-    let mut warnings = plugin_hook_load_warnings;
+    let mut warnings = Vec::new();
     let mut display_order = 0_i64;
     let mut visited_json_hook_folders = HashSet::new();
     let hook_states = hook_states_from_stack(config_layer_stack);
@@ -101,8 +91,6 @@ pub(crate) fn discover_handlers(
                         key_source: source_path.display().to_string(),
                         source: hook_source,
                         hook_states: &hook_states,
-                        env: HashMap::new(),
-                        plugin_id: None,
                     },
                     hook_events,
                 );
@@ -110,67 +98,10 @@ pub(crate) fn discover_handlers(
         }
     }
 
-    append_plugin_hook_sources(
-        &mut handlers,
-        &mut hook_entries,
-        &mut warnings,
-        &mut display_order,
-        plugin_hook_sources,
-        &hook_states,
-    );
-
     DiscoveryResult {
         handlers,
         hook_entries,
         warnings,
-    }
-}
-
-fn append_plugin_hook_sources(
-    handlers: &mut Vec<ConfiguredHandler>,
-    hook_entries: &mut Vec<HookListEntry>,
-    warnings: &mut Vec<String>,
-    display_order: &mut i64,
-    plugin_hook_sources: Vec<PluginHookSource>,
-    hook_states: &HashMap<String, HookStateToml>,
-) {
-    for source in plugin_hook_sources {
-        let PluginHookSource {
-            plugin_root,
-            plugin_id,
-            plugin_data_root,
-            source_path,
-            source_relative_path,
-            hooks,
-        } = source;
-        let mut env = HashMap::new();
-        let plugin_root_value = plugin_root.display().to_string();
-        let plugin_data_root_value = plugin_data_root.display().to_string();
-        env.insert("PLUGIN_ROOT".to_string(), plugin_root_value.clone());
-        // For OOTB compat with existing plugins that use this env var.
-        env.insert("CLAUDE_PLUGIN_ROOT".to_string(), plugin_root_value);
-        env.insert("PLUGIN_DATA".to_string(), plugin_data_root_value.clone());
-        // For OOTB compat with existing plugins that use this env var.
-        env.insert("CLAUDE_PLUGIN_DATA".to_string(), plugin_data_root_value);
-        let plugin_id = plugin_id.as_key();
-        append_hook_events(
-            handlers,
-            hook_entries,
-            warnings,
-            display_order,
-            HookHandlerSource {
-                path: &source_path,
-                key_source: crate::declarations::plugin_hook_key_source(
-                    plugin_id.as_str(),
-                    source_relative_path.as_str(),
-                ),
-                source: HookSource::Plugin,
-                hook_states,
-                env,
-                plugin_id: Some(plugin_id),
-            },
-            hooks,
-        );
     }
 }
 
@@ -360,24 +291,9 @@ fn append_matcher_groups(
                         }
                         None
                     };
-                    let normalized_additional_context_limit = additional_context_limit
-                        .filter(|limit| *limit != DEFAULT_HOOK_OUTPUT_TOKEN_LIMIT);
-                    let config = HookHandlerConfig::Command {
-                        command: command.clone(),
-                        command_windows: None,
-                        timeout_sec: Some(timeout_sec),
-                        r#async,
-                        status_message: status_message.clone(),
-                        additional_context_limit: normalized_additional_context_limit,
-                    };
-                    let command = source.env.iter().fold(command, |command, (key, value)| {
-                        command.replace(&format!("${{{key}}}"), value)
-                    });
                     NormalizedHandler {
-                        config,
                         kind: ConfiguredHandlerKind::Command {
                             command,
-                            env: source.env.clone(),
                             r#async: runs_async,
                         },
                         timeout_sec,
@@ -413,15 +329,7 @@ fn append_matcher_groups(
                         source.path.as_path(),
                         warnings,
                     );
-                    let config = HookHandlerConfig::McpTool {
-                        server: server.clone(),
-                        tool: tool.clone(),
-                        input: input.clone(),
-                        timeout_sec: Some(timeout_sec),
-                        status_message: status_message.clone(),
-                    };
                     NormalizedHandler {
-                        config,
                         kind: ConfiguredHandlerKind::McpTool {
                             server,
                             tool,
@@ -449,7 +357,6 @@ fn append_matcher_groups(
             };
 
             let NormalizedHandler {
-                config,
                 kind,
                 timeout_sec,
                 status_message,
@@ -457,16 +364,7 @@ fn append_matcher_groups(
             } = normalized;
             let key = crate::hook_key(&source.key_source, event_name, group_index, handler_index);
             let state = source.hook_states.get(&key);
-            let builtin = source.plugin_id.as_deref().is_some_and(|plugin_id| {
-                is_allowlisted_bundled_cleanup_hook(
-                    plugin_id,
-                    event_name,
-                    group.matcher.as_deref(),
-                    &config,
-                    /*app_connector_id*/ None,
-                )
-            });
-            let enabled = builtin || state.and_then(|state| state.enabled) != Some(false);
+            let enabled = state.and_then(|state| state.enabled) != Some(false);
             let handler = match &kind {
                 ConfiguredHandlerKind::Command {
                     command, r#async, ..
@@ -483,7 +381,6 @@ fn append_matcher_groups(
             };
 
             hook_entries.push(HookListEntry {
-                builtin,
                 key,
                 event_name,
                 handler,
@@ -493,13 +390,11 @@ fn append_matcher_groups(
                 additional_context_limit,
                 source_path: source.path.clone(),
                 source: source.source,
-                plugin_id: source.plugin_id.clone(),
                 display_order: *display_order,
                 enabled,
             });
             if enabled {
                 handlers.push(ConfiguredHandler {
-                    builtin,
                     event_name,
                     matcher: compiled_matcher.clone(),
                     timeout_sec,
@@ -507,7 +402,7 @@ fn append_matcher_groups(
                     additional_context_limit: AdditionalContextLimit::from_config(
                         additional_context_limit,
                     ),
-                    source_path: source.path.clone().into(),
+                    source_path: source.path.clone(),
                     source: source.source,
                     display_order: *display_order,
                     kind,

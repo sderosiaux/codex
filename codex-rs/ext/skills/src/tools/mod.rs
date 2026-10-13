@@ -8,15 +8,12 @@ use codex_extension_api::ExtensionMetrics;
 use codex_extension_api::FunctionCallError;
 use codex_extension_api::JsonToolOutput;
 use codex_extension_api::ResponsesApiTool;
-use codex_extension_api::SelectedPluginSnapshot;
 use codex_extension_api::ToolCall;
 use codex_extension_api::ToolExecutor;
 use codex_extension_api::ToolName;
 use codex_extension_api::ToolOutput;
 use codex_extension_api::ToolSpec;
 use codex_extension_api::parse_tool_input_schema;
-use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
-use codex_mcp::McpResourceClient;
 use codex_otel::SessionTelemetry;
 use codex_otel::SkillInvocationEvent;
 use codex_otel::SkillInvocationType;
@@ -35,7 +32,6 @@ use crate::catalog::SkillCatalog;
 use crate::catalog::SkillCatalogEntry;
 use crate::catalog::SkillSourceKind;
 use crate::provider::SkillListQuery;
-use crate::provider::attribute_executor_plugins;
 use crate::sources::SkillProviders;
 use crate::state::SkillsSessionState;
 use crate::state::SkillsThreadState;
@@ -55,27 +51,19 @@ pub(crate) fn skill_tools(
     session_store: &ExtensionData,
     thread_store: &ExtensionData,
     executor_query: Option<SkillListQuery>,
-    selected_plugins: Option<Arc<SelectedPluginSnapshot>>,
 ) -> Vec<Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>> {
     let Some(thread_state) = thread_store.get::<SkillsThreadState>() else {
         return Vec::new();
     };
-    let cloud_available = providers.has_cloud_provider() && thread_state.cloud_skill_enabled();
-    if !cloud_available && executor_query.is_none() {
+    let Some(executor_query) = executor_query else {
         return Vec::new();
-    }
-    let mcp_resources = session_store
-        .get::<SkillsSessionState>()
-        .and_then(|state| state.mcp_resources.clone());
+    };
     let telemetry = SkillInvocationTelemetry::from_stores(session_store, thread_store);
     let context = SkillToolContext {
         providers,
-        mcp_resources,
         thread_state,
         telemetry,
-        cloud_available,
         executor_query,
-        selected_plugins,
         executor_catalog: Arc::new(OnceCell::new()),
     };
     vec![
@@ -133,7 +121,6 @@ impl SkillInvocationTelemetry {
                     turn_id: &turn_id,
                     skill_name: &skill.name,
                     scope: skill.analytics_scope,
-                    plugin_id: skill.plugin_id.as_deref(),
                     invocation_type: match invocation_type {
                         InvocationType::Explicit => SkillInvocationType::Explicit,
                         InvocationType::Implicit => SkillInvocationType::Implicit,
@@ -145,12 +132,10 @@ impl SkillInvocationTelemetry {
             .as_ref()
             .filter(|turn| turn.turn_id == turn_id);
         if let Some(turn_metrics) = &turn_metrics {
-            turn_metrics.record_plugin(skill.plugin_id.as_deref());
+            turn_metrics.record_skill_use();
         }
         if let Some(metrics) = &self.metrics {
             let skill_name_tag = sanitize_metric_tag_value(skill.name.as_str());
-            let plugin_id_tag =
-                sanitize_metric_tag_value(skill.plugin_id.as_deref().unwrap_or("unattributed"));
             let model_slug_tag = sanitize_metric_tag_value(model.as_str());
             let reasoning_effort = turn_metrics
                 .as_ref()
@@ -167,7 +152,6 @@ impl SkillInvocationTelemetry {
                     ("status", "ok"),
                     ("skill", skill_name_tag.as_str()),
                     ("invoke_type", invoke_type),
-                    ("plugin_id", plugin_id_tag.as_str()),
                     ("model_slug", model_slug_tag.as_str()),
                     ("reasoning_effort", reasoning_effort),
                 ],
@@ -179,83 +163,36 @@ impl SkillInvocationTelemetry {
 #[derive(Clone)]
 struct SkillToolContext {
     providers: SkillProviders,
-    mcp_resources: Option<Arc<McpResourceClient>>,
     thread_state: Arc<SkillsThreadState>,
     telemetry: SkillInvocationTelemetry,
-    cloud_available: bool,
-    executor_query: Option<SkillListQuery>,
-    selected_plugins: Option<Arc<SelectedPluginSnapshot>>,
+    executor_query: SkillListQuery,
     executor_catalog: Arc<OnceCell<SkillCatalog>>,
 }
 
 impl SkillToolContext {
-    async fn catalog(&self, turn_id: &str, authority: SkillToolAuthoritySelector) -> SkillCatalog {
-        match authority {
-            SkillToolAuthoritySelector::Cloud => {
-                if !self.cloud_available {
-                    return SkillCatalog::default();
-                }
-                self.thread_state.cloud_catalog_snapshot()
-            }
-            SkillToolAuthoritySelector::Executor => {
-                let Some(mut query) = self.executor_query.clone() else {
-                    return SkillCatalog::default();
-                };
-                query.turn_id = turn_id.to_string();
-                let mut catalog = self
-                    .executor_catalog
-                    .get_or_init(|| self.providers.list_executor_for_turn(query))
-                    .await
-                    .clone();
-                if let Some(selected_plugins) = &self.selected_plugins {
-                    attribute_executor_plugins(&mut catalog, selected_plugins);
-                }
-                catalog
-            }
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-enum SkillToolAuthoritySelector {
-    Cloud,
-    Executor,
-}
-
-impl SkillToolAuthoritySelector {
-    fn matches(self, authority: &SkillAuthority) -> bool {
-        match self {
-            Self::Cloud => authority.kind == SkillSourceKind::Cloud,
-            Self::Executor => authority.kind == SkillSourceKind::Executor,
-        }
+    async fn catalog(&self, turn_id: &str) -> SkillCatalog {
+        let mut query = self.executor_query.clone();
+        query.turn_id = turn_id.to_string();
+        self.executor_catalog
+            .get_or_init(|| self.providers.list_executor_for_turn(query))
+            .await
+            .clone()
     }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum SkillToolAuthority {
-    Cloud,
     Executor { id: String },
 }
 
 impl SkillToolAuthority {
-    fn selector(&self) -> SkillToolAuthoritySelector {
-        match self {
-            Self::Cloud => SkillToolAuthoritySelector::Cloud,
-            Self::Executor { .. } => SkillToolAuthoritySelector::Executor,
-        }
-    }
-
     pub(crate) fn from_authority(authority: &SkillAuthority) -> Option<Self> {
         match &authority.kind {
-            SkillSourceKind::Cloud if authority.id == CODEX_APPS_MCP_SERVER_NAME => {
-                Some(Self::Cloud)
-            }
             SkillSourceKind::Executor => Some(Self::Executor {
                 id: authority.id.clone(),
             }),
-            SkillSourceKind::Host | SkillSourceKind::Cloud | SkillSourceKind::Custom(_) => None,
+            SkillSourceKind::Host => None,
         }
     }
 }
@@ -341,16 +278,9 @@ fn serialized_len(value: &impl Serialize) -> Result<usize, FunctionCallError> {
         .map_err(|err| FunctionCallError::Fatal(err.to_string()))
 }
 
-fn skill_json_output<T: Serialize>(
-    value: &T,
-    authority: SkillToolAuthoritySelector,
-) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
+fn skill_json_output<T: Serialize>(value: &T) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
     let value = serde_json::to_value(value).map_err(|err| {
         FunctionCallError::Fatal(format!("failed to serialize tool output: {err}"))
     })?;
-    let output = JsonToolOutput::new(value);
-    Ok(match authority {
-        SkillToolAuthoritySelector::Cloud => Box::new(output.with_external_context()),
-        SkillToolAuthoritySelector::Executor => Box::new(output),
-    })
+    Ok(Box::new(JsonToolOutput::new(value)))
 }

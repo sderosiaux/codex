@@ -8,7 +8,6 @@ pub use shutdown::AgentTreeShutdownFailureReason;
 pub use shutdown::AgentTreeShutdownReport;
 pub(crate) use shutdown::thread_store_error_kind;
 
-use crate::CodexAppsToolsCache;
 use crate::CodexThreadSettingsOverrides;
 use crate::agent::AgentStatus;
 use crate::agent::LocalAgentControl;
@@ -44,7 +43,6 @@ use codex_app_server_protocol::ThreadHistoryBuilder;
 use codex_app_server_protocol::TurnStatus;
 use codex_attachment_store::AttachmentStore;
 use codex_attachment_store::InlineAttachmentStore;
-use codex_core_plugins::PluginsManager;
 use codex_exec_server::EnvironmentManager;
 use codex_extension_api::ExtensionDataInit;
 use codex_extension_api::ExtensionRegistry;
@@ -247,8 +245,6 @@ pub struct StartThreadOptions {
     pub client_mcp_extensions: ClientMcpExtensions,
     /// Thread ID reserved before startup so the caller can associate host-owned state with it.
     pub reserved_thread_id: Option<ThreadId>,
-    /// Initial thread-owned plugin selection; omission restores persisted settings.
-    pub disabled_plugin_ids: Option<Vec<String>>,
 }
 
 impl StartThreadOptions {
@@ -272,7 +268,6 @@ impl StartThreadOptions {
             turn_extension_init: ExtensionDataInit::default(),
             client_mcp_extensions: ClientMcpExtensions::default(),
             reserved_thread_id: None,
-            disabled_plugin_ids: None,
         }
     }
 }
@@ -371,7 +366,6 @@ pub(crate) struct ThreadManagerState {
     environment_manager: Arc<EnvironmentManager>,
     starting_mcp_runtimes: std::sync::Mutex<Vec<std::sync::Weak<AtomicBool>>>,
     skills_service: Arc<HostSkillsService>,
-    plugins_manager: Arc<PluginsManager>,
     mcp_manager: Arc<McpManager>,
     extensions: Arc<ExtensionRegistry<Config>>,
     user_instructions_provider: Arc<dyn UserInstructionsProvider>,
@@ -477,7 +471,6 @@ impl ThreadManager {
         config: &Config,
         auth_manager: Arc<AuthManager>,
         models_manager: SharedModelsManager,
-        codex_apps_tools_cache: CodexAppsToolsCache,
         session_source: SessionSource,
         environment_manager: Arc<EnvironmentManager>,
         extensions: Arc<ExtensionRegistry<Config>>,
@@ -489,25 +482,14 @@ impl ThreadManager {
         attestation_provider: Option<Arc<dyn AttestationProvider>>,
         external_time_provider: Option<Arc<dyn TimeProvider>>,
     ) -> Self {
-        let codex_home = config.codex_home.clone();
         let restriction_product = session_source.restriction_product();
         let (thread_created_tx, _) = broadcast::channel(THREAD_CREATED_CHANNEL_CAPACITY);
         let skills_service = Arc::new(HostSkillsService::new_with_restriction_product(
-            codex_home.clone(),
+            config.codex_home.clone(),
             config.bundled_skills_enabled(),
             restriction_product,
         ));
-        let plugins_manager = Arc::new(PluginsManager::new_with_options(
-            codex_home.to_path_buf(),
-            restriction_product,
-            Arc::clone(&auth_manager),
-            skills_service.clone(),
-        ));
-        let mcp_manager = Arc::new(McpManager::new_with_extensions(
-            Arc::clone(&plugins_manager),
-            Arc::clone(&extensions),
-            codex_apps_tools_cache,
-        ));
+        let mcp_manager = Arc::new(McpManager::new());
         Self {
             state: Arc::new(ThreadManagerState {
                 threads: Arc::new(RwLock::new(HashMap::new())),
@@ -520,7 +502,6 @@ impl ThreadManager {
                 environment_manager,
                 starting_mcp_runtimes: std::sync::Mutex::new(Vec::new()),
                 skills_service,
-                plugins_manager,
                 mcp_manager,
                 extensions,
                 user_instructions_provider,
@@ -580,10 +561,6 @@ impl ThreadManager {
 
     pub fn skills_service(&self) -> Arc<HostSkillsService> {
         self.state.skills_service.clone()
-    }
-
-    pub fn plugins_manager(&self) -> Arc<PluginsManager> {
-        self.state.plugins_manager.clone()
     }
 
     pub fn mcp_manager(&self) -> Arc<McpManager> {
@@ -1217,7 +1194,6 @@ impl ThreadManager {
                 environments: Some(settings.environments.into_requests().environment_requests),
                 inherited_environments: Some(environments),
                 client_mcp_extensions: parent.client_mcp_extensions(),
-                disabled_plugin_ids: Some(settings.disabled_plugin_ids),
                 thread_extension_init,
                 turn_extension_init: settings.turn_extension_init,
                 ..StartThreadOptions::new(config)
@@ -1811,7 +1787,6 @@ impl ThreadManagerState {
             turn_extension_init,
             client_mcp_extensions,
             mut reserved_thread_id,
-            disabled_plugin_ids,
         } = options;
         let inherited_environments = captured_environments.or(inherited_environments);
         let session_source = session_source.unwrap_or_else(|| self.session_source.clone());
@@ -1921,11 +1896,7 @@ impl ThreadManagerState {
                     .get::<codex_extension_api::IsolatedSessionExtensions<Config>>()
                     .map(|extensions| Arc::clone(&extensions.0))
                     .unwrap_or_else(empty_extension_registry);
-                let mcp_manager = McpManager::new_with_extensions(
-                    Arc::clone(&self.plugins_manager),
-                    Arc::clone(&extensions),
-                    CodexAppsToolsCache::default(),
-                );
+                let mcp_manager = McpManager::new();
                 (
                     inherited_instructions.unwrap_or_default(),
                     extensions,
@@ -1996,12 +1967,10 @@ impl ThreadManagerState {
             git_root_discovery: Arc::clone(&self.git_root_discovery),
             environment_manager: Arc::clone(&self.environment_manager),
             skills_service: Arc::clone(&self.skills_service),
-            plugins_manager: Arc::clone(&self.plugins_manager),
             mcp_manager,
             extensions,
             conversation_history: initial_history,
             history_initialization,
-            disabled_plugin_ids,
             requested_history_mode: history_mode,
             fork_persistence,
             session_source,

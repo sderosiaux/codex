@@ -88,12 +88,8 @@ pub const ENVIRONMENT_CONTEXT_OPEN_TAG: &str = "<environment_context>";
 pub const ENVIRONMENT_CONTEXT_CLOSE_TAG: &str = "</environment_context>";
 pub const ENVIRONMENTS_INSTRUCTIONS_OPEN_TAG: &str = "<environments_instructions>";
 pub const ENVIRONMENTS_INSTRUCTIONS_CLOSE_TAG: &str = "</environments_instructions>";
-pub const APPS_INSTRUCTIONS_OPEN_TAG: &str = "<apps_instructions>";
-pub const APPS_INSTRUCTIONS_CLOSE_TAG: &str = "</apps_instructions>";
 pub const SKILLS_INSTRUCTIONS_OPEN_TAG: &str = "<skills_instructions>";
 pub const SKILLS_INSTRUCTIONS_CLOSE_TAG: &str = "</skills_instructions>";
-pub const PLUGINS_INSTRUCTIONS_OPEN_TAG: &str = "<plugins_instructions>";
-pub const PLUGINS_INSTRUCTIONS_CLOSE_TAG: &str = "</plugins_instructions>";
 pub const TOOLS_OPEN_TAG: &str = "<tools>";
 pub const TOOLS_CLOSE_TAG: &str = "</tools>";
 pub const COLLABORATION_MODE_OPEN_TAG: &str = "<collaboration_mode>";
@@ -201,10 +197,6 @@ pub struct ThreadSettingsOverrides {
 
     /// Updated personality preference.
     pub personality: Option<Personality>,
-
-    /// Replace the thread's disabled plugin IDs. Omission preserves the current
-    /// selection, and an empty list clears it.
-    pub disabled_plugin_ids: Option<Vec<String>>,
 }
 
 /// Source classification for client-supplied context.
@@ -831,7 +823,6 @@ pub enum HookSource {
     User,
     Project,
     SessionFlags,
-    Plugin,
     #[default]
     Unknown,
 }
@@ -866,11 +857,6 @@ pub struct HookOutputEntry {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "snake_case")]
 pub struct HookRunSummary {
-    /// Internal classification used to suppress lifecycle notifications without losing telemetry.
-    #[serde(skip)]
-    #[schemars(skip)]
-    #[ts(skip)]
-    pub builtin: bool,
     pub id: String,
     pub event_name: HookEventName,
     pub handler_type: HookHandlerType,
@@ -1390,9 +1376,6 @@ pub struct ThreadSettingsSnapshot {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub personality: Option<Personality>,
     pub collaboration_mode: CollaborationMode,
-    /// Thread-owned plugin selection, retained even when a plugin is unavailable.
-    #[serde(default)]
-    pub disabled_plugin_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default, PartialEq, Eq, JsonSchema, TS)]
@@ -1831,25 +1814,10 @@ pub struct McpToolCallBeginEvent {
     pub invocation: McpInvocation,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
-    pub connector_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
     pub mcp_app_resource_uri: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub mcp_app_ui: Option<crate::items::McpAppUi>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub link_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub app_name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub action_name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub plugin_id: Option<String>,
     /// Whether the selected tool is annotated as read-only, not its execution outcome.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -1866,25 +1834,10 @@ pub struct McpToolCallEndEvent {
     pub invocation: McpInvocation,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
-    pub connector_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
     pub mcp_app_resource_uri: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub mcp_app_ui: Option<crate::items::McpAppUi>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub link_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub app_name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub action_name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub plugin_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub read_only_hint: Option<bool>,
@@ -2451,10 +2404,6 @@ pub struct TurnContextItem {
     /// Root turn that owns this turn's attribution, retained across recovery.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_turn_id: Option<String>,
-    /// Plugin selection captured for this turn. Absent in older histories.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub disabled_plugin_ids: Option<Vec<String>>,
     pub cwd: AbsolutePathBuf,
     pub model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2654,14 +2603,6 @@ pub enum ExecCommandStatus {
 pub struct ExecCommandBeginEvent {
     /// Identifier so this can be paired with the ExecCommandEnd event.
     pub call_id: String,
-    /// Trusted first-party plugin attributed to this command, when known.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub plugin_id: Option<String>,
-    /// Safe plugin-relative path attributed to this command, when known.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub script_path: Option<String>,
     /// Identifier for the underlying PTY process (when available).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -2688,14 +2629,6 @@ pub struct ExecCommandBeginEvent {
 pub struct ExecCommandEndEvent {
     /// Identifier for the ExecCommandBegin that finished.
     pub call_id: String,
-    /// Trusted first-party plugin attributed to this command, when known.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub plugin_id: Option<String>,
-    /// Safe plugin-relative path attributed to this command, when known.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub script_path: Option<String>,
     /// Identifier for the underlying PTY process (when available).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]

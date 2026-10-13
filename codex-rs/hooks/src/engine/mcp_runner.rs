@@ -10,7 +10,6 @@ use serde_json::Value;
 
 use super::ConfiguredHandler;
 use super::HandlerRunResult;
-use super::HandlerSourcePath;
 use crate::mcp::HookMcpCall;
 use crate::mcp::HookMcpExecutor;
 
@@ -32,7 +31,6 @@ pub(crate) async fn run_mcp_tool(
     tool: &str,
     argument_template: &Map<String, Value>,
     hook_event_json: &str,
-    metadata: Option<&Map<String, Value>>,
 ) -> HandlerRunResult {
     let started_at = chrono::Utc::now().timestamp();
     let started = Instant::now();
@@ -40,34 +38,10 @@ pub(crate) async fn run_mcp_tool(
         let hook_event: Value =
             serde_json::from_str(hook_event_json).context("failed to parse hook event input")?;
         let input = expand_mcp_argument_template(argument_template, &hook_event)?;
-        let (environment_id, mut call_metadata) = match &handler.source_path {
-            HandlerSourcePath::Local(_) => (None, None),
-            HandlerSourcePath::ExecutorScoped {
-                environment_id,
-                mcp_environment_id,
-                mcp_metadata,
-                ..
-            } => (
-                Some(
-                    mcp_environment_id
-                        .as_ref()
-                        .unwrap_or(environment_id)
-                        .clone(),
-                ),
-                mcp_metadata.as_deref().cloned(),
-            ),
-        };
-        if let Some(metadata) = metadata {
-            call_metadata
-                .get_or_insert_with(Map::new)
-                .extend(metadata.clone());
-        }
         executor
             .execute(HookMcpCall {
                 server: server.to_string(),
                 tool: tool.to_string(),
-                environment_id,
-                metadata: call_metadata,
                 input,
                 timeout: Duration::from_secs(handler.timeout_sec),
             })

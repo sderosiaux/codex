@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use codex_mcp::MCP_TOOL_CODEX_APPS_META_KEY;
 use codex_otel::SessionTelemetry;
 use codex_otel::sanitize_metric_tag_value;
 use codex_protocol::mcp::CallToolResult;
@@ -42,17 +41,9 @@ pub(super) fn emit_mcp_call_metrics(
     outcome: &McpCallMetricOutcome,
     server_name: &str,
     tool_name: &str,
-    connector_id: Option<&str>,
-    connector_name: Option<&str>,
     duration: Option<Duration>,
 ) {
-    let tags = mcp_call_metric_tags(
-        outcome.status,
-        server_name,
-        tool_name,
-        connector_id,
-        connector_name,
-    );
+    let tags = mcp_call_metric_tags(outcome.status, server_name, tool_name);
     let tag_refs: Vec<(&str, &str)> = tags
         .iter()
         .map(|(key, value)| (*key, value.as_str()))
@@ -80,22 +71,12 @@ fn mcp_call_metric_tags(
     status: &str,
     server_name: &str,
     tool_name: &str,
-    connector_id: Option<&str>,
-    connector_name: Option<&str>,
 ) -> Vec<(&'static str, String)> {
-    let mut tags = vec![
+    vec![
         ("status", sanitize_metric_tag_value(status)),
         ("server", sanitize_metric_tag_value(server_name)),
         ("tool", sanitize_metric_tag_value(tool_name)),
-    ];
-    if let Some(connector_id) = connector_id.filter(|connector_id| !connector_id.is_empty()) {
-        tags.push(("connector_id", sanitize_metric_tag_value(connector_id)));
-    }
-    if let Some(connector_name) = connector_name.filter(|connector_name| !connector_name.is_empty())
-    {
-        tags.push(("connector_name", sanitize_metric_tag_value(connector_name)));
-    }
-    tags
+    ]
 }
 
 pub(super) fn mcp_call_metric_outcome(
@@ -109,26 +90,7 @@ pub(super) fn mcp_call_metric_outcome(
                 .and_then(JsonValue::as_object)
                 .and_then(|structured_content| structured_content.get("error_code"))
                 .and_then(JsonValue::as_str)
-                .filter(|error_code| !error_code.is_empty())
-                .or_else(|| {
-                    result
-                        .meta
-                        .as_ref()
-                        .and_then(JsonValue::as_object)
-                        .and_then(|meta| meta.get(MCP_TOOL_CODEX_APPS_META_KEY))
-                        .and_then(JsonValue::as_object)
-                        .and_then(|codex_apps| codex_apps.get("connector_auth_failure"))
-                        .and_then(JsonValue::as_object)
-                        .filter(|auth_failure| {
-                            auth_failure
-                                .get("is_auth_failure")
-                                .and_then(JsonValue::as_bool)
-                                == Some(true)
-                        })
-                        .and_then(|auth_failure| auth_failure.get("error_code"))
-                        .and_then(JsonValue::as_str)
-                        .filter(|error_code| !error_code.is_empty())
-                });
+                .filter(|error_code| !error_code.is_empty());
             let error_code: String = error_code
                 .unwrap_or(MCP_CALL_ERROR_CODE_UNKNOWN)
                 .chars()

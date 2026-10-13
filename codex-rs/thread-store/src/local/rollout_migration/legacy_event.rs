@@ -182,13 +182,8 @@ pub(super) fn completed_item(
                         .arguments
                         .clone()
                         .unwrap_or(serde_json::Value::Null),
-                    connector_id: event.connector_id.clone(),
                     mcp_app_resource_uri: event.mcp_app_resource_uri.clone(),
                     mcp_app_ui: event.mcp_app_ui.clone(),
-                    link_id: event.link_id.clone(),
-                    app_name: event.app_name.clone(),
-                    action_name: event.action_name.clone(),
-                    plugin_id: event.plugin_id.clone(),
                     read_only_hint: event.read_only_hint,
                     status: if event.is_success() {
                         McpToolCallStatus::Completed
@@ -270,8 +265,6 @@ pub(super) fn completed_item(
             TurnItem::CommandExecution(CommandExecutionItem {
                 model_context: None,
                 id: event.call_id.clone(),
-                plugin_id: event.plugin_id.clone(),
-                script_path: event.script_path.clone(),
                 process_id: event.process_id.clone(),
                 command: event.command.clone(),
                 cwd: event.cwd.clone(),

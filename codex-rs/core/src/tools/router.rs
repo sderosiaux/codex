@@ -16,7 +16,6 @@ use codex_otel::TOOL_REGISTRATIONS_METRIC;
 use codex_otel::TOOL_REGISTRATIONS_METRIC_BUCKETS;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::models::SearchToolCallParams;
-use codex_tools::DiscoverableTool;
 use codex_tools::ResponsesApiNamespaceTool;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
@@ -74,18 +73,6 @@ pub struct ToolRouter {
     registry: ToolRegistry,
     model_visible_specs: Arc<[ToolSpec]>,
     tool_namespaces_info: Option<TurnToolNamespacesInfo>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ToolSuggestPresentation {
-    ListTool,
-    RecommendationContext,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct ToolSuggestCandidates {
-    pub(crate) tools: Vec<DiscoverableTool>,
-    pub(crate) presentation: ToolSuggestPresentation,
 }
 
 impl ToolRouter {

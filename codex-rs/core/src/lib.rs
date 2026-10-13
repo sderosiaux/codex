@@ -67,7 +67,6 @@ pub use agent_message_board::install_agent_message_board;
 mod attestation;
 mod codex_delegate;
 pub mod config;
-pub mod connectors;
 pub mod context;
 mod context_manager;
 mod current_time;
@@ -84,26 +83,14 @@ pub(crate) mod mcp;
 mod mcp_skill_dependencies;
 mod mcp_tool_exposure;
 pub use mcp::McpManager;
-mod original_image_detail;
-pub use codex_mcp::CodexAppsToolsCache;
-mod mcp_openai_file;
 mod mcp_tool_call;
-pub(crate) mod mention_syntax;
+mod original_image_detail;
 pub(crate) mod utils;
-pub use mention_syntax::PLUGIN_TEXT_MENTION_SIGIL;
-pub use mention_syntax::TOOL_MENTION_SIGIL;
 pub use utils::path_utils;
-pub(crate) mod plugins;
-pub use plugins::plugins_manager_for_config;
 #[doc(hidden)]
 pub(crate) mod prompt_debug;
 #[doc(hidden)]
 pub use prompt_debug::build_prompt_input;
-pub(crate) mod mentions {
-    pub(crate) use crate::plugins::build_connector_slug_counts;
-    pub(crate) use crate::plugins::collect_explicit_plugin_mentions;
-    pub(crate) use crate::plugins::collect_tool_mentions_from_messages;
-}
 mod session_prefix;
 mod skills;
 pub(crate) use skills::maybe_emit_implicit_skill_invocation;

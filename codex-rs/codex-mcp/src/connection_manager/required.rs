@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use anyhow::Result;
 use anyhow::anyhow;
 use codex_protocol::protocol::McpStartupFailure;
@@ -16,7 +14,7 @@ impl McpConnectionSet {
     /// startup-time elicitation can resolve while validation waits.
     pub(crate) async fn validate_required_servers(&self) -> Result<()> {
         let failures = async {
-            self.record_startup_readiness("required_startup", &[], &HashSet::new());
+            self.record_startup_readiness("required_startup", &[]);
             let mut failures = Vec::new();
             for server_name in &self.required_servers {
                 let Some(view) = self.servers.get(server_name) else {

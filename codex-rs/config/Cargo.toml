@@ -15,7 +15,6 @@ codex-file-system = { workspace = true }
 codex-model-provider-info = { workspace = true }
 codex-protocol = { workspace = true }
 codex-utils-absolute-path = { workspace = true }
-codex-utils-path = { workspace = true }
 codex-utils-path-uri = { workspace = true }
 codex-utils-redacted-string = { workspace = true }
 dunce = { workspace = true }

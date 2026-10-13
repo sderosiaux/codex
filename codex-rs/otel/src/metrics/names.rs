@@ -6,9 +6,6 @@ pub const TOOL_CALL_UNIFIED_EXEC_METRIC: &str = "codex.tool.unified_exec";
 pub const MULTI_AGENT_SPAWN_FAILURE_METRIC: &str = "codex.multi_agent.spawn.failure";
 pub const MULTI_AGENT_SPAWN_PHASE_DURATION_METRIC: &str =
     "codex.multi_agent.spawn.phase.duration_ms";
-pub const ARTIFACT_OPERATION_STARTED_METRIC: &str = "codex.artifact.operation.started";
-pub const ARTIFACT_OPERATION_EXPECTED_OUTPUT_COUNT_METRIC: &str =
-    "codex.artifact.operation.expected_output_count";
 pub const PROCESS_START_METRIC: &str = "codex.process.start";
 /// Caller-side exec-server RPC attempts, including local admission and transport failures.
 pub const EXEC_SERVER_CLIENT_REQUEST_COUNT_METRIC: &str = "exec_server_client_requests_total";
@@ -50,10 +47,6 @@ pub const GOAL_USAGE_LIMITED_METRIC: &str = "codex.goal.usage_limited";
 pub const GOAL_BLOCKED_METRIC: &str = "codex.goal.blocked";
 pub const GOAL_TOKEN_COUNT_METRIC: &str = "codex.goal.token_count";
 pub const GOAL_DURATION_SECONDS_METRIC: &str = "codex.goal.duration_s";
-pub const PLUGIN_INSTALL_ELICITATION_SENT_METRIC: &str = "codex.plugins.install_elicitation.sent";
-pub const PLUGIN_INSTALL_SUGGESTION_METRIC: &str = "codex.plugins.install_suggestion";
-pub const CURATED_PLUGINS_STARTUP_SYNC_METRIC: &str = "codex.plugins.startup_sync";
-pub const CURATED_PLUGINS_STARTUP_SYNC_FINAL_METRIC: &str = "codex.plugins.startup_sync.final";
 pub const HOOK_RUN_METRIC: &str = "codex.hooks.run";
 pub const HOOK_RUN_DURATION_METRIC: &str = "codex.hooks.run.duration_ms";
 /// Duration for coarse startup phases, tagged by low-cardinality phase and status.

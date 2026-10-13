@@ -19,7 +19,6 @@ pub use crate::shell_environment_policy::ShellEnvironmentPolicyToml;
 pub use codex_protocol::config_types::ModeKind;
 pub use codex_protocol::config_types::Personality;
 pub use codex_protocol::config_types::ServiceTier;
-use codex_protocol::config_types::ToolExposureSurface;
 pub use codex_protocol::config_types::WebSearchMode;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use std::collections::BTreeMap;
@@ -40,10 +39,6 @@ const MIN_MEMORIES_MAX_RAW_MEMORIES_FOR_CONSOLIDATION: usize = 1;
 const MAX_MEMORIES_MAX_RAW_MEMORIES_FOR_CONSOLIDATION: usize = 4096;
 const MIN_MEMORIES_MAX_ROLLOUTS_PER_STARTUP: usize = 1;
 const MAX_MEMORIES_MAX_ROLLOUTS_PER_STARTUP: usize = 128;
-
-const fn default_enabled() -> bool {
-    true
-}
 
 /// Determine where Codex should store CLI auth credentials.
 #[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -129,62 +124,6 @@ pub struct AnalyticsConfigToml {
     /// When `false`, disables OpenAI analytics across Codex product surfaces in this profile.
     /// Custom OTLP metrics exporters remain enabled; set `otel.metrics_exporter = "none"` to disable them.
     pub enabled: Option<bool>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum ToolSuggestDiscoverableType {
-    Connector,
-    Plugin,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash, JsonSchema)]
-#[schemars(deny_unknown_fields)]
-pub struct ToolSuggestDiscoverable {
-    #[serde(rename = "type")]
-    pub kind: ToolSuggestDiscoverableType,
-    pub id: String,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash, JsonSchema)]
-#[schemars(deny_unknown_fields)]
-pub struct ToolSuggestDisabledTool {
-    #[serde(rename = "type")]
-    pub kind: ToolSuggestDiscoverableType,
-    pub id: String,
-}
-
-impl ToolSuggestDisabledTool {
-    pub fn plugin(id: impl Into<String>) -> Self {
-        Self {
-            kind: ToolSuggestDiscoverableType::Plugin,
-            id: id.into(),
-        }
-    }
-
-    pub fn connector(id: impl Into<String>) -> Self {
-        Self {
-            kind: ToolSuggestDiscoverableType::Connector,
-            id: id.into(),
-        }
-    }
-
-    pub fn normalized(&self) -> Option<Self> {
-        let id = self.id.trim();
-        (!id.is_empty()).then(|| Self {
-            kind: self.kind,
-            id: id.to_string(),
-        })
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema)]
-#[schemars(deny_unknown_fields)]
-pub struct ToolSuggestConfig {
-    #[serde(default)]
-    pub discoverables: Vec<ToolSuggestDiscoverable>,
-    #[serde(default)]
-    pub disabled_tools: Vec<ToolSuggestDisabledTool>,
 }
 
 pub use codex_protocol::MemoryVersion;
@@ -315,91 +254,6 @@ impl From<MemoriesToml> for MemoriesConfig {
     }
 }
 
-/// Default settings that apply to all apps.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema)]
-#[schemars(deny_unknown_fields)]
-pub struct AppsDefaultConfig {
-    /// When `false`, apps are disabled unless overridden by per-app settings.
-    #[serde(default = "default_enabled")]
-    pub enabled: bool,
-
-    /// Whether tools with `destructive_hint = true` are allowed by default.
-    #[serde(
-        default = "default_enabled",
-        skip_serializing_if = "std::clone::Clone::clone"
-    )]
-    pub destructive_enabled: bool,
-
-    /// Whether tools with `open_world_hint = true` are allowed by default.
-    #[serde(
-        default = "default_enabled",
-        skip_serializing_if = "std::clone::Clone::clone"
-    )]
-    pub open_world_enabled: bool,
-}
-
-/// Per-tool settings for a single app tool.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema)]
-#[schemars(deny_unknown_fields)]
-pub struct AppToolConfig {
-    /// Whether this tool is enabled. `Some(true)` explicitly allows this tool.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub enabled: Option<bool>,
-}
-
-/// Tool settings for a single app.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema)]
-#[schemars(deny_unknown_fields)]
-pub struct AppToolsConfig {
-    /// Per-tool overrides keyed by tool name (for example `repos/list`).
-    #[serde(default, flatten)]
-    pub tools: HashMap<String, AppToolConfig>,
-}
-
-/// Config values for a single app/connector.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema)]
-#[schemars(deny_unknown_fields)]
-pub struct AppConfig {
-    /// When `false`, Codex does not surface this app.
-    #[serde(default = "default_enabled")]
-    pub enabled: bool,
-
-    /// Model-facing surfaces from which this connector's tools must be omitted,
-    /// in addition to any server-level omissions. `None` leaves lower-priority
-    /// configuration unchanged; an empty list clears connector-level omissions.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub omit_tools_from: Option<Vec<ToolExposureSurface>>,
-
-    /// Whether tools with `destructive_hint = true` are allowed for this app.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub destructive_enabled: Option<bool>,
-
-    /// Whether tools with `open_world_hint = true` are allowed for this app.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub open_world_enabled: Option<bool>,
-
-    /// Whether tools are enabled by default for this app.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default_tools_enabled: Option<bool>,
-
-    /// Per-tool settings for this app.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tools: Option<AppToolsConfig>,
-}
-
-/// App/connector settings loaded from `config.toml`.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema)]
-#[schemars(deny_unknown_fields)]
-pub struct AppsConfigToml {
-    /// Default settings for all apps.
-    #[serde(default, rename = "_default", skip_serializing_if = "Option::is_none")]
-    pub default: Option<AppsDefaultConfig>,
-
-    /// Per-app settings keyed by app ID (for example `[apps.google_drive]`).
-    #[serde(default, flatten)]
-    pub apps: HashMap<String, AppConfig>,
-}
-
 // ===== OTEL configuration =====
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema)]
@@ -521,135 +375,3 @@ impl OtelConfig {
 pub use crate::skills_config::BundledSkillsConfig;
 pub use crate::skills_config::SkillConfig;
 pub use crate::skills_config::SkillsConfig;
-
-/// Default activation settings for installed plugins.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
-#[schemars(deny_unknown_fields)]
-pub struct PluginsDefaultConfig {
-    #[serde(default = "default_enabled")]
-    pub enabled: bool,
-}
-
-/// Plugin activation and capability settings loaded from configuration layers.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema)]
-#[schemars(deny_unknown_fields)]
-pub struct PluginsConfigToml {
-    /// Defaults for installed plugin activation. Omission preserves source enablement.
-    /// Explicit plugin enablement settings override this default, but cannot enable
-    /// an installation disabled by its source.
-    #[serde(default, rename = "_default", skip_serializing_if = "Option::is_none")]
-    pub default: Option<PluginsDefaultConfig>,
-
-    #[serde(default, flatten)]
-    pub plugins: HashMap<String, PluginConfig>,
-}
-
-impl PluginsConfigToml {
-    /// Whether configuration permits a source-enabled plugin to remain active.
-    /// Without `_default`, preserve legacy source and account enablement.
-    /// Otherwise, an explicit enablement setting overrides the configured default.
-    pub fn allows_plugin(&self, plugin_id: &str) -> bool {
-        let Some(default) = &self.default else {
-            return true;
-        };
-        self.plugins
-            .get(plugin_id)
-            .and_then(|plugin| plugin.enabled)
-            .unwrap_or(default.enabled)
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
-#[schemars(deny_unknown_fields)]
-pub struct PluginConfig {
-    /// Explicit activation override. Omission inherits the installed-plugin default.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub enabled: Option<bool>,
-
-    /// Per-MCP-server policy overlays for MCP servers contributed by this plugin.
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub mcp_servers: HashMap<String, PluginMcpServerConfig>,
-}
-
-/// Policy settings for a plugin-provided MCP server.
-///
-/// This intentionally excludes transport settings: plugin manifests own how the
-/// MCP server is launched, while host config owns enablement, auth, and tool policy.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
-#[schemars(deny_unknown_fields)]
-pub struct PluginMcpServerConfig {
-    /// When `false`, Codex skips initializing this plugin MCP server.
-    #[serde(default = "default_enabled")]
-    pub enabled: bool,
-
-    /// Retired EMA overlays must disable the server instead of losing their auth policy.
-    #[serde(
-        default,
-        rename = "ema_auth",
-        deserialize_with = "unsupported_plugin_ema_auth",
-        skip_serializing_if = "std::ops::Not::not"
-    )]
-    #[schemars(skip)]
-    pub has_unsupported_ema_auth: bool,
-
-    /// Explicit allow-list of tools exposed from this server.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub enabled_tools: Option<Vec<String>>,
-
-    /// Explicit deny-list of tools. These tools are removed after applying `enabled_tools`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub disabled_tools: Option<Vec<String>>,
-
-    /// Per-tool policy settings keyed by tool name.
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub tools: HashMap<String, McpServerToolConfig>,
-}
-
-impl Default for PluginMcpServerConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            has_unsupported_ema_auth: false,
-            enabled_tools: None,
-            disabled_tools: None,
-            tools: HashMap::new(),
-        }
-    }
-}
-
-fn unsupported_plugin_ema_auth<'de, D>(deserializer: D) -> Result<bool, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    serde::de::IgnoredAny::deserialize(deserializer).map(|_| true)
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema)]
-#[schemars(deny_unknown_fields)]
-pub struct MarketplaceConfig {
-    /// Last time Codex successfully added or refreshed this marketplace.
-    #[serde(default)]
-    pub last_updated: Option<String>,
-    /// Git revision Codex last successfully activated for this marketplace.
-    #[serde(default)]
-    pub last_revision: Option<String>,
-    /// Source kind used to install this marketplace.
-    #[serde(default)]
-    pub source_type: Option<MarketplaceSourceType>,
-    /// Source location used when the marketplace was added.
-    #[serde(default)]
-    pub source: Option<String>,
-    /// Git ref to check out when `source_type` is `git`.
-    #[serde(default, rename = "ref")]
-    pub ref_name: Option<String>,
-    /// Sparse checkout paths used when `source_type` is `git`.
-    #[serde(default)]
-    pub sparse_paths: Option<Vec<String>>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum MarketplaceSourceType {
-    Git,
-    Local,
-}

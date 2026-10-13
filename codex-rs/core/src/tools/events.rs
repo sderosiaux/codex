@@ -4,10 +4,6 @@ use crate::session::turn_context::TurnContext;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::runtime::ToolError;
 use codex_apply_patch::AppliedPatchDelta;
-use codex_core_plugins::PluginCommandAttribution;
-use codex_core_plugins::recognize_artifact_operation;
-use codex_otel::ARTIFACT_OPERATION_EXPECTED_OUTPUT_COUNT_METRIC;
-use codex_otel::ARTIFACT_OPERATION_STARTED_METRIC;
 use codex_protocol::exec_output::ExecToolCallOutput;
 use codex_protocol::items::CommandExecutionItem;
 use codex_protocol::items::CommandExecutionStatus;
@@ -107,42 +103,12 @@ fn tracker_update_for_known_delta<'a>(
 }
 
 async fn emit_exec_command_begin(ctx: ToolEventCtx<'_>, exec_input: &ExecCommandInput<'_>) {
-    if exec_input.source == ExecCommandSource::UnifiedExecStartup
-        && let Some(attribution) = exec_input.plugin_attribution
-        && let Some(operation) = recognize_artifact_operation(Some(attribution), exec_input.command)
-    {
-        let metric_tags = [
-            ("skill", operation.plugin_name),
-            ("artifact_type", operation.artifact_type),
-            ("operation_kind", operation.operation_kind),
-            ("output_format", operation.output_format),
-            ("execution_backend", "unified_exec"),
-        ];
-        let session_telemetry = ctx
-            .turn
-            .session_telemetry
-            .clone()
-            .with_model(&ctx.model_info.slug, &ctx.model_info.slug);
-        session_telemetry.counter(
-            ARTIFACT_OPERATION_STARTED_METRIC,
-            /*inc*/ 1,
-            &metric_tags,
-        );
-        session_telemetry.histogram(
-            ARTIFACT_OPERATION_EXPECTED_OUTPUT_COUNT_METRIC,
-            i64::from(operation.expected_output_count),
-            &metric_tags,
-        );
-    }
-    let (plugin_id, script_path) = plugin_attribution_fields(exec_input.plugin_attribution);
     ctx.session
         .emit_turn_item_started(
             ctx.turn,
             &TurnItem::CommandExecution(CommandExecutionItem {
                 id: ctx.call_id.to_string(),
                 model_context: ctx.model_context.cloned(),
-                plugin_id,
-                script_path,
                 process_id: exec_input.process_id.map(str::to_owned),
                 command: exec_input.command.to_vec(),
                 cwd: exec_input.cwd.clone(),
@@ -169,7 +135,6 @@ pub(crate) enum ToolEmitter {
         source: ExecCommandSource,
         parsed_cmd: Vec<ParsedCommand>,
         process_id: Option<String>,
-        plugin_attribution: Option<PluginCommandAttribution>,
     },
 }
 
@@ -189,7 +154,6 @@ impl ToolEmitter {
         cwd: PathUri,
         source: ExecCommandSource,
         process_id: Option<String>,
-        plugin_attribution: Option<PluginCommandAttribution>,
     ) -> Self {
         let parsed_cmd = parse_command(command);
         Self::UnifiedExec {
@@ -198,7 +162,6 @@ impl ToolEmitter {
             source,
             parsed_cmd,
             process_id,
-            plugin_attribution,
         }
     }
 
@@ -311,7 +274,6 @@ impl ToolEmitter {
                     source,
                     parsed_cmd,
                     process_id,
-                    plugin_attribution,
                 },
                 stage,
             ) => {
@@ -324,7 +286,6 @@ impl ToolEmitter {
                         *source,
                         /*interaction_input*/ None,
                         process_id.as_deref(),
-                        plugin_attribution.as_ref(),
                     ),
                     stage,
                 )
@@ -388,7 +349,6 @@ struct ExecCommandInput<'a> {
     source: ExecCommandSource,
     interaction_input: Option<&'a str>,
     process_id: Option<&'a str>,
-    plugin_attribution: Option<&'a PluginCommandAttribution>,
 }
 
 impl<'a> ExecCommandInput<'a> {
@@ -399,7 +359,6 @@ impl<'a> ExecCommandInput<'a> {
         source: ExecCommandSource,
         interaction_input: Option<&'a str>,
         process_id: Option<&'a str>,
-        plugin_attribution: Option<&'a PluginCommandAttribution>,
     ) -> Self {
         Self {
             command,
@@ -408,7 +367,6 @@ impl<'a> ExecCommandInput<'a> {
             source,
             interaction_input,
             process_id,
-            plugin_attribution,
         }
     }
 }
@@ -471,15 +429,12 @@ async fn emit_exec_end(
     exec_input: ExecCommandInput<'_>,
     exec_result: ExecCommandResult,
 ) {
-    let (plugin_id, script_path) = plugin_attribution_fields(exec_input.plugin_attribution);
     ctx.session
         .emit_turn_item_completed(
             ctx.turn,
             TurnItem::CommandExecution(CommandExecutionItem {
                 id: ctx.call_id.to_string(),
                 model_context: ctx.model_context.cloned(),
-                plugin_id,
-                script_path,
                 process_id: exec_input.process_id.map(str::to_owned),
                 command: exec_input.command.to_vec(),
                 cwd: exec_input.cwd.clone(),
@@ -493,14 +448,6 @@ async fn emit_exec_end(
             }),
         )
         .await;
-}
-
-fn plugin_attribution_fields(
-    attribution: Option<&PluginCommandAttribution>,
-) -> (Option<String>, Option<String>) {
-    attribution
-        .map(PluginCommandAttribution::serialized_fields)
-        .unzip()
 }
 
 async fn emit_patch_end(

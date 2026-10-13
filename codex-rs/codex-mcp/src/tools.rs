@@ -43,15 +43,6 @@ pub struct ToolInfo {
     pub namespace_description: Option<String>,
     /// Raw MCP tool definition; `tool.name` is sent back to the MCP server.
     pub tool: Tool,
-    /// Optional provided-file fields accepted by each declared `openai/fileParams`
-    /// argument. This is derived from the raw MCP schema before file arguments are
-    /// masked as local paths for the model.
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub openai_file_input_optional_fields: HashMap<String, Vec<String>>,
-    pub connector_id: Option<String>,
-    pub connector_name: Option<String>,
-    #[serde(default)]
-    pub plugin_display_names: Vec<String>,
 }
 
 impl ToolInfo {
@@ -121,12 +112,8 @@ where
     let mut seen_raw_names = HashSet::new();
     let mut candidates = Vec::new();
     for tool in tools {
-        let raw_namespace_identity = format!(
-            "{}\0{}\0{}",
-            tool.server_name,
-            tool.callable_namespace,
-            tool.connector_id.as_deref().unwrap_or_default()
-        );
+        // The trailing separator keeps hashed names stable with earlier namespace identities.
+        let raw_namespace_identity = format!("{}\0{}\0", tool.server_name, tool.callable_namespace);
         let raw_tool_identity = format!(
             "{}\0{}\0{}",
             raw_namespace_identity, tool.callable_name, tool.tool.name

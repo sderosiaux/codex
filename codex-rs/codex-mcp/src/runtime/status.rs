@@ -31,7 +31,7 @@ impl McpRuntime {
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("MCP runtime is not configured"))?,
         );
-        let mut servers = effective_mcp_servers(&config, current.auth.as_ref());
+        let mut servers = effective_mcp_servers(&config);
         servers.retain(|name, _| name == server);
         let auth_statuses = compute_auth_statuses(
             servers.iter(),

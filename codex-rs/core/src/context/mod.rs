@@ -1,8 +1,6 @@
 //! Context fragments injected into model input.
 
 mod agent_message_board_notification;
-mod apps_instructions;
-mod available_plugins_instructions;
 mod base_instructions;
 mod compaction_summary;
 mod content_filter_guidance;
@@ -23,8 +21,6 @@ mod memory;
 mod model_switch_instructions;
 mod multi_agent_mode_instructions;
 mod multi_agent_usage_hint;
-mod plugin_instructions;
-mod recommended_plugins_instructions;
 mod rollout_budget;
 mod subagent_notification;
 mod token_budget_context;
@@ -36,8 +32,6 @@ mod user_shell_command;
 pub(crate) mod world_state;
 
 pub(crate) use agent_message_board_notification::AgentMessageBoardNotification;
-pub(crate) use apps_instructions::AppsInstructions;
-pub(crate) use available_plugins_instructions::AvailablePluginsInstructions;
 pub(crate) use base_instructions::BaseInstructionsFragment;
 pub(crate) use codex_context_fragments::AdditionalContextDeveloperFragment;
 pub(crate) use codex_context_fragments::AdditionalContextUserFragment;
@@ -71,8 +65,6 @@ pub use memory::MemoryContextFragment;
 pub(crate) use model_switch_instructions::ModelSwitchInstructions;
 pub(crate) use multi_agent_mode_instructions::MultiAgentModeInstructions;
 pub(crate) use multi_agent_usage_hint::MultiAgentUsageHint;
-pub(crate) use plugin_instructions::PluginInstructions;
-pub(crate) use recommended_plugins_instructions::RecommendedPluginsInstructions;
 pub(crate) use rollout_budget::RolloutBudgetContext;
 pub(crate) use subagent_notification::SubagentNotification;
 pub(crate) use token_budget_context::AutoCompactFallbackPrompt;

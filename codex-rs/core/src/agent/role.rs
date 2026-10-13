@@ -91,12 +91,8 @@ async fn apply_role_to_config_inner(
     if let Some(features) = role_config.features {
         for (key, enabled) in features.entries() {
             if !enabled
-                && let Some(
-                    feature @ (Feature::ShellTool
-                    | Feature::Apps
-                    | Feature::Plugins
-                    | Feature::MemoryTool),
-                ) = feature_for_key(&key)
+                && let Some(feature @ (Feature::ShellTool | Feature::MemoryTool)) =
+                    feature_for_key(&key)
             {
                 overrides.features.insert(feature.key().to_string(), false);
             }

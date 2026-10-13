@@ -10,14 +10,11 @@ use codex_protocol::protocol::HookRunStatus;
 use codex_protocol::protocol::HookRunSummary;
 use codex_protocol::protocol::HookSource;
 use codex_utils_absolute_path::AbsolutePathBuf;
-use serde_json::Map;
-use serde_json::Value;
 
 use super::common;
 use crate::engine::ClaudeHooksEngine;
 use crate::engine::ConfiguredHandler;
 use crate::engine::HandlerRunResult;
-use crate::engine::HandlerSourcePath;
 use crate::engine::dispatcher;
 use crate::engine::output_parser;
 use crate::schema::NullableString;
@@ -32,7 +29,6 @@ pub struct StopRequest {
     pub transcript_path: Option<PathBuf>,
     pub model: String,
     pub permission_mode: String,
-    pub request_metadata: Option<Map<String, Value>>,
     pub stop_hook_active: bool,
     pub last_assistant_message: Option<String>,
     pub target: StopHookTarget,
@@ -70,15 +66,8 @@ impl StopHookTarget {
             .into_iter()
             .filter(|handler| {
                 !matches!(self, Self::MemoryConsolidation)
-                    || matches!(
-                        handler.source_path,
-                        HandlerSourcePath::ExecutorScoped { .. }
-                    )
                     || match handler.source {
-                        HookSource::User
-                        | HookSource::Project
-                        | HookSource::SessionFlags
-                        | HookSource::Plugin => false,
+                        HookSource::User | HookSource::Project | HookSource::SessionFlags => false,
                         HookSource::System | HookSource::Unknown => true,
                     }
             })
@@ -113,7 +102,6 @@ pub(crate) fn preview(
         .target
         .select_handlers(handlers)
         .into_iter()
-        .filter(|handler| matches!(handler.source_path, HandlerSourcePath::Local(_)))
         .map(|handler| dispatcher::running_summary(&handler))
         .collect()
 }
@@ -131,15 +119,6 @@ pub(crate) async fn run(engine: &ClaudeHooksEngine, request: StopRequest) -> Sto
         };
     }
 
-    // Memory workers terminate on managed rejection rather than continuing the turn,
-    // so their executor cleanup must also run when a managed hook blocks completion.
-    let (executor_cleanup, matched): (Vec<_>, Vec<_>) = matched.into_iter().partition(|handler| {
-        matches!(request.target, StopHookTarget::MemoryConsolidation)
-            && matches!(
-                handler.source_path,
-                HandlerSourcePath::ExecutorScoped { .. }
-            )
-    });
     let input_json = match request.target {
         StopHookTarget::Stop | StopHookTarget::MemoryConsolidation => {
             let input = StopCommandInput {
@@ -204,29 +183,15 @@ pub(crate) async fn run(engine: &ClaudeHooksEngine, request: StopRequest) -> Sto
         }
     };
 
-    let results = dispatcher::execute_handlers_with_metadata(
+    let results = dispatcher::execute_handlers(
         engine,
         matched,
-        input_json.clone(),
+        input_json,
         request.cwd.as_path(),
         Some(request.turn_id.clone()),
-        request.request_metadata.as_ref(),
         parse_completed,
     )
     .await;
-
-    if !executor_cleanup.is_empty() {
-        dispatcher::execute_handlers_with_metadata(
-            engine,
-            executor_cleanup,
-            input_json,
-            request.cwd.as_path(),
-            Some(request.turn_id),
-            request.request_metadata.as_ref(),
-            parse_completed,
-        )
-        .await;
-    }
 
     let aggregate = aggregate_results(results.iter().map(|result| &result.data));
 

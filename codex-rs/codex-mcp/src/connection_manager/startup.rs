@@ -13,7 +13,6 @@ use codex_protocol::protocol::McpStartupUpdateEvent;
 use codex_rmcp_client::McpAuthState;
 use codex_rmcp_client::McpLoginRequirement;
 
-use crate::mcp::CODEX_APPS_MCP_SERVER_NAME;
 use crate::rmcp_client::DEFAULT_STARTUP_TIMEOUT;
 use crate::rmcp_client::StartupOutcomeError;
 use crate::server::EffectiveMcpServer;
@@ -29,13 +28,6 @@ pub(super) fn chatgpt_auth_provider_for_server(
         return None;
     }
     chatgpt_auth_provider
-}
-
-pub(super) fn should_share_codex_apps_tools_cache(
-    server_name: &str,
-    uses_env_bearer_token: bool,
-) -> bool {
-    server_name == CODEX_APPS_MCP_SERVER_NAME && !uses_env_bearer_token
 }
 
 pub(super) async fn emit_update(

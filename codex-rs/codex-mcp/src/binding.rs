@@ -31,7 +31,6 @@ pub struct McpBinding {
     connections: Arc<McpConnectionSet>,
     clients: Arc<McpBindingClients>,
     config: Arc<McpConfig>,
-    plugins_available: bool,
     tools: Arc<[ToolInfo]>,
     calls: HashMap<(String, String), PreparedMcpCall>,
 }
@@ -43,7 +42,6 @@ impl McpBinding {
             Arc::new(McpConnectionSet::empty(config.prefix_mcp_tool_names)),
             Arc::new(McpBindingClients::new(HashMap::new())),
             config,
-            /*plugins_available*/ false,
             Vec::new(),
             HashMap::new(),
         )
@@ -53,7 +51,6 @@ impl McpBinding {
         connections: Arc<McpConnectionSet>,
         clients: Arc<McpBindingClients>,
         config: Arc<McpConfig>,
-        plugins_available: bool,
         tools: impl Into<Arc<[ToolInfo]>>,
         calls: HashMap<(String, String), PreparedMcpCall>,
     ) -> Self {
@@ -61,7 +58,6 @@ impl McpBinding {
             connections,
             clients,
             config,
-            plugins_available,
             tools: tools.into(),
             calls,
         }
@@ -71,16 +67,12 @@ impl McpBinding {
         &self.config
     }
 
-    pub fn plugins_available(&self) -> bool {
-        self.plugins_available
-    }
-
     /// Returns the frozen model-visible catalog captured for this binding.
     pub fn tools(&self) -> &[ToolInfo] {
         &self.tools
     }
 
-    /// Returns permitted tool metadata, including app-only tools.
+    /// Returns permitted tool metadata, including tools hidden from the model.
     pub fn tool_info(&self, server: &str, tool: &str) -> Option<&ToolInfo> {
         self.calls
             .get(&(server.to_string(), tool.to_string()))
@@ -167,15 +159,12 @@ impl fmt::Debug for McpBinding {
 /// A call bound to an exact client, catalog revision, and timeout.
 #[derive(Clone)]
 pub struct PreparedMcpCall {
-    connections: Arc<McpConnectionSet>,
     client: Arc<ManagedClient>,
     config: Arc<McpConfig>,
     catalog_snapshot: Arc<ToolCatalogSnapshot>,
     tool_info: PreparedToolInfo,
     server_name: String,
     server_metadata: McpServerMetadata,
-    plugin_id: Option<String>,
-    selected_plugin_server: bool,
 }
 
 #[derive(Clone)]
@@ -208,32 +197,22 @@ impl From<ToolInfo> for PreparedToolInfo {
 }
 
 impl PreparedMcpCall {
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the exact call authority stays together"
-    )]
     pub(crate) fn new(
-        connections: Arc<McpConnectionSet>,
         client: Arc<ManagedClient>,
         config: Arc<McpConfig>,
         catalog_snapshot: Arc<ToolCatalogSnapshot>,
         tool_info: impl Into<PreparedToolInfo>,
         server_metadata: McpServerMetadata,
-        plugin_id: Option<String>,
-        selected_plugin_server: bool,
     ) -> Self {
         let tool_info = tool_info.into();
         let server_name = tool_info.get().server_name.clone();
         Self {
-            connections,
             client,
             config,
             catalog_snapshot,
             tool_info,
             server_name,
             server_metadata,
-            plugin_id,
-            selected_plugin_server,
         }
     }
 
@@ -248,18 +227,6 @@ impl PreparedMcpCall {
 
     pub fn server_name(&self) -> &str {
         &self.server_name
-    }
-
-    /// Returns whether this call is bound to the host-owned Codex Apps server.
-    pub fn is_host_owned_apps(&self) -> bool {
-        self.config
-            .mcp_server_catalog
-            .server(&self.server_name)
-            .is_some_and(|registration| {
-                registration
-                    .source()
-                    .is_host_owned_apps(&self.server_name, registration.config())
-            })
     }
 
     pub fn server_origin(&self) -> Option<&str> {
@@ -287,14 +254,6 @@ impl PreparedMcpCall {
             .get(self.tool_info().tool.name.as_ref())?
             .output_token_limit
             .map(std::num::NonZeroUsize::get)
-    }
-
-    pub fn plugin_id(&self) -> Option<&str> {
-        self.plugin_id.as_deref()
-    }
-
-    pub fn is_selected_plugin_server(&self) -> bool {
-        self.selected_plugin_server
     }
 
     pub async fn call(
@@ -329,25 +288,9 @@ impl PreparedMcpCall {
         self.client
             .tool_catalog
             .run_with_snapshot(&self.catalog_snapshot, || async {
-                let (arguments, meta) = prepare().await?;
                 let timeout_deadline =
                     effective_timeout.map(|timeout| tokio::time::Instant::now() + timeout);
-                let add_trusted_access_context = self.connections.add_trusted_access_context(
-                    self.tool_info(),
-                    &self.server_metadata,
-                    arguments.as_ref(),
-                    meta,
-                );
-                let meta = match effective_timeout.zip(timeout_deadline) {
-                    Some((timeout, deadline)) => {
-                        tokio::time::timeout_at(deadline, add_trusted_access_context)
-                            .await
-                            .map_err(|_| {
-                                anyhow::anyhow!("timed out awaiting tools/call after {timeout:.0?}")
-                            })?
-                    }
-                    None => add_trusted_access_context.await,
-                };
+                let (arguments, meta) = prepare().await?;
                 let remaining_timeout = match effective_timeout.zip(timeout_deadline) {
                     Some((timeout, deadline)) => {
                         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());

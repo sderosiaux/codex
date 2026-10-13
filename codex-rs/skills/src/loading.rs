@@ -26,7 +26,6 @@ pub struct LoadedSkillRoot {
     pub skills: Vec<SkillMetadata>,
     pub skill_discovery_path_by_path: Arc<HashMap<PathUri, PathUri>>,
     pub errors: Vec<SkillError>,
-    pub is_agent_plugin: bool,
 }
 
 /// Skills and errors produced by loading an ordered set of roots.

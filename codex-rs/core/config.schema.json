@@ -81,100 +81,6 @@
       },
       "type": "object"
     },
-    "AppConfig": {
-      "additionalProperties": false,
-      "description": "Config values for a single app/connector.",
-      "properties": {
-        "default_tools_enabled": {
-          "description": "Whether tools are enabled by default for this app.",
-          "type": "boolean"
-        },
-        "destructive_enabled": {
-          "description": "Whether tools with `destructive_hint = true` are allowed for this app.",
-          "type": "boolean"
-        },
-        "enabled": {
-          "default": true,
-          "description": "When `false`, Codex does not surface this app.",
-          "type": "boolean"
-        },
-        "omit_tools_from": {
-          "description": "Model-facing surfaces from which this connector's tools must be omitted, in addition to any server-level omissions. `None` leaves lower-priority configuration unchanged; an empty list clears connector-level omissions.",
-          "items": {
-            "$ref": "#/definitions/ToolExposureSurface"
-          },
-          "type": "array"
-        },
-        "open_world_enabled": {
-          "description": "Whether tools with `open_world_hint = true` are allowed for this app.",
-          "type": "boolean"
-        },
-        "tools": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/AppToolsConfig"
-            }
-          ],
-          "description": "Per-tool settings for this app."
-        }
-      },
-      "type": "object"
-    },
-    "AppToolConfig": {
-      "additionalProperties": false,
-      "description": "Per-tool settings for a single app tool.",
-      "properties": {
-        "enabled": {
-          "description": "Whether this tool is enabled. `Some(true)` explicitly allows this tool.",
-          "type": "boolean"
-        }
-      },
-      "type": "object"
-    },
-    "AppToolsConfig": {
-      "additionalProperties": {
-        "$ref": "#/definitions/AppToolConfig"
-      },
-      "description": "Tool settings for a single app.",
-      "type": "object"
-    },
-    "AppsConfigToml": {
-      "additionalProperties": {
-        "$ref": "#/definitions/AppConfig"
-      },
-      "description": "App/connector settings loaded from `config.toml`.",
-      "properties": {
-        "_default": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/AppsDefaultConfig"
-            }
-          ],
-          "description": "Default settings for all apps."
-        }
-      },
-      "type": "object"
-    },
-    "AppsDefaultConfig": {
-      "additionalProperties": false,
-      "description": "Default settings that apply to all apps.",
-      "properties": {
-        "destructive_enabled": {
-          "description": "Whether tools with `destructive_hint = true` are allowed by default.",
-          "type": "boolean"
-        },
-        "enabled": {
-          "default": true,
-          "description": "When `false`, apps are disabled unless overridden by per-app settings.",
-          "type": "boolean"
-        },
-        "open_world_enabled": {
-          "description": "Whether tools with `open_world_hint = true` are allowed by default.",
-          "type": "boolean"
-        }
-      },
-      "type": "object"
-    },
     "AuthCredentialsStoreMode": {
       "description": "Determine where Codex should store CLI auth credentials.",
       "oneOf": [
@@ -295,21 +201,6 @@
       },
       "type": "object"
     },
-    "CloudToml": {
-      "additionalProperties": false,
-      "description": "Cloud-owned feature settings.",
-      "properties": {
-        "skills": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/FeatureToggleToml"
-            }
-          ],
-          "description": "Cloud skills are permitted by default; the host must supply a cloud provider."
-        }
-      },
-      "type": "object"
-    },
     "ConfigProfile": {
       "additionalProperties": false,
       "description": "Collection of common configuration options that a user can define as a unit in `config.toml`.",
@@ -340,35 +231,7 @@
             "apply_patch_streaming_events": {
               "type": "boolean"
             },
-            "apps": {
-              "type": "boolean"
-            },
-            "apps_mcp_path_override": {
-              "anyOf": [
-                {
-                  "type": "boolean"
-                },
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "enabled": {
-                      "type": "boolean"
-                    },
-                    "path": {
-                      "type": "string"
-                    }
-                  },
-                  "type": "object"
-                }
-              ]
-            },
-            "auth_elicitation": {
-              "type": "boolean"
-            },
             "background_paginated_rollout_migration": {
-              "type": "boolean"
-            },
-            "codex_apps_mcp_2026_07_28": {
               "type": "boolean"
             },
             "codex_hooks": {
@@ -381,9 +244,6 @@
               "type": "boolean"
             },
             "concurrent_reasoning_summaries": {
-              "type": "boolean"
-            },
-            "connectors": {
               "type": "boolean"
             },
             "content_item_kinds": {
@@ -408,9 +268,6 @@
               "type": "boolean"
             },
             "deferred_tool_world_state": {
-              "type": "boolean"
-            },
-            "enable_mcp_apps": {
               "type": "boolean"
             },
             "enable_request_compression": {
@@ -485,9 +342,6 @@
             "output_token_replay": {
               "type": "boolean"
             },
-            "plugins": {
-              "type": "boolean"
-            },
             "powershell_shell_version": {
               "type": "boolean"
             },
@@ -497,13 +351,7 @@
             "reasoning_effort_override": {
               "type": "boolean"
             },
-            "recommended_plugins": {
-              "type": "boolean"
-            },
             "remote_compaction_v2": {
-              "type": "boolean"
-            },
-            "remote_plugin": {
               "type": "boolean"
             },
             "respect_system_proxy": {
@@ -566,9 +414,6 @@
             "tool_registry": {
               "$ref": "#/definitions/ToolRegistryConfigToml"
             },
-            "tool_suggest": {
-              "type": "boolean"
-            },
             "ultrafast_mode": {
               "type": "boolean"
             },
@@ -601,9 +446,6 @@
             }
           },
           "type": "object"
-        },
-        "include_apps_instructions": {
-          "type": "boolean"
         },
         "include_collaboration_mode_instructions": {
           "type": "boolean"
@@ -738,16 +580,6 @@
       "properties": {
         "enabled": {
           "default": true,
-          "type": "boolean"
-        }
-      },
-      "type": "object"
-    },
-    "FeatureToggleToml": {
-      "additionalProperties": false,
-      "description": "Optional enablement of a configured feature.",
-      "properties": {
-        "enabled": {
           "type": "boolean"
         }
       },
@@ -1210,56 +1042,6 @@
       "type": "object"
     },
     "LegacyAppPathString": {
-      "type": "string"
-    },
-    "MarketplaceConfig": {
-      "additionalProperties": false,
-      "properties": {
-        "last_revision": {
-          "default": null,
-          "description": "Git revision Codex last successfully activated for this marketplace.",
-          "type": "string"
-        },
-        "last_updated": {
-          "default": null,
-          "description": "Last time Codex successfully added or refreshed this marketplace.",
-          "type": "string"
-        },
-        "ref": {
-          "default": null,
-          "description": "Git ref to check out when `source_type` is `git`.",
-          "type": "string"
-        },
-        "source": {
-          "default": null,
-          "description": "Source location used when the marketplace was added.",
-          "type": "string"
-        },
-        "source_type": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/MarketplaceSourceType"
-            }
-          ],
-          "default": null,
-          "description": "Source kind used to install this marketplace."
-        },
-        "sparse_paths": {
-          "default": null,
-          "description": "Sparse checkout paths used when `source_type` is `git`.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        }
-      },
-      "type": "object"
-    },
-    "MarketplaceSourceType": {
-      "enum": [
-        "git",
-        "local"
-      ],
       "type": "string"
     },
     "MatcherGroup": {
@@ -1866,24 +1648,6 @@
         }
       ]
     },
-    "OrchestratorToml": {
-      "additionalProperties": false,
-      "description": "Orchestrator-owned feature settings.",
-      "properties": {
-        "mcp": {
-          "$ref": "#/definitions/FeatureToggleToml"
-        },
-        "skills": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/FeatureToggleToml"
-            }
-          ],
-          "description": "Legacy no-op setting retained for compatibility. Use `cloud.skills` to configure cloud skills."
-        }
-      },
-      "type": "object"
-    },
     "OtelConfigToml": {
       "additionalProperties": false,
       "description": "OTEL settings loaded from config.toml. Fields are optional so we can apply defaults.",
@@ -2084,84 +1848,6 @@
         "pragmatic"
       ],
       "type": "string"
-    },
-    "PluginConfig": {
-      "additionalProperties": false,
-      "properties": {
-        "enabled": {
-          "description": "Explicit activation override. Omission inherits the installed-plugin default.",
-          "type": "boolean"
-        },
-        "mcp_servers": {
-          "additionalProperties": {
-            "$ref": "#/definitions/PluginMcpServerConfig"
-          },
-          "description": "Per-MCP-server policy overlays for MCP servers contributed by this plugin.",
-          "type": "object"
-        }
-      },
-      "type": "object"
-    },
-    "PluginMcpServerConfig": {
-      "additionalProperties": false,
-      "description": "Policy settings for a plugin-provided MCP server.\n\nThis intentionally excludes transport settings: plugin manifests own how the MCP server is launched, while host config owns enablement, auth, and tool policy.",
-      "properties": {
-        "disabled_tools": {
-          "description": "Explicit deny-list of tools. These tools are removed after applying `enabled_tools`.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "enabled": {
-          "default": true,
-          "description": "When `false`, Codex skips initializing this plugin MCP server.",
-          "type": "boolean"
-        },
-        "enabled_tools": {
-          "description": "Explicit allow-list of tools exposed from this server.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "tools": {
-          "additionalProperties": {
-            "$ref": "#/definitions/McpServerToolConfig"
-          },
-          "description": "Per-tool policy settings keyed by tool name.",
-          "type": "object"
-        }
-      },
-      "type": "object"
-    },
-    "PluginsConfigToml": {
-      "additionalProperties": {
-        "$ref": "#/definitions/PluginConfig"
-      },
-      "description": "Plugin activation and capability settings loaded from configuration layers.",
-      "properties": {
-        "_default": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/PluginsDefaultConfig"
-            }
-          ],
-          "description": "Defaults for installed plugin activation. Omission preserves source enablement. Explicit plugin enablement settings override this default, but cannot enable an installation disabled by its source."
-        }
-      },
-      "type": "object"
-    },
-    "PluginsDefaultConfig": {
-      "additionalProperties": false,
-      "description": "Default activation settings for installed plugins.",
-      "properties": {
-        "enabled": {
-          "default": true,
-          "type": "boolean"
-        }
-      },
-      "type": "object"
     },
     "RawMcpServerConfig": {
       "additionalProperties": false,
@@ -2708,65 +2394,6 @@
       },
       "type": "object"
     },
-    "ToolSuggestConfig": {
-      "additionalProperties": false,
-      "properties": {
-        "disabled_tools": {
-          "default": [],
-          "items": {
-            "$ref": "#/definitions/ToolSuggestDisabledTool"
-          },
-          "type": "array"
-        },
-        "discoverables": {
-          "default": [],
-          "items": {
-            "$ref": "#/definitions/ToolSuggestDiscoverable"
-          },
-          "type": "array"
-        }
-      },
-      "type": "object"
-    },
-    "ToolSuggestDisabledTool": {
-      "additionalProperties": false,
-      "properties": {
-        "id": {
-          "type": "string"
-        },
-        "type": {
-          "$ref": "#/definitions/ToolSuggestDiscoverableType"
-        }
-      },
-      "required": [
-        "id",
-        "type"
-      ],
-      "type": "object"
-    },
-    "ToolSuggestDiscoverable": {
-      "additionalProperties": false,
-      "properties": {
-        "id": {
-          "type": "string"
-        },
-        "type": {
-          "$ref": "#/definitions/ToolSuggestDiscoverableType"
-        }
-      },
-      "required": [
-        "id",
-        "type"
-      ],
-      "type": "object"
-    },
-    "ToolSuggestDiscoverableType": {
-      "enum": [
-        "connector",
-        "plugin"
-      ],
-      "type": "string"
-    },
     "ToolsToml": {
       "additionalProperties": false,
       "properties": {
@@ -2894,19 +2521,6 @@
       ],
       "description": "When `enabled` is `false`, disables OpenAI analytics across Codex product surfaces on this machine. Custom OTLP metrics exporters are controlled by `otel.metrics_exporter`. When unset, the default depends on the client."
     },
-    "apps": {
-      "allOf": [
-        {
-          "$ref": "#/definitions/AppsConfigToml"
-        }
-      ],
-      "default": null,
-      "description": "Settings for app-specific controls."
-    },
-    "apps_mcp_product_sku": {
-      "description": "Optional product SKU forwarded on host-owned Codex Apps MCP requests.",
-      "type": "string"
-    },
     "background_terminal_max_timeout": {
       "description": "Maximum poll window for background terminal output (`write_stdin`), in milliseconds. Default: `300000` (5 minutes).",
       "format": "uint64",
@@ -2925,14 +2539,6 @@
       ],
       "default": null,
       "description": "Preferred backend for storing CLI auth credentials. file (default): Use a file in the Codex home directory. keyring: Use an OS-specific keyring service. auto: Use the keyring if available, otherwise use a file."
-    },
-    "cloud": {
-      "allOf": [
-        {
-          "$ref": "#/definitions/CloudToml"
-        }
-      ],
-      "description": "Cloud-owned feature settings."
     },
     "compact_prompt": {
       "description": "Compact prompt used for history compaction.",
@@ -2971,35 +2577,7 @@
         "apply_patch_streaming_events": {
           "type": "boolean"
         },
-        "apps": {
-          "type": "boolean"
-        },
-        "apps_mcp_path_override": {
-          "anyOf": [
-            {
-              "type": "boolean"
-            },
-            {
-              "additionalProperties": false,
-              "properties": {
-                "enabled": {
-                  "type": "boolean"
-                },
-                "path": {
-                  "type": "string"
-                }
-              },
-              "type": "object"
-            }
-          ]
-        },
-        "auth_elicitation": {
-          "type": "boolean"
-        },
         "background_paginated_rollout_migration": {
-          "type": "boolean"
-        },
-        "codex_apps_mcp_2026_07_28": {
           "type": "boolean"
         },
         "codex_hooks": {
@@ -3012,9 +2590,6 @@
           "type": "boolean"
         },
         "concurrent_reasoning_summaries": {
-          "type": "boolean"
-        },
-        "connectors": {
           "type": "boolean"
         },
         "content_item_kinds": {
@@ -3039,9 +2614,6 @@
           "type": "boolean"
         },
         "deferred_tool_world_state": {
-          "type": "boolean"
-        },
-        "enable_mcp_apps": {
           "type": "boolean"
         },
         "enable_request_compression": {
@@ -3116,9 +2688,6 @@
         "output_token_replay": {
           "type": "boolean"
         },
-        "plugins": {
-          "type": "boolean"
-        },
         "powershell_shell_version": {
           "type": "boolean"
         },
@@ -3128,13 +2697,7 @@
         "reasoning_effort_override": {
           "type": "boolean"
         },
-        "recommended_plugins": {
-          "type": "boolean"
-        },
         "remote_compaction_v2": {
-          "type": "boolean"
-        },
-        "remote_plugin": {
           "type": "boolean"
         },
         "respect_system_proxy": {
@@ -3196,9 +2759,6 @@
         },
         "tool_registry": {
           "$ref": "#/definitions/ToolRegistryConfigToml"
-        },
-        "tool_suggest": {
-          "type": "boolean"
         },
         "ultrafast_mode": {
           "type": "boolean"
@@ -3293,10 +2853,6 @@
       ],
       "description": "Lifecycle hooks configured inline in TOML plus user-level overrides."
     },
-    "include_apps_instructions": {
-      "description": "Whether to inject the `<apps_instructions>` developer block.",
-      "type": "boolean"
-    },
     "include_collaboration_mode_instructions": {
       "description": "Whether to inject the `<collaboration_mode>` developer block.",
       "type": "boolean"
@@ -3320,14 +2876,6 @@
         }
       ],
       "description": "Directory where Codex writes log files. Setting this value explicitly also enables the TUI text log in this directory. Defaults to `$CODEX_HOME/log`."
-    },
-    "marketplaces": {
-      "additionalProperties": {
-        "$ref": "#/definitions/MarketplaceConfig"
-      },
-      "default": {},
-      "description": "User-level marketplace entries keyed by marketplace name.",
-      "type": "object"
     },
     "mcp_enterprise_managed_auth": {
       "allOf": [
@@ -3462,14 +3010,6 @@
       "description": "Base URL override for the built-in `openai` model provider.",
       "type": "string"
     },
-    "orchestrator": {
-      "allOf": [
-        {
-          "$ref": "#/definitions/OrchestratorToml"
-        }
-      ],
-      "description": "Orchestrator-owned feature settings."
-    },
     "oss_provider": {
       "description": "Preferred OSS provider for local models, e.g. \"lmstudio\" or \"ollama\".",
       "type": "string"
@@ -3492,15 +3032,6 @@
     },
     "plan_mode_reasoning_effort": {
       "$ref": "#/definitions/ReasoningEffort"
-    },
-    "plugins": {
-      "allOf": [
-        {
-          "$ref": "#/definitions/PluginsConfigToml"
-        }
-      ],
-      "default": {},
-      "description": "Default and per-plugin settings keyed by exact `<plugin>@<marketplace>` IDs."
     },
     "profile": {
       "description": "Profile to use from the `profiles` map.",
@@ -3603,14 +3134,6 @@
       "format": "uint",
       "minimum": 0.0,
       "type": "integer"
-    },
-    "tool_suggest": {
-      "allOf": [
-        {
-          "$ref": "#/definitions/ToolSuggestConfig"
-        }
-      ],
-      "description": "Additional discoverable tools that can be suggested for installation."
     },
     "tools": {
       "allOf": [

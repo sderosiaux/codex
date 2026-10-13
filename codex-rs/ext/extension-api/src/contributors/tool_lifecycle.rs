@@ -6,7 +6,6 @@ use codex_config::McpServerConfig;
 use codex_file_system::ExecutorFileSystem;
 use codex_mcp::McpServerSource;
 use codex_mcp::PreparedMcpCall;
-use codex_mcp::ResolvedMcpServer;
 use codex_protocol::mcp::CallToolResult;
 use codex_tools::ToolName;
 use codex_tools::ToolPayload;
@@ -42,19 +41,8 @@ pub enum ToolCallOutcome {
 /// Provenance captured from the immutable MCP call selected for one tool invocation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum McpToolSource {
-    /// A connector routed through the host-owned Codex Apps MCP server.
-    Connector,
     /// An MCP server whose frozen registration matches the active Codex configuration.
     Config,
-    /// An MCP server registered by a locally loaded plugin.
-    Plugin {
-        /// Identifier of the plugin that owns this MCP server.
-        id: String,
-        /// Host-local plugin root captured with the exact server registration.
-        root: PathUri,
-    },
-    /// An executor-selected plugin whose root has not been attested by the host.
-    SelectedPlugin,
     /// A compatibility or extension registration without user-owned provenance.
     Other,
 }
@@ -77,20 +65,7 @@ impl McpToolContext {
     ) -> Self {
         let tool = call.tool_info().clone();
         let registration = call.config().mcp_server_catalog.server(call.server_name());
-        let source = if tool.connector_id.is_some() && call.is_host_owned_apps() {
-            McpToolSource::Connector
-        } else if call.is_selected_plugin_server() {
-            McpToolSource::SelectedPlugin
-        } else if let Some(McpServerSource::Plugin(plugin)) =
-            registration.map(ResolvedMcpServer::source)
-            && Some(plugin.plugin_id()) == call.plugin_id()
-            && let Some(root) = plugin.host_root()
-        {
-            McpToolSource::Plugin {
-                id: plugin.plugin_id().to_owned(),
-                root: root.clone(),
-            }
-        } else if registration.is_some_and(|server| {
+        let source = if registration.is_some_and(|server| {
             matches!(server.source(), McpServerSource::Config)
                 && configured_server.is_some_and(|configured| server.config() == configured)
         }) {

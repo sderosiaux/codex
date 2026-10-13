@@ -55,7 +55,6 @@ pub(super) fn record_binding_catalog_size(
 pub(super) fn emit_binding_catalog(
     product_sku: &'static str,
     server_kind: &'static str,
-    plugin_id: Option<&str>,
     catalog_source: &'static str,
     tool_count: usize,
     tool_definition_json_bytes: usize,
@@ -66,7 +65,6 @@ pub(super) fn emit_binding_catalog(
         event.name = "mcp.binding_catalog",
         product_sku,
         server_kind,
-        plugin_id = plugin_id.unwrap_or(""),
         catalog_source,
         tool_count,
         tool_definition_json_bytes,

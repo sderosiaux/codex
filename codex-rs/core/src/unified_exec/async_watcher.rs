@@ -18,7 +18,6 @@ use crate::tools::events::ToolEmitter;
 use crate::tools::events::ToolEventCtx;
 use crate::tools::events::ToolEventFailure;
 use crate::tools::events::ToolEventStage;
-use codex_core_plugins::PluginCommandAttribution;
 use codex_protocol::exec_output::ExecToolCallOutput;
 use codex_protocol::exec_output::StreamOutput;
 use codex_protocol::openai_models::ModelInfo;
@@ -158,7 +157,6 @@ pub(crate) fn spawn_exit_watcher(
     command: Vec<String>,
     cwd: PathUri,
     process_id: i32,
-    plugin_attribution: Option<PluginCommandAttribution>,
     output_buffer: Arc<Mutex<OutputBuffers>>,
     started_at: Instant,
 ) {
@@ -185,7 +183,6 @@ pub(crate) fn spawn_exit_watcher(
                 command,
                 cwd,
                 Some(process_id.to_string()),
-                plugin_attribution,
                 output_buffer,
                 String::new(),
                 message,
@@ -202,7 +199,6 @@ pub(crate) fn spawn_exit_watcher(
                 command,
                 cwd,
                 Some(process_id.to_string()),
-                plugin_attribution,
                 output_buffer,
                 String::new(),
                 exit_code,
@@ -307,7 +303,6 @@ pub(crate) async fn emit_exec_end_for_unified_exec(
     command: Vec<String>,
     cwd: PathUri,
     process_id: Option<String>,
-    plugin_attribution: Option<PluginCommandAttribution>,
     output_buffer: Arc<Mutex<OutputBuffers>>,
     fallback_output: String,
     exit_code: i32,
@@ -334,7 +329,6 @@ pub(crate) async fn emit_exec_end_for_unified_exec(
         cwd,
         ExecCommandSource::UnifiedExecStartup,
         process_id,
-        plugin_attribution,
     );
     emitter
         .emit(
@@ -356,7 +350,6 @@ pub(crate) async fn emit_failed_exec_end_for_unified_exec(
     command: Vec<String>,
     cwd: PathUri,
     process_id: Option<String>,
-    plugin_attribution: Option<PluginCommandAttribution>,
     output_buffer: Arc<Mutex<OutputBuffers>>,
     fallback_output: String,
     message: String,
@@ -392,7 +385,6 @@ pub(crate) async fn emit_failed_exec_end_for_unified_exec(
         cwd,
         ExecCommandSource::UnifiedExecStartup,
         process_id,
-        plugin_attribution,
     );
     emitter
         .emit(

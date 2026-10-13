@@ -2,7 +2,6 @@
 //! Existing sessions refresh ordinary MCP state without gaining enterprise authority.
 
 use crate::config::Config;
-use crate::config::resolve_tool_suggest_config_from_layer_stack;
 use codex_config::McpServerAuth;
 use codex_config::McpServerConfig;
 use codex_features::Feature;
@@ -24,7 +23,6 @@ pub(crate) enum RuntimeConfigRefresh {
 #[serde(default)]
 struct McpRefreshToml {
     features: Option<FeaturesToml>,
-    plugins: codex_config::types::PluginsConfigToml,
 }
 
 impl Config {
@@ -104,7 +102,6 @@ impl Config {
         }
         // Refresh ordinary MCP feature values without changing session-static features.
         for feature in [
-            Feature::EnableMcpApps,
             Feature::SecretAuthStorage,
             Feature::McpOAuthRefreshCoordination,
         ] {
@@ -143,11 +140,7 @@ impl Config {
                         .get(name)
                         .is_some_and(|server| server.enabled)
             });
-        if !matches!(scope, RuntimeConfigRefresh::Mcp) {
-            config.tool_suggest = resolve_tool_suggest_config_from_layer_stack(&layers);
-        }
         config.config_layer_stack = layers;
-        config.plugins = cfg.plugins;
         if enterprise_retired {
             config.disable_mcp_enterprise_auth();
         }

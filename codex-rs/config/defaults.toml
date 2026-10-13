@@ -1,5 +1,4 @@
 # Fixed defaults for packaged Codex clients.
-include_apps_instructions = true
 include_collaboration_mode_instructions = true
 include_environment_context = true
 include_environment_context_time = true

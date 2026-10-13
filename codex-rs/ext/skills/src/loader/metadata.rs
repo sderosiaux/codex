@@ -6,9 +6,7 @@ use codex_exec_server::ReadFileOptions;
 use codex_protocol::protocol::Product;
 use codex_skills::SkillDependencies;
 use codex_skills::SkillInterface;
-use codex_skills::SkillInterfaceAssetPolicy;
 use codex_skills::SkillInterfaceFile;
-use codex_skills::SkillParseError;
 use codex_skills::SkillPolicy;
 use codex_skills::SkillToolDependency;
 use codex_skills::resolve_skill_interface;
@@ -78,7 +76,6 @@ pub(super) async fn load_host_skill_metadata(
     file_system: &dyn ExecutorFileSystem,
     skill_path: &AbsolutePathBuf,
     metadata: &SkillMetadataDiscovery,
-    plugin_root: Option<&AbsolutePathBuf>,
 ) -> LoadedSkillMetadata {
     // Fail open: optional metadata should not block loading SKILL.md.
     let Some(skill_dir) = skill_path.parent() else {
@@ -139,12 +136,8 @@ pub(super) async fn load_host_skill_metadata(
         dependencies,
         policy,
     } = parsed;
-    let asset_policy = match plugin_root {
-        Some(plugin_root) => SkillInterfaceAssetPolicy::PluginShared { plugin_root },
-        None => SkillInterfaceAssetPolicy::LocalOnly,
-    };
     LoadedSkillMetadata {
-        interface: resolve_skill_interface(interface, &skill_dir, asset_policy),
+        interface: resolve_skill_interface(interface, &skill_dir),
         dependencies: resolve_dependencies(dependencies),
         policy: resolve_policy(policy),
     }
@@ -214,23 +207,6 @@ fn resolve_dependency_tool(tool: DependencyTool) -> Option<SkillToolDependency> 
 
 pub(super) fn sanitize_single_line(raw: &str) -> String {
     raw.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-pub(super) fn validate_len(
-    value: &str,
-    max_len: usize,
-    field_name: &'static str,
-) -> Result<(), SkillParseError> {
-    if value.is_empty() {
-        return Err(SkillParseError::MissingField(field_name));
-    }
-    if value.chars().count() > max_len {
-        return Err(SkillParseError::InvalidField {
-            field: field_name,
-            reason: format!("exceeds maximum length of {max_len} characters"),
-        });
-    }
-    Ok(())
 }
 
 pub(super) fn resolve_str(
