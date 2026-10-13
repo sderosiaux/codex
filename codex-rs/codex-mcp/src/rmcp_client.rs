@@ -23,14 +23,11 @@ use std::time::Instant;
 
 use crate::client_tool_catalog::ClientToolCatalog;
 use crate::elicitation::ElicitationRequestManager;
-use crate::executor_environment_http_client::ExecutorEnvironmentHttpClient;
 use crate::openai_docs_source_attribution::maybe_with_openai_docs_source_attribution;
 use crate::pagination::collect_paginated_with_limit;
 use crate::runtime::McpRuntimeContext;
 use crate::runtime::emit_duration;
 use crate::server::EffectiveMcpServer;
-use crate::server::McpCredentialPolicy;
-use crate::server::has_explicit_http_authorization;
 use crate::tool_catalog_cache::McpToolCatalogCacheContext;
 use crate::tool_catalog_cache::McpToolCatalogFetchTicket;
 use crate::tools::ToolInfo;
@@ -45,13 +42,11 @@ use codex_config::McpServerConfig;
 use codex_config::McpServerTransportConfig;
 use codex_config::types::AuthKeyringBackendKind;
 use codex_config::types::OAuthCredentialsStoreMode;
-use codex_exec_server::Environment;
 use codex_login::AuthChangeState;
 use codex_otel::auth_storage::AuthStorageOriginator;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::mcp::McpServerInfo;
 use codex_protocol::protocol::Event;
-use codex_rmcp_client::ExecutorStdioServerLauncher;
 use codex_rmcp_client::LocalStdioServerLauncher;
 use codex_rmcp_client::McpOAuthRefreshMode;
 use codex_rmcp_client::McpProtocolMode;
@@ -118,7 +113,6 @@ struct ManagedClientStartup {
     elicitation_requests: ElicitationRequestManager,
     tool_catalog_cache_context: Option<McpToolCatalogCacheContext>,
     runtime_context: McpRuntimeContext,
-    resolved_environment: std::result::Result<Option<Arc<Environment>>, String>,
     runtime_auth_provider: Option<SharedAuthProvider>,
     client_elicitation_capability: ElicitationCapability,
     client_mcp_extensions: ClientMcpExtensions,
@@ -148,7 +142,6 @@ impl ManagedClientStartup {
             elicitation_requests,
             tool_catalog_cache_context,
             runtime_context,
-            resolved_environment,
             runtime_auth_provider,
             client_elicitation_capability,
             client_mcp_extensions,
@@ -182,7 +175,6 @@ impl ManagedClientStartup {
                         keyring_backend_kind,
                         oauth_refresh_mode,
                         runtime_context,
-                        resolved_environment,
                         runtime_auth_provider,
                         protocol_mode,
                     ),
@@ -263,7 +255,6 @@ impl AsyncManagedClient {
         elicitation_requests: ElicitationRequestManager,
         tool_catalog_cache_context: Option<McpToolCatalogCacheContext>,
         runtime_context: McpRuntimeContext,
-        resolved_environment: std::result::Result<Option<Arc<Environment>>, String>,
         runtime_auth_provider: Option<SharedAuthProvider>,
         client_elicitation_capability: ElicitationCapability,
         client_mcp_extensions: ClientMcpExtensions,
@@ -284,7 +275,6 @@ impl AsyncManagedClient {
             elicitation_requests,
             tool_catalog_cache_context: tool_catalog_cache_context.clone(),
             runtime_context,
-            resolved_environment,
             runtime_auth_provider,
             client_elicitation_capability,
             client_mcp_extensions,
@@ -443,17 +433,10 @@ fn tool_info_from_listed_tool(
 fn resolve_bearer_token(
     server_name: &str,
     bearer_token_env_var: Option<&str>,
-    credential_policy: McpCredentialPolicy,
 ) -> Result<Option<String>> {
     let Some(env_var) = bearer_token_env_var else {
         return Ok(None);
     };
-
-    if credential_policy == McpCredentialPolicy::ExecutorOnly {
-        return Err(anyhow!(
-            "MCP server '{server_name}' requires executor-side environment credential resolution; update the executor to a version that supports it (host fallback is disabled)"
-        ));
-    }
 
     match env::var(env_var) {
         Ok(value) => {
@@ -680,44 +663,15 @@ pub(crate) async fn make_rmcp_client(
     keyring_backend_kind: AuthKeyringBackendKind,
     oauth_refresh_mode: McpOAuthRefreshMode,
     runtime_context: McpRuntimeContext,
-    resolved_environment: std::result::Result<Option<Arc<Environment>>, String>,
     runtime_auth_provider: Option<SharedAuthProvider>,
     protocol_mode: McpProtocolMode,
 ) -> Result<RmcpClient, StartupOutcomeError> {
     let config = server.config().clone();
-    if server.credential_policy() == McpCredentialPolicy::ExecutorOnly {
-        // Executor HTTP declarations cannot acquire host header helpers through
-        // cached registration materialization.
-        let valid_transport = matches!(
-            &config.transport,
-            McpServerTransportConfig::StreamableHttp {
-                env_http_headers,
-                http_headers_helper: None,
-                ..
-            } if env_http_headers.as_ref().is_none_or(HashMap::is_empty)
-        );
-        if config.is_local_environment() || !valid_transport {
-            return Err(StartupOutcomeError::from(anyhow!(
-                "executor-discovered MCP server '{server_name}' requires a remote HTTP transport without host environment headers or helpers"
-            )));
-        }
-    }
     if matches!(config.auth, McpServerAuth::EmaAuth) {
         return Err(StartupOutcomeError::from(anyhow!(
             "EMA MCP connections are not enabled in this version"
         )));
     }
-    if matches!(config.auth, McpServerAuth::ChatGpt)
-        && !config.is_local_environment()
-        && !has_explicit_http_authorization(&config)
-    {
-        return Err(StartupOutcomeError::from(anyhow!(
-            "executor-owned MCP server `{server_name}` cannot use hosted ChatGPT authentication; configure executor-owned credentials instead"
-        )));
-    }
-    let resolved_environment =
-        resolved_environment.map_err(|err| StartupOutcomeError::from(anyhow!(err)))?;
-    let is_local_environment = config.is_local_environment();
     let oauth_credential_name = config.oauth_credential_name(server_name);
     let McpServerConfig { transport, .. } = config;
 
@@ -736,23 +690,9 @@ pub(crate) async fn make_rmcp_client(
                     .map(|(key, value)| (key.into(), value.into()))
                     .collect::<HashMap<_, _>>()
             });
-            let launcher = if is_local_environment {
-                // TODO(starr): Unify local stdio MCP launch with
-                // `ExecutorStdioServerLauncher` once the executor-backed path
-                // preserves `LocalStdioServerLauncher` semantics.
-                Arc::new(LocalStdioServerLauncher::new(
-                    runtime_context.local_process_cwd(),
-                )) as Arc<dyn StdioServerLauncher>
-            } else {
-                let Some(environment) = resolved_environment.as_ref() else {
-                    unreachable!(
-                        "non-local stdio MCP servers resolve an environment before launch"
-                    );
-                };
-                Arc::new(ExecutorStdioServerLauncher::new(
-                    environment.get_exec_backend(),
-                )) as Arc<dyn StdioServerLauncher>
-            };
+            let launcher = Arc::new(LocalStdioServerLauncher::new(
+                runtime_context.local_process_cwd(),
+            )) as Arc<dyn StdioServerLauncher>;
 
             let cwd = cwd.map(codex_utils_path_uri::LegacyAppPathString::into_string);
             RmcpClient::new_stdio_client_with_protocol_mode(
@@ -775,46 +715,13 @@ pub(crate) async fn make_rmcp_client(
             http_headers_helper: _,
         } => {
             let http_client = runtime_context
-                .http_client_for_server(server.config(), resolved_environment.as_ref())
+                .http_client_for_server(server.config())
                 .map_err(|error| StartupOutcomeError::from(anyhow!(error)))?;
             let http_client = maybe_with_openai_docs_source_attribution(&url, http_client);
-            let executor_resolves_bearer_token = if !is_local_environment
-                && bearer_token_env_var.is_some()
-            {
-                let Some(environment) = resolved_environment.as_ref() else {
-                    return Err(StartupOutcomeError::from(anyhow!(
-                        "non-local HTTP MCP server `{server_name}` did not resolve an execution environment"
-                    )));
-                };
-                environment
-                    .info()
-                    .await
-                    .map_err(|error| StartupOutcomeError::from(anyhow!(error)))?
-                    .capabilities
-                    .http_header_env_vars
-            } else {
-                false
-            };
-            let (http_client, resolved_bearer_token) = if executor_resolves_bearer_token
-                && let Some(env_var) = bearer_token_env_var.as_ref()
-            {
-                (
-                    Arc::new(ExecutorEnvironmentHttpClient {
-                        bearer_token_env_var: env_var.clone(),
-                        http_client,
-                    }) as Arc<dyn codex_exec_server::HttpClient>,
-                    Some(StreamableHttpBearerToken::ProvidedByHttpClient),
-                )
-            } else {
-                let token = resolve_bearer_token(
-                    server_name,
-                    bearer_token_env_var.as_deref(),
-                    server.credential_policy(),
-                )
-                .map_err(StartupOutcomeError::from)?
-                .map(StreamableHttpBearerToken::Resolved);
-                (http_client, token)
-            };
+            let resolved_bearer_token =
+                resolve_bearer_token(server_name, bearer_token_env_var.as_deref())
+                    .map_err(StartupOutcomeError::from)?
+                    .map(StreamableHttpBearerToken::Resolved);
             let redirect_mode = StreamableHttpRedirectMode::Legacy;
             RmcpClient::new_streamable_http_client_with_protocol_mode_and_redirect_mode(
                 oauth_credential_name.as_ref(),

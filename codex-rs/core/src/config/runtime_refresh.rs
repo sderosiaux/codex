@@ -128,7 +128,6 @@ impl Config {
                             && incoming.oauth_resource == server.oauth_resource
                             && incoming.oauth == server.oauth
                             && incoming.scopes == server.scopes
-                            && incoming.environment_id == server.environment_id
                             && incoming.ema_registration() == server.ema_registration()
                     })
             })

@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use codex_exec_server_protocol::JSONRPCErrorError;
+use crate::rpc::HandlerError;
 use codex_utils_absolute_path::AbsolutePathBuf;
 
 use crate::protocol::ExecParams;
@@ -18,7 +18,7 @@ pub(crate) struct PreparedExecRequest {
 pub(crate) fn prepare_exec_request(
     params: &ExecParams,
     env: HashMap<String, String>,
-) -> Result<PreparedExecRequest, JSONRPCErrorError> {
+) -> Result<PreparedExecRequest, HandlerError> {
     let cwd = params.cwd.to_abs_path().map_err(|err| {
         invalid_params(format!(
             "cwd URI `{}` is not valid on this exec-server host: {err}",

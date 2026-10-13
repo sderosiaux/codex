@@ -11,8 +11,6 @@ use tokio::time::Duration;
 use tokio::time::Instant;
 use uuid::Uuid;
 
-use super::process::OutputDrainPolicy;
-
 use crate::codex_thread::BackgroundTerminalInfo;
 use crate::exec::ExecRequest;
 use crate::exec::ExecServerEnvConfig;
@@ -748,7 +746,7 @@ impl UnifiedExecProcessManager {
         tty: bool,
         environment: &codex_exec_server::Environment,
     ) -> Result<UnifiedExecProcess, UnifiedExecError> {
-        if environment.is_remote() || request.exec_server_shell_snapshot.is_some() {
+        if request.exec_server_shell_snapshot.is_some() {
             let backend = environment.get_exec_backend();
             let params = exec_server_params_for_request(process_id, request, tool_ctx, tty);
             tracing::event!(
@@ -763,15 +761,7 @@ impl UnifiedExecProcessManager {
                 .start(params)
                 .await
                 .map_err(|err| UnifiedExecError::create_process(err.to_string()))?;
-            let output_drain_policy = if environment.is_remote() {
-                OutputDrainPolicy::WaitForOutputClosure
-            } else {
-                OutputDrainPolicy::BoundedAfterExit
-            };
-            return Ok(UnifiedExecProcess::from_exec_server_started(
-                started,
-                output_drain_policy,
-            ));
+            return Ok(UnifiedExecProcess::from_exec_server_started(started));
         }
 
         // TODO(anp): Keep PathUri through the local PTY/process launch boundary.

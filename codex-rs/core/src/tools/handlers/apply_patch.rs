@@ -48,15 +48,7 @@ const APPLY_PATCH_ARGUMENT_DIFF_BUFFER_INTERVAL: Duration = Duration::from_milli
 /// Handles freeform `apply_patch` requests and routes verified patches to the
 /// selected environment filesystem.
 #[derive(Default)]
-pub struct ApplyPatchHandler {
-    multi_environment: bool,
-}
-
-impl ApplyPatchHandler {
-    pub(crate) fn new(multi_environment: bool) -> Self {
-        Self { multi_environment }
-    }
-}
+pub struct ApplyPatchHandler;
 
 #[derive(Default)]
 struct ApplyPatchArgumentDiffConsumer {
@@ -207,7 +199,7 @@ impl ToolExecutor<ToolInvocation> for ApplyPatchHandler {
     }
 
     fn spec(&self) -> ToolSpec {
-        create_apply_patch_freeform_tool(self.multi_environment)
+        create_apply_patch_freeform_tool()
     }
 
     fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
@@ -245,15 +237,9 @@ impl ApplyPatchHandler {
                 )));
             }
         };
-        let selected_environment_id =
-            require_environment_id(args.environment_id.as_deref(), self.multi_environment)?;
-
         // Verify the parsed patch against the selected environment filesystem.
-        let turn_environment = resolve_tool_environment(
-            &step_context,
-            selected_environment_id.as_deref(),
-            "apply_patch is unavailable in this session",
-        )?;
+        let turn_environment =
+            resolve_tool_environment(&step_context, "apply_patch is unavailable in this session")?;
         let fs = turn_environment.environment.get_filesystem();
         match codex_apply_patch::verify_apply_patch_args(args, turn_environment.cwd(), fs.as_ref())
             .await
@@ -415,17 +401,4 @@ async fn execute_verified_patch(
         tracker,
     );
     emitter.finish(event_ctx, result, delta.as_ref()).await
-}
-
-fn require_environment_id(
-    parsed_environment_id: Option<&str>,
-    allow_environment_id: bool,
-) -> Result<Option<String>, FunctionCallError> {
-    match parsed_environment_id {
-        Some(_) if !allow_environment_id => Err(FunctionCallError::RespondToModel(
-            "apply_patch environment selection is unavailable for this turn".to_string(),
-        )),
-        Some(environment_id) => Ok(Some(environment_id.to_string())),
-        None => Ok(None),
-    }
 }

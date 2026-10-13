@@ -6,8 +6,6 @@ use std::fmt;
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
-use base64::Engine;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use codex_protocol::config_types::ToolExposureSurface;
 use codex_utils_path_uri::LegacyAppPathString;
 use codex_utils_redacted_string::RedactedString;
@@ -18,9 +16,6 @@ use serde::Serialize;
 use serde::de::Error as SerdeError;
 
 use crate::McpEmaRegistration;
-
-/// Effective MCP environment id when config omits `environment_id`.
-pub const DEFAULT_MCP_SERVER_ENVIRONMENT_ID: &str = "local";
 
 /// Human-readable reason a configured MCP server was disabled after requirements
 /// were applied.
@@ -62,38 +57,14 @@ impl McpServerToolConfig {
 #[serde(untagged, deny_unknown_fields)]
 pub enum McpServerEnvVar {
     Name(String),
-    Config {
-        name: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        source: Option<String>,
-    },
+    Config { name: String },
 }
 
 impl McpServerEnvVar {
     pub fn name(&self) -> &str {
         match self {
             McpServerEnvVar::Name(name) => name,
-            McpServerEnvVar::Config { name, .. } => name,
-        }
-    }
-
-    pub fn source(&self) -> Option<&str> {
-        match self {
-            McpServerEnvVar::Name(_) => None,
-            McpServerEnvVar::Config { source, .. } => source.as_deref(),
-        }
-    }
-
-    pub fn is_remote_source(&self) -> bool {
-        self.source() == Some("remote")
-    }
-
-    pub fn validate_source(&self) -> Result<(), String> {
-        match self.source() {
-            None | Some("local") | Some("remote") => Ok(()),
-            Some(source) => Err(format!(
-                "unsupported env_vars source `{source}`; expected `local` or `remote`"
-            )),
+            McpServerEnvVar::Config { name } => name,
         }
     }
 }
@@ -192,9 +163,6 @@ pub struct McpServerConfig {
     #[serde(default, skip_serializing_if = "is_default")]
     pub auth: McpServerAuth,
 
-    /// Effective environment id for where Codex should start this MCP server.
-    pub environment_id: String,
-
     /// When `false`, Codex skips initializing this MCP server.
     #[serde(default = "default_enabled")]
     pub enabled: bool,
@@ -265,26 +233,9 @@ pub struct McpServerConfig {
 }
 
 impl McpServerConfig {
-    pub fn is_local_environment(&self) -> bool {
-        self.environment_id == DEFAULT_MCP_SERVER_ENVIRONMENT_ID
-    }
-
-    /// Keeps local OAuth credentials compatible while reserving managed credential namespaces.
+    /// Name OAuth credentials are stored under for this server.
     pub fn oauth_credential_name<'a>(&self, server_name: &'a str) -> Cow<'a, str> {
-        if self.is_local_environment() {
-            if server_name.starts_with("executor:")
-                || server_name.starts_with("local:")
-                || server_name.starts_with("ema-idp:")
-            {
-                Cow::Owned(format!("local:{server_name}"))
-            } else {
-                Cow::Borrowed(server_name)
-            }
-        } else {
-            let environment = URL_SAFE_NO_PAD.encode(self.environment_id.as_bytes());
-            let server = URL_SAFE_NO_PAD.encode(server_name.as_bytes());
-            Cow::Owned(format!("executor:{environment}:{server}"))
-        }
+        Cow::Borrowed(server_name)
     }
 
     pub fn oauth_client_id(&self) -> Option<&str> {
@@ -348,8 +299,6 @@ pub struct RawMcpServerConfig {
 
     // shared
     #[serde(default)]
-    pub environment_id: Option<String>,
-    #[serde(default)]
     pub auth: Option<McpServerAuth>,
     #[serde(default)]
     pub startup_timeout_sec: Option<f64>,
@@ -408,7 +357,6 @@ impl TryFrom<RawMcpServerConfig> for McpServerConfig {
             bearer_token,
             bearer_token_env_var,
             http_headers_helper,
-            environment_id,
             auth,
             startup_timeout_sec,
             startup_timeout_ms,
@@ -458,9 +406,6 @@ impl TryFrom<RawMcpServerConfig> for McpServerConfig {
             throw_if_set("stdio", "oauth_resource", oauth_resource.as_ref())?;
             throw_if_set("stdio", "auth", auth.as_ref())?;
             let env_vars = env_vars.unwrap_or_default();
-            for env_var in &env_vars {
-                env_var.validate_source()?;
-            }
             McpServerTransportConfig::Stdio {
                 command,
                 args: args.unwrap_or_default(),
@@ -480,15 +425,6 @@ impl TryFrom<RawMcpServerConfig> for McpServerConfig {
             {
                 return Err("http_headers_helper must not be empty".to_string());
             }
-            if environment_id
-                .as_deref()
-                .is_some_and(|environment_id| environment_id != DEFAULT_MCP_SERVER_ENVIRONMENT_ID)
-                && http_headers_helper.is_some()
-            {
-                return Err(
-                    "http_headers_helper is only supported for local MCP servers".to_string(),
-                );
-            }
             McpServerTransportConfig::StreamableHttp {
                 url,
                 bearer_token_env_var,
@@ -500,8 +436,6 @@ impl TryFrom<RawMcpServerConfig> for McpServerConfig {
             return Err("invalid transport".to_string());
         };
 
-        let environment_id =
-            environment_id.unwrap_or_else(|| DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string());
         let auth = auth.unwrap_or_default();
         if let Some(oauth) = &oauth
             && let Some(client_secret) = &oauth.client_secret
@@ -530,7 +464,6 @@ impl TryFrom<RawMcpServerConfig> for McpServerConfig {
         Ok(Self {
             transport,
             auth,
-            environment_id,
             startup_timeout_sec,
             tool_timeout_sec,
             enabled: enabled.unwrap_or_else(default_enabled),

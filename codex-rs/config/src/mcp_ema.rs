@@ -165,9 +165,6 @@ impl McpServerConfig {
 
     /// EMA never falls back to an unrelated bearer or executor-owned credential.
     pub fn validate_ema_auth_transport(&self) -> Result<(), &'static str> {
-        if !self.is_local_environment() {
-            return Err("ema_auth requires a host-owned MCP connection");
-        }
         if self.oauth_client_secret().is_some() {
             return Err("ema_auth cannot be combined with oauth.client_secret");
         }

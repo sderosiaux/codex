@@ -696,7 +696,7 @@ impl Session {
         sub_id: String,
         session_configuration: SessionConfiguration,
     ) -> Arc<TurnContext> {
-        let turn_environments = self.services.turn_environments.snapshot().await;
+        let turn_environments = self.services.turn_environments.snapshot();
         self.new_turn_context_from_configuration(
             sub_id,
             session_configuration,
@@ -801,10 +801,7 @@ impl Session {
         }
         let turn_context = Arc::new(turn_context);
         if git_enrichment_policy == GitEnrichmentPolicy::Fresh
-            && turn_context
-                .initial_environments
-                .single_local_environment_cwd()
-                .is_some()
+            && turn_context.initial_environments.primary_cwd().is_some()
         {
             turn_context
                 .turn_metadata_state
@@ -842,7 +839,7 @@ impl Session {
 
     async fn new_default_turn_for(&self, build_mode: TurnContextBuildMode) -> Arc<TurnContext> {
         let session_configuration = self.default_turn_configuration().await;
-        let turn_environments = self.services.turn_environments.snapshot().await;
+        let turn_environments = self.services.turn_environments.snapshot();
         self.new_turn_context_from_configuration(
             self.next_internal_sub_id(),
             session_configuration,

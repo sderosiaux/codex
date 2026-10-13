@@ -18,7 +18,6 @@ use super::SKILLS_METADATA_DIR;
 use super::SKILLS_METADATA_FILENAME;
 use super::discovery::DirectorySymlinkPolicy;
 use super::discovery::DiscoveredSkill;
-use super::discovery::HiddenDirectoryPolicy;
 use super::discovery::MAX_CONCURRENT_SKILL_LOADS;
 use super::discovery::SkillDiscovery;
 use super::discovery::SkillDiscoveryOptions;
@@ -90,10 +89,7 @@ async fn load_skills_under_root(
     let SkillDiscovery { skills, warnings } = discover_skills(
         &discovery_access,
         &PathUri::from_abs_path(root),
-        SkillDiscoveryOptions {
-            directory_symlinks,
-            hidden_directories: HiddenDirectoryPolicy::Skip,
-        },
+        SkillDiscoveryOptions { directory_symlinks },
     )
     .await;
     for warning in warnings {

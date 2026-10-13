@@ -13,15 +13,14 @@ I run Codex in full-access mode all the time. In that mode the sandbox, the appr
 - A `codex` binary (`codex-rs/cli`), headless, for one-shot prompts or an interactive session.
 - The loop: threads, turns, streaming, compaction, AGENTS.md. Threads live in memory and disappear when the process exits.
 - Tools: shell (unified exec), `apply_patch`, MCP servers declared in `config.toml`, sub-agents, `update_plan`, `request_user_input`, `view_image`, tool search, web search, image generation, skills and hooks.
-- Remote execution environments through `codex exec-server`.
 
 ## What's gone
 
 Security: sandboxing (Seatbelt, Landlock/bubblewrap, Windows), approval policies and prompts, guardian auto-review, exec-policy rules, the network proxy and its destination allowlists, project trust, permission profiles, managed requirements and cloud config, process hardening, the shell-snapshot credential broker, dangerous-command detection.
 
-Everything around the loop: the TUI, app-server and its SDKs, cloud tasks, realtime voice, code mode, plugins and marketplaces, ChatGPT apps, session storage (rollouts, SQLite state, resume, memories), analytics, feedback upload, rollout tracing, TUI and desktop settings.
+Everything around the loop: the TUI, app-server and its SDKs, cloud tasks, realtime voice, code mode, plugins and marketplaces, ChatGPT apps, session storage (rollouts, SQLite state, resume, memories), remote execution environments, analytics, feedback upload, rollout tracing, TUI and desktop settings.
 
-All tests are gone too. Rust went from 2.05M lines (1.06M production, 0.99M tests) to about 222k, and the workspace from about 160 crates to about 70.
+All tests are gone too. Rust went from 2.05M lines (1.06M production, 0.99M tests) to about 190k, and the workspace from about 160 crates to about 65.
 
 ## Running it
 

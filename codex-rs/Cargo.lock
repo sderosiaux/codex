@@ -196,21 +196,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "arrayref"
-version = "0.3.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "76a2e8124351fda1ef8aaaa3bbd7ebbcb486bbcd4225aca0aa0d84bb2db8fecb"
-
-[[package]]
-name = "arrayvec"
-version = "0.7.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c02d123df017efcdfbd739ef81735b36c5ba83ec3c59c80a9d7ecc718f92e50"
-dependencies = [
- "zeroize",
-]
-
-[[package]]
 name = "ascii"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -760,57 +745,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "axum"
-version = "0.8.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b52af3cb4058c895d37317bb27508dccc8e5f2d39454016b297bf4a400597b8"
-dependencies = [
- "axum-core",
- "base64 0.22.1",
- "bytes",
- "futures-util",
- "http 1.4.0",
- "http-body 1.0.1",
- "http-body-util",
- "hyper",
- "hyper-util",
- "itoa",
- "matchit",
- "memchr",
- "mime",
- "percent-encoding",
- "pin-project-lite",
- "serde_core",
- "serde_json",
- "serde_path_to_error",
- "sha1",
- "sync_wrapper",
- "tokio",
- "tokio-tungstenite",
- "tower",
- "tower-layer",
- "tower-service",
-]
-
-[[package]]
-name = "axum-core"
-version = "0.5.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "08c78f31d7b1291f7ee735c1c6780ccde7785daae9a9206026862dab7d8792d1"
-dependencies = [
- "bytes",
- "futures-core",
- "http 1.4.0",
- "http-body 1.0.1",
- "http-body-util",
- "mime",
- "pin-project-lite",
- "sync_wrapper",
- "tower-layer",
- "tower-service",
-]
-
-[[package]]
 name = "base16ct"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -878,19 +812,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "46502ad458c9a52b69d4d4d32775c788b7a1b85e8bc9d482d92250fc0e3f8efe"
 dependencies = [
  "digest",
-]
-
-[[package]]
-name = "blake3"
-version = "1.8.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3888aaa89e4b2a40fca9848e400f6a658a5a3978de7be858e209cafa8be9a4a0"
-dependencies = [
- "arrayref",
- "arrayvec",
- "cc",
- "cfg-if",
- "constant_time_eq",
 ]
 
 [[package]]
@@ -1197,24 +1118,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a822ea5bc7590f9d40f1ba12c0dc3c2760f3482c6984db1573ad11031420831"
 
 [[package]]
-name = "clatter"
-version = "2.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6fed49fa357a85c377c0f920e86100f5326111b09ad69f6de684e324e3ad8097"
-dependencies = [
- "aes-gcm",
- "arrayvec",
- "displaydoc",
- "getrandom 0.3.4",
- "ml-kem",
- "rand_core 0.6.4",
- "sha2",
- "thiserror-no-std",
- "x25519-dalek",
- "zeroize",
-]
-
-[[package]]
 name = "clru"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1387,16 +1290,6 @@ dependencies = [
  "http-body 1.0.1",
  "http-body-util",
  "thiserror 2.0.18",
-]
-
-[[package]]
-name = "codex-build-info"
-version = "0.0.0"
-dependencies = [
- "codex-install-context",
- "semver",
- "serde",
- "sha2",
 ]
 
 [[package]]
@@ -1604,62 +1497,31 @@ dependencies = [
 name = "codex-exec-server"
 version = "0.0.0"
 dependencies = [
- "arc-swap",
- "axum",
  "base64 0.22.1",
  "bytes",
- "clatter",
- "codex-api",
- "codex-build-info",
- "codex-config",
- "codex-exec-server-protocol",
  "codex-file-system",
  "codex-http-client",
+ "codex-install-context",
  "codex-otel",
  "codex-protocol",
  "codex-shell-command",
  "codex-utils-absolute-path",
- "codex-utils-home-dir",
  "codex-utils-path-uri",
- "codex-utils-process",
  "codex-utils-pty",
- "codex-utils-redacted-string",
- "codex-utils-rustls-provider",
- "codex-websocket-auth",
- "codex-websocket-client",
- "dirs",
  "futures",
  "http 1.4.0",
  "libc",
  "opentelemetry",
- "prost",
  "rustix",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
- "tokio-tungstenite",
  "tokio-util",
- "toml 0.9.11+spec-1.1.0",
  "tracing",
  "url",
- "uuid",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "codex-exec-server-protocol"
-version = "0.0.0"
-dependencies = [
- "base64 0.22.1",
- "codex-file-system",
- "codex-install-context",
- "codex-protocol",
- "codex-shell-command",
- "codex-utils-path-uri",
- "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -1669,7 +1531,6 @@ dependencies = [
  "codex-api",
  "codex-config",
  "codex-context-fragments",
- "codex-exec-server-protocol",
  "codex-file-system",
  "codex-history",
  "codex-mcp",
@@ -1906,6 +1767,7 @@ dependencies = [
  "codex-config",
  "codex-diagnostics",
  "codex-exec-server",
+ "codex-http-client",
  "codex-login",
  "codex-model-provider",
  "codex-otel",
@@ -2081,7 +1943,6 @@ name = "codex-rmcp-client"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "axum",
  "base64 0.22.1",
  "bytes",
  "codex-api",
@@ -2092,7 +1953,6 @@ dependencies = [
  "codex-protocol",
  "codex-secrets",
  "codex-utils-home-dir",
- "codex-utils-path-uri",
  "codex-utils-pty",
  "futures",
  "http 1.4.0",
@@ -2168,20 +2028,17 @@ dependencies = [
 name = "codex-skills-extension"
 version = "0.0.0"
 dependencies = [
- "blake3",
  "codex-config",
  "codex-exec-server",
  "codex-extension-api",
  "codex-otel",
  "codex-protocol",
  "codex-skills",
- "codex-tools",
  "codex-utils-absolute-path",
  "codex-utils-path-uri",
  "codex-utils-string",
  "dirs",
  "futures",
- "schemars 0.8.22",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -2228,17 +2085,6 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "urlencoding",
-]
-
-[[package]]
-name = "codex-uds"
-version = "0.0.0"
-dependencies = [
- "async-io",
- "tokio",
- "tokio-util",
- "uds_windows",
- "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2411,21 +2257,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "codex-websocket-auth"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "clap",
- "codex-utils-absolute-path",
- "constant_time_eq",
- "http 1.4.0",
- "jsonwebtoken",
- "serde",
- "sha2",
- "time",
-]
-
-[[package]]
 name = "codex-websocket-client"
 version = "0.0.0"
 dependencies = [
@@ -2498,12 +2329,6 @@ name = "const-oid"
 version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
-
-[[package]]
-name = "constant_time_eq"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c74b8349d32d297c9134b8c88677813a227df8f779daa29bfc29c183fe3dca6"
 
 [[package]]
 name = "cookie"
@@ -4657,7 +4482,6 @@ dependencies = [
  "http 1.4.0",
  "http-body 1.0.1",
  "httparse",
- "httpdate",
  "itoa",
  "pin-project-lite",
  "smallvec",
@@ -5462,12 +5286,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "matchit"
-version = "0.8.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
-
-[[package]]
 name = "maybe-async"
 version = "0.2.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5555,7 +5373,6 @@ dependencies = [
  "kem",
  "rand_core 0.6.4",
  "sha3",
- "zeroize",
 ]
 
 [[package]]
@@ -7859,17 +7676,6 @@ dependencies = [
 
 [[package]]
 name = "syn"
-version = "1.0.109"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72b64191b275b66ffe2469e8af2c1cfe3bafa67b529ead792a6d0160888b4237"
-dependencies = [
- "proc-macro2",
- "quote",
- "unicode-ident",
-]
-
-[[package]]
-name = "syn"
 version = "2.0.117"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e665b8803e7b1d2a727f4023456bbbbe74da67099c585258af0ad9c5013b9b99"
@@ -8000,26 +7806,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
-]
-
-[[package]]
-name = "thiserror-impl-no-std"
-version = "2.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "58e6318948b519ba6dc2b442a6d0b904ebfb8d411a3ad3e07843615a72249758"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 1.0.109",
-]
-
-[[package]]
-name = "thiserror-no-std"
-version = "2.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a3ad459d94dd517257cc96add8a43190ee620011bb6e6cdc82dafd97dfafafea"
-dependencies = [
- "thiserror-impl-no-std",
 ]
 
 [[package]]
@@ -8181,7 +7967,6 @@ checksum = "9ae9cec805b01e8fc3fd2fe289f89149a9b66dd16786abd8b19cfa7b48cb0098"
 dependencies = [
  "bytes",
  "futures-core",
- "futures-io",
  "futures-sink",
  "futures-util",
  "pin-project-lite",

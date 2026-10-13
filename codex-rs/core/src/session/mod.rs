@@ -80,7 +80,6 @@ use codex_otel::set_parent_from_w3c_trace_context;
 use codex_prompts::render_model_instructions;
 use codex_protocol::ResponseUsageMetadata;
 use codex_protocol::ThreadId;
-use codex_protocol::capabilities::SelectedCapabilityRoot;
 use codex_protocol::config_types::AutoCompactTokenLimitScope;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::config_types::ServiceTier;
@@ -108,12 +107,10 @@ use codex_protocol::protocol::RawResponseItemEvent;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadHistoryMode;
-use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::protocol::ThreadSettingsSnapshot;
 use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnContextItem;
-use codex_protocol::protocol::TurnEnvironmentRequest;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::protocol::W3cTraceContext;
@@ -170,7 +167,6 @@ use codex_protocol::error::Result as CodexResult;
 
 mod config_refresh;
 pub(crate) mod context_window;
-mod daemon_recovery;
 mod environment;
 mod extension_interruption;
 pub(crate) mod extension_metrics;
@@ -274,7 +270,6 @@ use codex_protocol::protocol::WarningEvent;
 use codex_protocol::turn_input::TurnInputMode;
 use codex_protocol::turn_input::TurnInputRequest;
 use codex_protocol::turn_input::TurnInputSubmission;
-use codex_protocol::turn_input::TurnStartOptions;
 use codex_protocol::user_input::UserInput;
 use codex_skills_extension::HostSkillsService;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -330,7 +325,7 @@ pub(crate) struct SessionSpawnArgs {
     pub(crate) inherited_environments: Option<TurnEnvironmentSnapshot>,
     pub(crate) user_shell_override: Option<shell::Shell>,
     pub(crate) parent_trace: Option<W3cTraceContext>,
-    pub(crate) environment_requests: Vec<TurnEnvironmentRequest>,
+    pub(crate) environment_selections: Vec<TurnEnvironmentSelection>,
     pub(crate) thread_extension_init: ExtensionDataInit,
     pub(crate) turn_extension_init: ExtensionDataInit,
     pub(crate) client_mcp_extensions: ClientMcpExtensions,
@@ -430,8 +425,8 @@ impl Session {
             user_shell_override,
             inherited_environments,
             parent_trace: _,
-            environment_requests,
-            mut thread_extension_init,
+            environment_selections,
+            thread_extension_init,
             turn_extension_init,
             client_mcp_extensions,
             reserved_thread_id,
@@ -448,31 +443,6 @@ impl Session {
             .get::<codex_extension_api::SessionIsolation>()
             .map(|policy| *policy)
             .unwrap_or_default();
-        // Manager-owned threads and inline delegates bind roots at the same startup boundary.
-        let selected_capability_roots =
-            match thread_extension_init.get::<Vec<SelectedCapabilityRoot>>() {
-                Some(roots) => roots.as_ref().clone(),
-                None => {
-                    // Resume restores this thread's saved roots, including roots for environments
-                    // it will select again later. New children inherit roots regardless of copied history.
-                    let roots = if !matches!(&conversation_history, InitialHistory::Resumed(_))
-                        && isolation == codex_extension_api::SessionIsolation::Inherit
-                        && let Some(environments) = &inherited_environments
-                    {
-                        environments.selected_capability_roots()
-                    } else {
-                        conversation_history.get_selected_capability_roots()
-                    };
-                    if !roots.is_empty() {
-                        thread_extension_init.insert(roots.clone());
-                    }
-                    roots
-                }
-            };
-        let environment_selections = environment_requests
-            .into_iter()
-            .map(|request| TurnEnvironmentSelection::new(request, &selected_capability_roots))
-            .collect::<Vec<_>>();
         // Enforce snapshot-only instructions for both managed and inline isolated sessions.
         let instructions = if isolation == codex_extension_api::SessionIsolation::Isolated {
             SessionInstructions {
@@ -652,10 +622,6 @@ impl Session {
             dynamic_tools,
             user_shell_override,
         };
-        session_configuration
-            .validate(&environment_selections)
-            .map_err(|err| CodexErr::InvalidRequest(err.to_string()))?;
-
         // Generate a unique ID for the lifetime of this session.
         let session_source_clone = session_configuration.session_source.clone();
         let (agent_status_tx, agent_status_rx) = watch::channel(AgentStatus::PendingInit);
@@ -809,32 +775,6 @@ impl SessionIo {
             op: Op::TurnInput {
                 request: Box::new(request),
                 mode,
-                reply: reply_tx,
-            },
-            trace,
-            turn_extension_init,
-            parent_turn_id: None,
-            root_turn_id: None,
-            residency_guard: None,
-        })
-        .await?;
-        reply_rx.await.unwrap_or(Err(CodexErr::InternalAgentDied))
-    }
-
-    pub(crate) async fn submit_recover_turn(
-        &self,
-        thread_settings: ThreadSettingsOverrides,
-        start_options: TurnStartOptions,
-        trace: Option<W3cTraceContext>,
-        turn_id: String,
-        turn_extension_init: Option<ExtensionDataInit>,
-    ) -> CodexResult<TurnInputSubmission> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.submit_with_id(Submission {
-            id: turn_id,
-            op: Op::RecoverTurn {
-                thread_settings,
-                start_options,
                 reply: reply_tx,
             },
             trace,
@@ -1454,9 +1394,8 @@ impl Session {
 
     pub(crate) async fn refresh_hooks(&self, mut config: Arc<Config>) {
         loop {
-            let environments = self.services.turn_environments.snapshot().await;
-            let hooks_config =
-                build_hooks_config(config.as_ref(), environments.single_local_environment());
+            let environments = self.services.turn_environments.snapshot();
+            let hooks_config = build_hooks_config(config.as_ref(), environments.primary());
 
             let state = self.state.lock().await;
             if Arc::ptr_eq(
@@ -2226,7 +2165,6 @@ impl Session {
         required_servers: &[String],
     ) -> CodexResult<Arc<StepContext>> {
         // Read the step's model and record its environments together so an update cannot split them.
-        // Wait for executor startup below, after releasing the lock.
         let (mut settings, environments) = {
             let _active = self
                 .active_turn
@@ -2259,7 +2197,6 @@ impl Session {
             settings.model_info.as_ref(),
         );
         let session_telemetry = settings.telemetry(&turn_context.session_telemetry);
-        let environments = environments.or_cancel(cancellation_token).await?;
         // Keep both preparation futures off caller stacks while they are live together.
         let load_agents_md = Box::pin(async {
             let (loaded_agents_md, warnings) = self
@@ -2272,17 +2209,6 @@ impl Session {
             loaded_agents_md
         });
         let prepare_tools = Box::pin(async {
-            let selected_capability_roots = self
-                .resolve_selected_capability_roots_for_step(&environments)
-                .await;
-            let ready_selected_capability_roots =
-                Self::ready_selected_capability_roots(&selected_capability_roots);
-            let executor_capability_discovery = self
-                .executor_capability_discovery_for_step(
-                    &turn_context.config,
-                    &ready_selected_capability_roots,
-                )
-                .await;
             let extension_data =
                 codex_extension_api::ExtensionData::new(turn_context.sub_id.clone());
             if let Some(messages) = settings
@@ -2293,10 +2219,6 @@ impl Session {
                 .and_then(|tools| tools.multi_agent.as_ref())
             {
                 extension_data.insert(messages.clone());
-            }
-            extension_data.insert(selected_capability_roots.clone());
-            if let Some(discovery) = &executor_capability_discovery {
-                extension_data.insert(discovery.as_ref().clone());
             }
             // MCP refresh can be large; keep it off the sampling request's stack.
             let mcp =
@@ -2310,13 +2232,7 @@ impl Session {
                 &extension_data,
             )
             .await?;
-            Ok::<_, CodexErr>((
-                selected_capability_roots,
-                executor_capability_discovery,
-                mcp,
-                tool_router,
-                extension_data,
-            ))
+            Ok::<_, CodexErr>((mcp, tool_router, extension_data))
         });
         // Returned warnings must finish delivery even if tools fail or preparation is cancelled.
         let (loaded_agents_md, prepared_tools) =
@@ -2325,13 +2241,7 @@ impl Session {
         if cancellation_token.is_cancelled() {
             return Err(CodexErr::TurnAborted);
         }
-        let (
-            selected_capability_roots,
-            executor_capability_discovery,
-            mcp,
-            tool_router,
-            extension_data,
-        ) = prepared_tools??;
+        let (mcp, tool_router, extension_data) = prepared_tools??;
         Ok(Arc::new(StepContext {
             preempt: turn_context
                 .config
@@ -2343,8 +2253,6 @@ impl Session {
             session_telemetry,
             turn: turn_context,
             environments,
-            selected_capability_roots,
-            executor_capability_discovery,
             extension_data,
             mcp,
             tool_router,
@@ -2719,7 +2627,6 @@ impl Session {
                     .latest_call_tool(
                         "notes",
                         "thread_hint",
-                        /*environment_id*/ None,
                         /*arguments*/ None,
                         Some(serde_json::json!({
                             "threadId": self.thread_id().to_string(),

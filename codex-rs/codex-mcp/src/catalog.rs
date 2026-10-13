@@ -3,11 +3,9 @@ use std::collections::BTreeSet;
 use std::collections::HashMap;
 
 use codex_config::McpServerConfig;
-use codex_config::McpServerDisabledReason;
 use codex_config::McpServerIdpOAuthConfig;
 
 use crate::McpProtocolMode;
-use crate::server::McpCredentialPolicy;
 
 /// The component that declared an MCP server registration.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -34,7 +32,6 @@ pub struct McpServerRegistration {
     name: String,
     source: McpServerSource,
     config: McpServerConfig,
-    credential_policy: McpCredentialPolicy,
     protocol_mode: Option<McpProtocolMode>,
     precedence: RegistrationPrecedence,
 }
@@ -47,19 +44,6 @@ impl McpServerRegistration {
             McpServerSource::Config,
             config,
             RegistrationPrecedence::Config,
-            McpCredentialPolicy::HostFallbackAllowed,
-        )
-    }
-
-    /// Registers executor-discovered configuration without authority to read
-    /// host environment credentials.
-    pub fn from_executor_config(name: String, config: McpServerConfig) -> Self {
-        Self::new(
-            name,
-            McpServerSource::Config,
-            config,
-            RegistrationPrecedence::Config,
-            McpCredentialPolicy::ExecutorOnly,
         )
     }
 
@@ -68,26 +52,15 @@ impl McpServerRegistration {
         source: McpServerSource,
         config: McpServerConfig,
         precedence: RegistrationPrecedence,
-        credential_policy: McpCredentialPolicy,
     ) -> Self {
         Self {
             name,
             source,
             config,
-            credential_policy,
             protocol_mode: None,
             precedence,
         }
     }
-}
-
-/// The authority available for MCP servers running in one environment.
-#[derive(Clone, Copy, Debug)]
-pub enum McpEnvironmentAuthority {
-    /// The selected environment can run every registered server.
-    Unrestricted,
-    /// The attachment is pending or failed, so its owner policy is not available.
-    Unavailable,
 }
 
 /// One side of an MCP server conflict, including whether it registers or
@@ -157,30 +130,6 @@ impl McpCatalogBuilder {
         self.disabled_server_names.insert(name);
     }
 
-    /// Applies environment authority before resolving immutable server registrations.
-    pub fn build_with_environment_authority(
-        mut self,
-        mut authority_for_environment: impl FnMut(&str) -> McpEnvironmentAuthority,
-    ) -> ResolvedMcpCatalog {
-        for CatalogAction::Register(registration) in &mut self.actions {
-            // Already-disabled servers are not attachment-owned.
-            if !registration.config.enabled {
-                continue;
-            }
-
-            let allowed = match authority_for_environment(&registration.config.environment_id) {
-                McpEnvironmentAuthority::Unrestricted => true,
-                McpEnvironmentAuthority::Unavailable => false,
-            };
-
-            if !allowed {
-                registration.config.enabled = false;
-                registration.config.disabled_reason = Some(McpServerDisabledReason::Unknown);
-            }
-        }
-        self.build()
-    }
-
     pub fn build(mut self) -> ResolvedMcpCatalog {
         // Keep source actions unbound so later catalog revisions resolve afresh.
         for action in &mut self.actions {
@@ -248,7 +197,6 @@ impl McpCatalogBuilder {
                     ResolvedMcpServer {
                         source: registration.source,
                         config: registration.config,
-                        credential_policy: registration.credential_policy,
                         protocol_mode: registration.protocol_mode,
                     },
                 )
@@ -270,7 +218,6 @@ impl McpCatalogBuilder {
 pub struct ResolvedMcpServer {
     source: McpServerSource,
     config: McpServerConfig,
-    credential_policy: McpCredentialPolicy,
     protocol_mode: Option<McpProtocolMode>,
 }
 
@@ -281,10 +228,6 @@ impl ResolvedMcpServer {
 
     pub fn config(&self) -> &McpServerConfig {
         &self.config
-    }
-
-    pub(crate) fn credential_policy(&self) -> McpCredentialPolicy {
-        self.credential_policy
     }
 
     pub fn protocol_mode(&self) -> Option<McpProtocolMode> {
@@ -353,9 +296,7 @@ impl ResolvedMcpCatalog {
             let precedence = match &source {
                 McpServerSource::Config => RegistrationPrecedence::Config,
             };
-            let credential_policy = previous.credential_policy();
-            let mut registration =
-                McpServerRegistration::new(name, source, config, precedence, credential_policy);
+            let mut registration = McpServerRegistration::new(name, source, config, precedence);
             registration.protocol_mode = previous.protocol_mode();
             builder.register(registration);
         }

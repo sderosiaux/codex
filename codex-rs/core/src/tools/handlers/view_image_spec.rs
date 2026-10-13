@@ -10,7 +10,6 @@ use std::collections::BTreeMap;
 pub struct ViewImageToolOptions {
     pub can_request_original_image_detail: bool,
     pub unified_image_budget: bool,
-    pub include_environment_id: bool,
 }
 
 pub fn create_view_image_tool(options: ViewImageToolOptions) -> ToolSpec {
@@ -27,15 +26,6 @@ pub fn create_view_image_tool(options: ViewImageToolOptions) -> ToolSpec {
                     "Image detail level. Defaults to `high`; use `original` to preserve exact resolution.".to_string(),
                 ),
             ),
-        );
-    }
-    if options.include_environment_id {
-        properties.insert(
-            "environment_id".to_string(),
-            JsonSchema::string(Some(
-                "Environment id from <environment_context>. Omit to use the primary environment."
-                    .to_string(),
-            )),
         );
     }
 

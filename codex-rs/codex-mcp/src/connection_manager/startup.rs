@@ -22,9 +22,7 @@ pub(super) fn chatgpt_auth_provider_for_server(
     server: &EffectiveMcpServer,
     chatgpt_auth_provider: Option<SharedAuthProvider>,
 ) -> Option<SharedAuthProvider> {
-    if !matches!(&server.config().auth, McpServerAuth::ChatGpt)
-        || !server.config().is_local_environment()
-    {
+    if !matches!(&server.config().auth, McpServerAuth::ChatGpt) {
         return None;
     }
     chatgpt_auth_provider
@@ -93,11 +91,7 @@ pub(super) fn mcp_init_error_display(
             "GitHub MCP does not support OAuth. Log in by adding a personal access token (https://github.com/settings/personal-access-tokens) to your environment and config.toml:\n[mcp_servers.{server_key}]\nbearer_token_env_var = CODEX_GITHUB_PERSONAL_ACCESS_TOKEN"
         )
     } else if error.is_authentication_required() {
-        let recovery_hint = if config.is_some_and(|config| !config.is_local_environment()) {
-            "Use your client's MCP OAuth sign-in flow.".to_string()
-        } else {
-            format!("Run `codex mcp login {server_name}`.")
-        };
+        let recovery_hint = format!("Run `codex mcp login {server_name}`.");
         let auth_status = match reason {
             Some(McpStartupFailureReason::ReauthenticationRequired) => {
                 "requires OAuth reauthentication"

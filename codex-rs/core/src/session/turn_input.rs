@@ -96,10 +96,7 @@ impl PreparedTurnInputSettings {
         {
             None
         } else {
-            let updates = thread_settings::prepare_update(
-                thread_settings,
-                &session.services.selected_capability_roots,
-            );
+            let updates = thread_settings::prepare_update(thread_settings);
             session
                 .preview_settings(&updates)
                 .await
@@ -268,42 +265,6 @@ pub(super) async fn handle(
         TurnInputSubmission::Started { turn_id, .. } | TurnInputSubmission::Steered { turn_id, .. },
     ) = &result
     {
-        tracing::Span::current().record("turn.id", turn_id);
-    }
-    result
-}
-
-#[tracing::instrument(
-    name = "codex.turn_input",
-    level = "trace",
-    skip_all,
-    fields(conversation.id = %session.thread_id, turn.id)
-)]
-pub(super) async fn handle_recovery(
-    session: &Arc<Session>,
-    thread_settings: impl Into<WithTurnExtensionData<ThreadSettingsOverrides>>,
-    start_options: TurnStartOptions,
-    submission_id: String,
-) -> CodexResult<TurnInputSubmission> {
-    let WithTurnExtensionData {
-        request: thread_settings,
-        turn_extension_init,
-    } = thread_settings.into();
-    let request = TurnInputRequest::user_input(Vec::new())
-        .with_thread_settings(thread_settings)
-        .on_start(start_options);
-    let result = start_if_idle(
-        session,
-        WithTurnExtensionData {
-            request,
-            turn_extension_init,
-        },
-        submission_id,
-        TurnStartKind::Recovery,
-        /*expected_previous_turn_id*/ None,
-    )
-    .await;
-    if let Ok(TurnInputSubmission::Started { turn_id, .. }) = &result {
         tracing::Span::current().record("turn.id", turn_id);
     }
     result

@@ -33,7 +33,6 @@ use codex_protocol::mcp::ResourceTemplate;
 use codex_protocol::mcp::Tool;
 use codex_protocol::protocol::McpAuthStatus;
 use codex_rmcp_client::McpOAuthRefreshMode;
-use codex_utils_path_uri::PathUri;
 use rmcp::model::ElicitationCapability;
 use rmcp::model::ReadResourceRequestParams;
 use rmcp::model::ReadResourceResult;
@@ -104,8 +103,6 @@ pub struct McpConfig {
     pub optional_mcp_startup_grace: Duration,
     /// Whether skill MCP dependency installation prompts are enabled.
     pub skill_mcp_dependency_install_enabled: bool,
-    /// Working directories for the exact environment handles used by this runtime.
-    pub environment_cwds: HashMap<String, PathUri>,
     /// Whether model-visible MCP tool namespaces should keep the legacy
     /// `mcp__` prefix.
     pub prefix_mcp_tool_names: bool,
@@ -177,14 +174,6 @@ pub fn effective_mcp_servers_from_configured(
     configured_servers
         .into_iter()
         .map(|(name, mut server)| {
-            #[expect(
-                clippy::expect_used,
-                reason = "materialized servers must have catalog registrations"
-            )]
-            let registration = config
-                .mcp_server_catalog
-                .server(&name)
-                .expect("materialized MCP server must have a catalog registration");
             match server.auth.clone() {
                 McpServerAuth::ChatGpt => {
                     if !is_trusted_chatgpt_mcp_server(&server.transport, &config.chatgpt_base_url) {
@@ -193,13 +182,7 @@ pub fn effective_mcp_servers_from_configured(
                 }
                 McpServerAuth::OAuth | McpServerAuth::EmaAuth => {}
             }
-            (
-                name,
-                EffectiveMcpServer::from_config_with_policy(
-                    server,
-                    registration.credential_policy(),
-                ),
-            )
+            (name, EffectiveMcpServer::from_host_config(server))
         })
         .collect::<HashMap<_, _>>()
 }

@@ -11,7 +11,6 @@ use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
 use anyhow::bail;
-use codex_exec_server::Environment;
 use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ShellEnvironmentPolicy;
@@ -69,16 +68,11 @@ impl ShellSnapshot {
 
     pub(crate) async fn build(
         self,
-        environment: Arc<Environment>,
         cwd: PathUri,
         shell: Option<Shell>,
         shell_environment_policy: ShellEnvironmentPolicy,
     ) -> Option<Arc<ShellSnapshotFile>> {
         let config = Arc::clone(self.config.as_ref()?);
-        if environment.is_remote() {
-            return None;
-        }
-
         let shell = shell?;
         // TODO(anp): Migrate shell snapshot creation to accept PathUri and defer native
         // conversion to the spawned shell process.

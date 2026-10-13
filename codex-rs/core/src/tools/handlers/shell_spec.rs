@@ -10,9 +10,8 @@ pub struct CommandToolOptions {
     pub include_login_parameter: bool,
 }
 
-pub(crate) fn create_exec_command_tool_with_environment_id(
+pub(crate) fn create_exec_command_tool(
     options: CommandToolOptions,
-    include_environment_id: bool,
     include_shell_parameter: bool,
     include_windows_shell_guidance: bool,
 ) -> ToolSpec {
@@ -64,15 +63,6 @@ pub(crate) fn create_exec_command_tool_with_environment_id(
             "login".to_string(),
             JsonSchema::boolean(Some(
                 "True runs the shell with -l/-i semantics; false disables them. Defaults to true."
-                    .to_string(),
-            )),
-        );
-    }
-    if include_environment_id {
-        properties.insert(
-            "environment_id".to_string(),
-            JsonSchema::string(Some(
-                "Environment id from <environment_context>. Omit to use the primary environment."
                     .to_string(),
             )),
         );

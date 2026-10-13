@@ -14,7 +14,6 @@ use std::sync::Arc;
 use anyhow::Context;
 use anyhow::bail;
 use clap::Parser;
-use clap::Subcommand;
 use codex_core_api::Arg0DispatchPaths;
 use codex_core_api::AuthManager;
 use codex_core_api::CodexHomeUserInstructionsProvider;
@@ -22,18 +21,14 @@ use codex_core_api::CodexThread;
 use codex_core_api::Config;
 use codex_core_api::ConfigBuilder;
 use codex_core_api::ConfigOverrides;
-use codex_core_api::DEFAULT_EXEC_SERVER_LISTEN_URL;
 use codex_core_api::DynamicToolResponse;
 use codex_core_api::EnvironmentManager;
 use codex_core_api::Event;
 use codex_core_api::EventMsg;
-use codex_core_api::ExecutorSkillProvider;
 use codex_core_api::ExtensionRegistryBuilder;
 use codex_core_api::HostSkillProvider;
-use codex_core_api::HttpClientFactory;
 use codex_core_api::NewThread;
 use codex_core_api::Op;
-use codex_core_api::OutboundProxyPolicy;
 use codex_core_api::SessionSource;
 use codex_core_api::SkillProviders;
 use codex_core_api::SkillsExtensionConfig;
@@ -49,7 +44,6 @@ use codex_core_api::install_image_generation_extension;
 use codex_core_api::install_skills_extension;
 use codex_core_api::install_web_search_extension;
 use codex_core_api::resolve_installation_id;
-use codex_core_api::run_exec_server;
 use codex_core_api::set_default_originator;
 use tokio::sync::mpsc;
 use tracing_subscriber::EnvFilter;
@@ -60,14 +54,9 @@ use crate::render::HumanRenderer;
 #[derive(Debug, Parser)]
 #[command(
     name = "codex",
-    about = "Run the Codex agent loop. Commands execute directly on this machine, unsandboxed.",
-    subcommand_negates_reqs = true,
-    args_conflicts_with_subcommands = true
+    about = "Run the Codex agent loop. Commands execute directly on this machine, unsandboxed."
 )]
 struct Cli {
-    #[command(subcommand)]
-    command: Option<Command>,
-
     /// Model to use instead of the configured default.
     #[arg(long, short = 'm', value_name = "MODEL")]
     model: Option<String>,
@@ -95,16 +84,6 @@ struct Cli {
     prompt: Vec<String>,
 }
 
-#[derive(Debug, Subcommand)]
-enum Command {
-    /// Serve this machine as a remote execution environment for another Codex.
-    ExecServer {
-        /// `ws://IP:PORT` to listen on; the bound URL is printed on stdout.
-        #[arg(long, value_name = "URL", default_value = DEFAULT_EXEC_SERVER_LISTEN_URL)]
-        listen: String,
-    },
-}
-
 /// What the run needs from the user after startup.
 enum Mode {
     /// One turn, then exit. Requests for input are declined.
@@ -129,15 +108,6 @@ async fn run_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
     }
 
     let cli = Cli::parse();
-    if let Some(Command::ExecServer { listen }) = cli.command {
-        return run_exec_server(
-            &listen,
-            HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
-        )
-        .await
-        .map_err(|err| anyhow::anyhow!("exec-server failed: {err}"));
-    }
-
     let mode = if !cli.prompt.is_empty() {
         Mode::OneShot(cli.prompt.join(" "))
     } else if std::io::stdin().is_terminal() {
@@ -212,13 +182,7 @@ impl Host {
     async fn start(config: &Config) -> anyhow::Result<Self> {
         let auth_manager =
             AuthManager::shared_from_config(config, /*enable_codex_api_key_env*/ true).await?;
-        let environment_manager = Arc::new(
-            EnvironmentManager::from_codex_home(
-                config.codex_home.clone(),
-                config.http_client_factory(),
-            )
-            .await?,
-        );
+        let environment_manager = Arc::new(EnvironmentManager::new(config.http_client_factory()));
         let installation_id = resolve_installation_id(&config.codex_home).await?;
         let user_instructions_provider = Arc::new(CodexHomeUserInstructionsProvider::new(
             config.codex_home.clone(),
@@ -236,19 +200,11 @@ impl Host {
             );
             install_skills_extension(
                 &mut extensions,
-                SkillProviders::new()
-                    .with_executor_provider(Arc::new(
-                        ExecutorSkillProvider::new_with_restriction_product(
-                            Arc::clone(&environment_manager),
-                            session_source.restriction_product(),
-                        ),
-                    ))
-                    .with_host_provider(Arc::new(HostSkillProvider::new())),
+                SkillProviders::new().with_host_provider(Arc::new(HostSkillProvider::new())),
                 |config: &Config| SkillsExtensionConfig {
                     include_instructions: config.include_skill_instructions,
                     max_context_tokens: config.skill_max_context_tokens,
                     bundled_skills_enabled: config.bundled_skills_enabled(),
-                    shadow_selection_enabled: false,
                 },
             );
             ThreadManager::new(

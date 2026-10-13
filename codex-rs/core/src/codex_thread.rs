@@ -11,7 +11,6 @@ use crate::session::step_settings::StepSettingsUpdate;
 use crate::thread_startup_metadata::ThreadStartupMetadata;
 use codex_diagnostics::Gauge;
 use codex_diagnostics::GaugeGuard;
-use codex_exec_server::SelectedCapabilityRootsStatus;
 use codex_extension_api::ConversationHistorySnapshot;
 use codex_extension_api::ThreadIdleCause;
 use codex_features::Feature;
@@ -26,8 +25,6 @@ use codex_protocol::mcp::CallToolResult;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
-use codex_protocol::protocol::EnvironmentConfig;
-use codex_protocol::protocol::EnvironmentConfigState;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::Op;
@@ -37,17 +34,14 @@ use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::protocol::ThreadSettingsSnapshot;
 use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TokenUsageInfo;
-use codex_protocol::protocol::TurnEnvironmentRequests;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::protocol::TurnEnvironmentSelections;
 use codex_protocol::protocol::W3cTraceContext;
-use codex_protocol::turn_input::RecoverTurnRequest;
 use codex_protocol::turn_input::StartIfIdleSubmission;
 use codex_protocol::turn_input::SteerSubmission;
 use codex_protocol::turn_input::TurnInputMode;
 use codex_protocol::turn_input::TurnInputRequest;
 use codex_protocol::turn_input::TurnInputSubmission;
-use codex_protocol::turn_input::TurnStartOptions;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::LegacyAppPathString;
 use codex_utils_path_uri::PathUri;
@@ -91,18 +85,6 @@ impl ThreadConfigSnapshot {
     pub fn environment_selections(&self) -> &[TurnEnvironmentSelection] {
         &self.environments.environments
     }
-
-    /// Whether the primary environment has resolved configuration, if one is selected.
-    pub fn is_primary_environment_configured(&self) -> bool {
-        self.environment_selections()
-            .first()
-            .is_none_or(|selection| {
-                matches!(
-                    selection.config,
-                    EnvironmentConfigState::FromThread | EnvironmentConfigState::Ready(_)
-                )
-            })
-    }
 }
 
 /// Thread settings overrides that app-server validates before starting a turn.
@@ -110,7 +92,7 @@ impl ThreadConfigSnapshot {
 pub struct CodexThreadSettingsOverrides {
     /// Replaces the data captured by future turns. Omission preserves it.
     pub turn_extension_init: Option<codex_extension_api::ExtensionDataInit>,
-    pub environments: Option<TurnEnvironmentRequests>,
+    pub environments: Option<TurnEnvironmentSelections>,
     pub runtime_workspace_roots: Option<Vec<AbsolutePathBuf>>,
     pub model: Option<String>,
     pub effort: Option<Option<ReasoningEffort>>,
@@ -358,57 +340,6 @@ impl CodexThread {
         .await
     }
 
-    /// Resumes an interrupted regular turn only when the thread is idle.
-    ///
-    /// Recovery starts no new user input and preserves the turn ID that was
-    /// already recorded for the interrupted turn.
-    pub async fn recover_turn_if_idle(
-        &self,
-        request: impl Into<WithTurnExtensionData<RecoverTurnRequest>>,
-    ) -> CodexResult<StartIfIdleSubmission> {
-        self.ensure_execution_capacity_for_turn_start(self.session.services.agent_control.as_ref())
-            .await?;
-        let WithTurnExtensionData {
-            request,
-            turn_extension_init,
-        } = request.into();
-        let RecoverTurnRequest {
-            turn_id,
-            thread_settings,
-            trace,
-            cyber_access_program,
-        } = request;
-        let start_options = TurnStartOptions {
-            cyber_access_program,
-            ..self.session.recovered_turn_start_options(&turn_id).await
-        };
-        match self
-            .io
-            .submit_recover_turn(
-                thread_settings,
-                start_options,
-                trace,
-                turn_id,
-                turn_extension_init,
-            )
-            .await?
-        {
-            TurnInputSubmission::Started {
-                turn_id,
-                root_turn_id,
-            } => Ok(StartIfIdleSubmission::Started {
-                turn_id,
-                root_turn_id,
-            }),
-            TurnInputSubmission::NotSubmitted { reason } => {
-                Ok(StartIfIdleSubmission::NotSubmitted { reason })
-            }
-            TurnInputSubmission::Steered { .. } => {
-                unreachable!("recovered turn submission cannot steer")
-            }
-        }
-    }
-
     /// Steers only if `expected_turn_id` is still the active regular turn.
     pub async fn steer_turn(
         &self,
@@ -465,7 +396,7 @@ impl CodexThread {
     ) -> Option<Vec<TurnEnvironmentSelection>> {
         let active = self.session.active_turn.lock().await;
         let task = active.as_ref()?.task.as_ref()?;
-        Some(task.turn_context.initial_environments.all_selections())
+        Some(task.turn_context.initial_environments.selections())
     }
 
     /// Returns the named running turn's current selections, including environments that are
@@ -480,13 +411,6 @@ impl CodexThread {
             return None;
         }
         Some(self.session.services.turn_environments.selections())
-    }
-
-    /// Captures a regular turn only after its input is recorded. The caller must flush the rollout.
-    pub async fn interrupted_turn(
-        &self,
-    ) -> Option<(String, TurnStartOptions, TurnEnvironmentSelection)> {
-        self.session.interrupted_turn().await
     }
 
     /// Returns the trusted root when the expected turn is currently active.
@@ -564,7 +488,7 @@ impl CodexThread {
     ) -> SessionSettingsUpdate {
         let CodexThreadSettingsOverrides {
             turn_extension_init,
-            environments: environment_requests,
+            environments,
             runtime_workspace_roots,
             model,
             effort,
@@ -583,8 +507,7 @@ impl CodexThread {
                 service_tier,
                 personality,
             },
-            environments: environment_requests
-                .map(|requests| requests.select(&self.session.services.selected_capability_roots)),
+            environments,
             runtime_workspace_roots,
             ..Default::default()
         }
@@ -816,29 +739,6 @@ impl CodexThread {
         self.session.configured_environment_selections().await
     }
 
-    /// Installs resolved environment configuration and capability roots on this thread.
-    pub async fn environment_ready(
-        &self,
-        selection: &TurnEnvironmentSelection,
-        config: EnvironmentConfig,
-    ) -> CodexResult<()> {
-        self.session.environment_ready(selection, config).await
-    }
-
-    /// Fails this thread's pending environment without affecting other attached threads.
-    pub async fn environment_failed(
-        &self,
-        selection: &TurnEnvironmentSelection,
-        error: String,
-    ) -> CodexResult<()> {
-        self.session.environment_failed(selection, error).await
-    }
-
-    /// Passively inspects the selected capability roots whose environments are ready now.
-    pub fn inspect_selected_capability_roots(&self) -> SelectedCapabilityRootsStatus {
-        self.session.inspect_selected_capability_roots()
-    }
-
     pub async fn read_mcp_resource(
         &self,
         server: &str,
@@ -885,8 +785,8 @@ impl CodexThread {
             .services
             .mcp_runtime
             .latest_call_tool(
-                server, tool, /*environment_id*/ None, arguments, meta,
-                /*requested_timeout*/ None, /*wait_for_server*/ true,
+                server, tool, arguments, meta, /*requested_timeout*/ None,
+                /*wait_for_server*/ true,
             )
             .await
     }

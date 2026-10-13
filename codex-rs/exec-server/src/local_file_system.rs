@@ -50,14 +50,6 @@ impl LocalFileSystem {
     pub fn new() -> Self {
         Self
     }
-
-    pub(crate) async fn open_file(
-        &self,
-        path: &PathUri,
-        mode: FsOpenMode,
-    ) -> FileSystemResult<tokio::fs::File> {
-        regular_file::open(path.to_abs_path()?.as_path(), mode).await
-    }
 }
 
 impl LocalFileSystem {

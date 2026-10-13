@@ -60,7 +60,6 @@ pub use tool_call::ToolCall;
 pub use tool_call::ToolEnvironment;
 pub use tool_call::TurnItemEmissionFuture;
 pub use tool_call::TurnItemEmitter;
-pub use tool_config::ToolEnvironmentMode;
 pub use tool_config::request_user_input_available_modes;
 pub use tool_definition::ToolDefinition;
 pub use tool_discovery::TOOL_SEARCH_DEFAULT_LIMIT;

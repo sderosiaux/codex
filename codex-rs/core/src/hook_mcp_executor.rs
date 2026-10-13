@@ -28,7 +28,6 @@ impl HookMcpExecutor for CoreHookMcpExecutor {
                 .latest_call_tool(
                     &call.server,
                     &call.tool,
-                    /*environment_id*/ None,
                     Some(Value::Object(call.input)),
                     Some(Value::Object(metadata)),
                     Some(call.timeout),

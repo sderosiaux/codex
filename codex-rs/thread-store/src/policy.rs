@@ -151,8 +151,6 @@ fn persisted_event_msg(
         | EventMsg::RawResponseItem(_)
         | EventMsg::RawResponseCompleted(_)
         | EventMsg::SessionConfigured(_)
-        | EventMsg::EnvironmentConnected(_)
-        | EventMsg::EnvironmentDisconnected(_)
         | EventMsg::McpToolCallBegin(_)
         | EventMsg::ExecCommandBegin(_)
         | EventMsg::TerminalInteraction(_)

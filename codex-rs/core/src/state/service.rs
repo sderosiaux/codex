@@ -21,7 +21,6 @@ use codex_login::AuthManager;
 use codex_mcp::McpRuntime;
 use codex_models_manager::manager::SharedModelsManager;
 use codex_otel::SessionTelemetry;
-use codex_protocol::capabilities::SelectedCapabilityRoot;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_skills_extension::HostSkillsService;
 use codex_thread_store::LiveThread;
@@ -54,7 +53,6 @@ pub(crate) struct SessionServices {
     pub(crate) client_mcp_extensions: ClientMcpExtensions,
     /// Roots supplied when the thread started or loaded from saved history.
     /// Keep roots for unselected environments so selecting them again restores their capabilities.
-    pub(crate) selected_capability_roots: Vec<SelectedCapabilityRoot>,
     pub(crate) agent_control: Arc<dyn AgentControl>,
     pub(crate) local_agent_runtime: LocalAgentRuntime,
     pub(crate) live_thread: Option<LiveThread>,

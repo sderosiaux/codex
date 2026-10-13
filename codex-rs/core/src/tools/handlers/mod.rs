@@ -29,9 +29,7 @@ pub(crate) mod tool_search_spec;
 pub(crate) mod unified_exec;
 mod view_image;
 pub(crate) mod view_image_spec;
-mod wait_for_environment;
 
-use codex_features::Feature;
 use serde::Deserialize;
 use serde_json::Map;
 use serde_json::Value;
@@ -59,8 +57,6 @@ pub use unified_exec::ExecCommandHandler;
 pub(crate) use unified_exec::ExecCommandHandlerOptions;
 pub use unified_exec::WriteStdinHandler;
 pub use view_image::ViewImageHandler;
-pub(crate) use wait_for_environment::WaitForEnvironmentHandler;
-pub use wait_for_environment::WaitForEnvironmentToolConfig;
 
 pub(crate) fn parse_arguments<T>(arguments: &str) -> Result<T, FunctionCallError>
 where
@@ -114,38 +110,10 @@ fn rewrite_function_string_argument(
 
 fn resolve_tool_environment<'a>(
     step_context: &'a StepContext,
-    environment_id: Option<&str>,
-    legacy_unavailable_message: &'static str,
+    unavailable_message: &'static str,
 ) -> Result<&'a TurnEnvironment, FunctionCallError> {
-    let environments = &step_context.environments;
-    let stable_environment_tools = step_context
-        .turn
-        .config
-        .features
-        .enabled(Feature::StableEnvironmentTools);
-    environment_id.map_or_else(
-        || environments.primary(),
-        |environment_id| {
-            environments
-                .turn_environments()
-                .find(|environment| environment.selection.environment_id == environment_id)
-        },
-    ).ok_or_else(|| {
-        if let Some(environment_id) = environment_id
-            && (!stable_environment_tools
-                || !environments
-                    .all_selections()
-                    .iter()
-                    .any(|selection| selection.environment_id == environment_id))
-        {
-            return FunctionCallError::RespondToModel(format!(
-                "unknown turn environment id `{environment_id}`"
-            ));
-        }
-        FunctionCallError::RespondToModel(if stable_environment_tools {
-            "No usable execution environment is available. Wait for an environment to become available before using this tool.".to_string()
-        } else {
-            legacy_unavailable_message.to_string()
-        })
-    })
+    step_context
+        .environments
+        .primary()
+        .ok_or_else(|| FunctionCallError::RespondToModel(unavailable_message.to_string()))
 }

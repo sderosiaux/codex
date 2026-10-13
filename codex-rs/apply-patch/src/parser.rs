@@ -3,9 +3,8 @@
 //!
 //! The official Lark grammar for the apply-patch format is:
 //!
-//! start: begin_patch environment_id? hunk+ end_patch
+//! start: begin_patch hunk+ end_patch
 //! begin_patch: "*** Begin Patch" LF
-//! environment_id: "*** Environment ID: " filename LF
 //! end_patch: "*** End Patch" LF?
 //!
 //! hunk: add_hunk | delete_hunk | update_hunk
@@ -196,12 +195,10 @@ fn parse_patch_text(patch: &str, mode: ParseMode) -> Result<ApplyPatchArgs, Pars
     let mut parser = StreamingPatchParser::default();
     parser.push_delta(&patch)?;
     let hunks = parser.finish()?;
-    let environment_id = parser.environment_id().map(str::to_owned);
     Ok(ApplyPatchArgs {
         hunks,
         patch,
         workdir: None,
-        environment_id,
     })
 }
 

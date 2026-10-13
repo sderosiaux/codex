@@ -18,7 +18,7 @@ use crate::codex_thread::CodexThread;
 use crate::config::Config;
 use crate::current_time::TimeProvider;
 use crate::environment_selection::TurnEnvironmentSnapshot;
-use crate::environment_selection::default_thread_environment_requests;
+use crate::environment_selection::default_thread_environment_selections;
 use crate::mcp::McpManager;
 use crate::session::GitEnrichmentPolicy;
 use crate::session::INITIAL_SUBMIT_ID;
@@ -66,14 +66,12 @@ use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
-use codex_protocol::protocol::TurnEnvironmentRequest;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::protocol::W3cTraceContext;
 use codex_skills_extension::HostSkillsService;
 use codex_thread_store::StoredThread;
 use codex_thread_store::ThreadStore;
 use codex_thread_store::ThreadStoreError;
-use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_git_discovery::GitRootDiscovery;
 use futures::StreamExt;
 use futures::future::BoxFuture;
@@ -149,7 +147,7 @@ pub struct StartThreadOptions {
     pub dynamic_tools: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
     pub metrics_service_name: Option<String>,
     pub parent_trace: Option<W3cTraceContext>,
-    pub environments: Option<Vec<TurnEnvironmentRequest>>,
+    pub environments: Option<Vec<TurnEnvironmentSelection>>,
     /// Existing environment bindings captured by an internal caller.
     pub inherited_environments: Option<TurnEnvironmentSnapshot>,
     /// Explicit global instructions carried by an internal caller instead of loading them again.
@@ -449,18 +447,6 @@ impl ThreadManager {
             runtime.store(true, Ordering::Release);
             true
         });
-    }
-
-    pub fn default_environment_requests(
-        &self,
-        cwd: &AbsolutePathBuf,
-        workspace_roots: &[AbsolutePathBuf],
-    ) -> Vec<TurnEnvironmentRequest> {
-        default_thread_environment_requests(
-            self.state.environment_manager.as_ref(),
-            cwd,
-            workspace_roots,
-        )
     }
 
     pub fn get_models_manager(&self) -> SharedModelsManager {
@@ -951,12 +937,7 @@ impl ThreadManagerState {
             initial_history,
             session_source: Some(session_source),
             thread_source,
-            environments: environment_selections.map(|selections| {
-                selections
-                    .into_iter()
-                    .map(TurnEnvironmentSelection::into_request)
-                    .collect()
-            }),
+            environments: environment_selections,
             client_mcp_extensions,
             ..StartThreadOptions::new(config)
         };
@@ -1032,7 +1013,7 @@ impl ThreadManagerState {
             dynamic_tools,
             metrics_service_name,
             parent_trace,
-            environments: environment_requests,
+            environments: environment_selections,
             inherited_environments: captured_environments,
             user_instructions: supplied_user_instructions,
             mut thread_extension_init,
@@ -1047,26 +1028,18 @@ impl ThreadManagerState {
             .map(|policy| *policy)
             .unwrap_or(codex_extension_api::SessionIsolation::Inherit);
         thread_extension_init.insert(isolation);
-        let environment_requests = environment_requests
+        let environment_selections = environment_selections
             .or_else(|| {
                 let SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. }) = &session_source
                 else {
                     return None;
                 };
-                inherited_environments.as_ref().map(|snapshot| {
-                    snapshot
-                        .inheritable_selections()
-                        .into_iter()
-                        .map(TurnEnvironmentSelection::into_request)
-                        .collect()
-                })
+                inherited_environments
+                    .as_ref()
+                    .map(TurnEnvironmentSnapshot::selections)
             })
             .unwrap_or_else(|| {
-                default_thread_environment_requests(
-                    self.environment_manager.as_ref(),
-                    &config.cwd,
-                    &config.workspace_roots,
-                )
+                default_thread_environment_selections(&config.cwd, &config.workspace_roots)
             });
         let is_resumed_thread = matches!(&initial_history, InitialHistory::Resumed(_));
         if reserved_thread_id.is_some() && matches!(&initial_history, InitialHistory::Resumed(_)) {
@@ -1213,7 +1186,7 @@ impl ThreadManagerState {
             inherited_environments,
             user_shell_override,
             parent_trace,
-            environment_requests,
+            environment_selections,
             thread_extension_init,
             turn_extension_init,
             client_mcp_extensions,

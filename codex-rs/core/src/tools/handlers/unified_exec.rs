@@ -34,8 +34,6 @@ pub(crate) struct ExecCommandArgs {
 
 #[derive(Debug, Deserialize)]
 struct ExecCommandEnvironmentArgs {
-    #[serde(default)]
-    environment_id: Option<String>,
     // Keep this raw until after environment selection; relative paths must be
     // resolved against the selected environment cwd, not the process cwd.
     #[serde(default)]

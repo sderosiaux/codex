@@ -355,24 +355,6 @@ pub(super) async fn submission_loop(
                     let _ = reply.send(result);
                     false
                 }
-                Op::RecoverTurn {
-                    thread_settings,
-                    start_options,
-                    reply,
-                } => {
-                    let result = turn_input::handle_recovery(
-                        &sess,
-                        WithTurnExtensionData {
-                            request: thread_settings,
-                            turn_extension_init: sub.turn_extension_init,
-                        },
-                        start_options,
-                        sub.id.clone(),
-                    )
-                    .await;
-                    let _ = reply.send(result);
-                    false
-                }
                 Op::ThreadSettings {
                     thread_settings,
                     reply,

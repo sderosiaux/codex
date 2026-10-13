@@ -53,7 +53,6 @@ use rmcp::model::ServerPeerInfo;
 use rmcp::model::ServerResult;
 use rmcp::service::ClientCacheConfig;
 use rmcp::service::ClientServiceExt;
-use rmcp::service::RequestHandle;
 use rmcp::service::RoleClient;
 use rmcp::service::RunningService;
 use rmcp::service::ServiceError;
@@ -74,8 +73,6 @@ use tracing::instrument;
 use tracing::warn;
 
 use crate::elicitation_client_service::ElicitationClientService;
-use crate::event_notification_transport::capture_event_notifications;
-use crate::event_notification_transport::event_notification_channel;
 use crate::http_client_adapter::StreamableHttpClientAdapter;
 use crate::http_client_adapter::StreamableHttpClientAdapterError;
 use crate::http_client_adapter::StreamableHttpRedirectMode;
@@ -369,12 +366,6 @@ impl From<ElicitationResponse> for ElicitResult {
 pub type SendElicitation = Box<
     dyn Fn(RequestId, Elicitation) -> BoxFuture<'static, Result<ElicitationResponse>> + Send + Sync,
 >;
-
-/// An active Plugin Runtime event request and its request-scoped notifications.
-pub struct CancellableEventStreamRequest {
-    pub handle: RequestHandle<RoleClient>,
-    pub notifications: crate::EventNotificationReceiver,
-}
 
 /// MCP client implemented on top of the official `rmcp` SDK.
 /// https://github.com/modelcontextprotocol/rust-sdk
@@ -934,29 +925,6 @@ impl RmcpClient {
         Ok(response)
     }
 
-    /// Starts a Plugin Runtime event stream without waiting for its final response.
-    pub async fn send_event_stream_request(
-        &self,
-        params: Option<serde_json::Value>,
-    ) -> Result<CancellableEventStreamRequest> {
-        let service = self.service().await?;
-        let (sender, notifications) = event_notification_channel();
-        let mut request = crate::trace_context::traced_custom_request("events/stream", params);
-        request.extensions.insert(sender);
-        let handle = service
-            .peer()
-            .send_cancellable_request(
-                ClientRequest::CustomRequest(request),
-                rmcp::service::PeerRequestOptions::no_options(),
-            )
-            .await?;
-
-        Ok(CancellableEventStreamRequest {
-            handle,
-            notifications,
-        })
-    }
-
     async fn service(&self) -> Result<Arc<RunningService<RoleClient, ElicitationClientService>>> {
         let guard = self.state.lock().await;
         match &*guard {
@@ -1267,7 +1235,7 @@ impl RmcpClient {
             ),
             PendingTransport::StreamableHttp { transport } => (
                 client_service
-                    .serve_with_lifecycle(capture_event_notifications(transport), lifecycle)
+                    .serve_with_lifecycle(transport, lifecycle)
                     .boxed(),
                 None,
             ),

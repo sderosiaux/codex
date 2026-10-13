@@ -20,14 +20,8 @@ pub(super) enum DirectorySymlinkPolicy {
     Ignore,
 }
 
-pub(super) enum HiddenDirectoryPolicy {
-    Include,
-    Skip,
-}
-
 pub(super) struct SkillDiscoveryOptions {
     pub directory_symlinks: DirectorySymlinkPolicy,
-    pub hidden_directories: HiddenDirectoryPolicy,
 }
 
 pub(super) struct SkillDiscovery {
@@ -66,10 +60,7 @@ pub(super) async fn discover_skills(
                     options.directory_symlinks,
                     DirectorySymlinkPolicy::Follow
                 ),
-                prune_hidden_directories: matches!(
-                    options.hidden_directories,
-                    HiddenDirectoryPolicy::Skip
-                ),
+                prune_hidden_directories: true,
             },
         )
         .await
@@ -102,12 +93,11 @@ pub(super) async fn discover_skills(
         ));
     }
 
-    let skip_hidden = matches!(options.hidden_directories, HiddenDirectoryPolicy::Skip);
     let mut skill_files = Vec::new();
     let mut file_paths = HashSet::new();
     let mut metadata_directory_parents = HashSet::new();
     for entry in walk.entries {
-        if skip_hidden && has_hidden_ancestor_below_root(&entry.path, root) {
+        if has_hidden_ancestor_below_root(&entry.path, root) {
             continue;
         }
         match entry.kind {

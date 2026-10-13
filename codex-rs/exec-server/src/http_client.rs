@@ -1,21 +1,17 @@
-//! Route-aware local HTTP capability implementation.
-//!
-//! This code runs wherever the real network request should originate:
-//! - in a local environment, that means the orchestrator process
-//! - in a remote environment, that means the remote runtime after the
-//!   orchestrator has forwarded `http/request` over JSON-RPC
+//! Local HTTP capability: requests go out directly from this process through the
+//! shared route-aware transport.
 
+use std::pin::Pin;
 use std::time::Duration;
 
-use codex_exec_server_protocol::JSONRPCErrorError;
+use crate::rpc::HandlerError;
+use bytes::Bytes;
 use codex_http_client::ClientRouteClass;
 use codex_http_client::HttpClientFactory;
+use codex_http_client::HttpError;
+use codex_http_client::HttpResponse;
 use codex_http_client::RouteAwareClientPool;
 use codex_http_client::RouteAwareRequestError;
-use codex_protocol::shell_environment::CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR;
-use codex_protocol::shell_environment::OPENAI_FEDERATION_RULE_ID_ENV_VAR;
-use codex_protocol::shell_environment::OPENAI_IDENTITY_TOKEN_FILE_ENV_VAR;
-use codex_protocol::shell_environment::OPENAI_WORKLOAD_IDENTITY_CONTEXT_ENV_VAR;
 use futures::FutureExt;
 use futures::StreamExt;
 use futures::future::BoxFuture;
@@ -23,58 +19,95 @@ use http::HeaderMap;
 use http::HeaderName;
 use http::HeaderValue;
 use http::Method;
+use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 use url::Url;
 
-use super::HttpResponseBodyStream;
-use super::response_body_stream::send_body_delta;
-use crate::HttpClient;
-use crate::client::ExecServerError;
+use crate::ExecServerError;
 use crate::protocol::HttpHeader;
 use crate::protocol::HttpRedirectPolicy;
-use crate::protocol::HttpRequestBodyDeltaNotification;
 use crate::protocol::HttpRequestParams;
 use crate::protocol::HttpRequestResponse;
-use crate::protocol::MAX_HTTP_BODY_DELTA_BYTES;
-use crate::rpc::RpcNotificationSender;
 use crate::rpc::internal_error;
 use crate::rpc::invalid_params;
 
-const HTTP_HEADER_ENV_DENYLIST: &[&str] = &[
-    CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR,
-    OPENAI_FEDERATION_RULE_ID_ENV_VAR,
-    OPENAI_IDENTITY_TOKEN_FILE_ENV_VAR,
-    OPENAI_WORKLOAD_IDENTITY_CONTEXT_ENV_VAR,
-    "OPENAI_API_KEY",
-    "CODEX_GUARDIAN_DECISIONS_API_KEY",
-    "CODEX_API_KEY",
-    "CODEX_ACCESS_TOKEN",
-    "CODEX_CONNECTORS_TOKEN",
-    "AWS_ACCESS_KEY_ID",
-    "AWS_SECRET_ACCESS_KEY",
-    "AWS_SESSION_TOKEN",
-    "AZURE_CLIENT_SECRET",
-    "AZURE_FEDERATED_TOKEN_FILE",
-    "GOOGLE_APPLICATION_CREDENTIALS",
-];
+/// Sends HTTP requests on behalf of MCP clients and extensions.
+pub trait HttpClient: Send + Sync {
+    /// Perform an HTTP request and buffer the response body.
+    fn http_request(
+        &self,
+        params: HttpRequestParams,
+    ) -> BoxFuture<'_, Result<HttpRequestResponse, ExecServerError>>;
 
-/// HTTP capability implementation backed by the shared route-aware transport.
+    /// Perform an HTTP request and return a streamed body handle.
+    fn http_request_stream(
+        &self,
+        params: HttpRequestParams,
+    ) -> BoxFuture<'_, Result<(HttpRequestResponse, HttpResponseBodyStream), ExecServerError>>;
+}
+
+/// Request-scoped stream of body chunks for an HTTP response.
+pub struct HttpResponseBodyStream {
+    body: Pin<Box<dyn futures::Stream<Item = Result<Bytes, HttpError>> + Send>>,
+    cancellation: Option<CancellationToken>,
+}
+
+impl HttpResponseBodyStream {
+    /// Creates an in-memory response stream from pre-buffered chunks.
+    pub fn from_chunks(chunks: Vec<Vec<u8>>) -> Self {
+        let body = futures::stream::iter(
+            chunks
+                .into_iter()
+                .map(|chunk| Ok::<Bytes, HttpError>(chunk.into())),
+        );
+        Self {
+            body: Box::pin(body),
+            cancellation: None,
+        }
+    }
+
+    fn local(response: HttpResponse) -> Self {
+        Self {
+            body: Box::pin(response.bytes_stream()),
+            cancellation: None,
+        }
+    }
+
+    /// Ends this stream when its owning request authority is revoked.
+    pub fn cancel_on(mut self, cancellation: CancellationToken) -> Self {
+        self.cancellation = Some(cancellation);
+        self
+    }
+
+    /// Receives the next response-body chunk; `Ok(None)` at EOF.
+    pub async fn recv(&mut self) -> Result<Option<Vec<u8>>, ExecServerError> {
+        let Some(cancellation) = self.cancellation.clone() else {
+            return self.recv_inner().await;
+        };
+        tokio::select! {
+            biased;
+            () = cancellation.cancelled() => Ok(None),
+            result = self.recv_inner() => result,
+        }
+    }
+
+    async fn recv_inner(&mut self) -> Result<Option<Vec<u8>>, ExecServerError> {
+        match self.body.next().await {
+            Some(Ok(bytes)) => Ok(Some(bytes.to_vec())),
+            Some(Err(error)) => Err(ExecServerError::HttpRequest(error.to_string())),
+            None => Ok(None),
+        }
+    }
+}
+
+/// HTTP capability backed by the shared route-aware transport.
 #[derive(Clone)]
 pub struct RouteAwareHttpClient {
     follow_redirects: RouteAwareClientPool,
     stop_redirects: RouteAwareClientPool,
 }
 
-/// Streaming response state held between the initial HTTP response and
-/// downstream body-delta forwarding.
-pub(crate) struct PendingRouteAwareHttpBodyStream {
-    pub(crate) request_id: String,
-    pub(crate) response: codex_http_client::HttpResponse,
-}
-
-/// Validates `http/request` parameters and runs the actual HTTP call used
-/// by the exec-server route and the local [`HttpClient`] backend.
-pub(crate) struct RouteAwareHttpRequestRunner {
+struct RouteAwareHttpRequestRunner {
     client: RouteAwareClientPool,
 }
 
@@ -83,13 +116,11 @@ impl RouteAwareHttpClient {
         Self {
             follow_redirects: RouteAwareClientPool::with_chatgpt_cloudflare_cookies_without_request_logging(
                 http_client_factory.clone(),
-                // Delegated HTTP targets arbitrary endpoints; route class only labels diagnostics.
                 ClientRouteClass::Other,
             ),
             stop_redirects:
                 RouteAwareClientPool::with_chatgpt_cloudflare_cookies_without_redirects_or_request_logging(
                     http_client_factory,
-                    // Proxy routing comes from the factory, not this diagnostic-only route class.
                     ClientRouteClass::Other,
                 ),
         }
@@ -102,10 +133,7 @@ impl RouteAwareHttpClient {
         self
     }
 
-    pub(crate) fn runner(
-        &self,
-        redirect_policy: HttpRedirectPolicy,
-    ) -> RouteAwareHttpRequestRunner {
+    fn runner(&self, redirect_policy: HttpRedirectPolicy) -> RouteAwareHttpRequestRunner {
         let client = match redirect_policy {
             HttpRedirectPolicy::Follow => self.follow_redirects.clone(),
             HttpRedirectPolicy::Stop => self.stop_redirects.clone(),
@@ -139,33 +167,29 @@ impl HttpClient for RouteAwareHttpClient {
     ) -> BoxFuture<'_, Result<(HttpRequestResponse, HttpResponseBodyStream), ExecServerError>> {
         async move {
             let runner = self.runner(params.redirect_policy);
-            let (response, pending_stream) = runner
+            let (response, body) = runner
                 .run(HttpRequestParams {
                     stream_response: true,
                     ..params
                 })
                 .await
                 .map_err(|error| ExecServerError::HttpRequest(error.message))?;
-            let pending_stream = pending_stream.ok_or_else(|| {
+            let body = body.ok_or_else(|| {
                 ExecServerError::Protocol(
                     "http request stream did not return a response body stream".to_string(),
                 )
             })?;
-            Ok((
-                response,
-                HttpResponseBodyStream::local(pending_stream.response),
-            ))
+            Ok((response, HttpResponseBodyStream::local(body)))
         }
         .boxed()
     }
 }
 
 impl RouteAwareHttpRequestRunner {
-    pub(crate) async fn run(
+    async fn run(
         &self,
         params: HttpRequestParams,
-    ) -> Result<(HttpRequestResponse, Option<PendingRouteAwareHttpBodyStream>), JSONRPCErrorError>
-    {
+    ) -> Result<(HttpRequestResponse, Option<HttpResponse>), HandlerError> {
         let method = Method::from_bytes(params.method.as_bytes())
             .map_err(|error| invalid_params(format!("http/request method is invalid: {error}")))?;
         let url = Url::parse(&params.url)
@@ -220,10 +244,7 @@ impl RouteAwareHttpRequestRunner {
                     headers,
                     body: Vec::new().into(),
                 },
-                Some(PendingRouteAwareHttpBodyStream {
-                    request_id: params.request_id,
-                    response,
-                }),
+                Some(response),
             ));
         }
 
@@ -243,68 +264,7 @@ impl RouteAwareHttpRequestRunner {
         ))
     }
 
-    pub(crate) async fn stream_body(
-        pending_stream: PendingRouteAwareHttpBodyStream,
-        notifications: RpcNotificationSender,
-    ) {
-        let PendingRouteAwareHttpBodyStream {
-            request_id,
-            response,
-        } = pending_stream;
-        let mut seq = 1;
-        let mut body = response.bytes_stream();
-        while let Some(chunk) = body.next().await {
-            match chunk {
-                Ok(bytes) => {
-                    for chunk in bytes.chunks(MAX_HTTP_BODY_DELTA_BYTES) {
-                        if !send_body_delta(
-                            &notifications,
-                            HttpRequestBodyDeltaNotification {
-                                request_id: request_id.clone(),
-                                seq,
-                                delta: chunk.to_vec().into(),
-                                done: false,
-                                error: None,
-                            },
-                        )
-                        .await
-                        {
-                            return;
-                        }
-                        seq += 1;
-                    }
-                }
-                Err(error) => {
-                    let _ = send_body_delta(
-                        &notifications,
-                        HttpRequestBodyDeltaNotification {
-                            request_id,
-                            seq,
-                            delta: Vec::new().into(),
-                            done: true,
-                            error: Some(error.to_string()),
-                        },
-                    )
-                    .await;
-                    return;
-                }
-            }
-        }
-
-        let _ = send_body_delta(
-            &notifications,
-            HttpRequestBodyDeltaNotification {
-                request_id,
-                seq,
-                delta: Vec::new().into(),
-                done: true,
-                error: None,
-            },
-        )
-        .await;
-    }
-
-    fn build_headers(headers: Vec<HttpHeader>) -> Result<HeaderMap, JSONRPCErrorError> {
+    fn build_headers(headers: Vec<HttpHeader>) -> Result<HeaderMap, HandlerError> {
         let mut header_map = HeaderMap::new();
         for header in headers {
             let name = HeaderName::from_bytes(header.name.as_bytes()).map_err(|error| {
@@ -312,15 +272,6 @@ impl RouteAwareHttpRequestRunner {
             })?;
             let value = match header.value_env_var {
                 Some(env_var) => {
-                    if HTTP_HEADER_ENV_DENYLIST
-                        .iter()
-                        .any(|denied| denied.eq_ignore_ascii_case(&env_var))
-                    {
-                        return Err(invalid_params(format!(
-                            "http/request header {} cannot use executor environment variable {env_var}",
-                            header.name
-                        )));
-                    }
                     let env_value = std::env::var(&env_var).map_err(|_| {
                         invalid_params(format!(
                             "http/request header {} requires executor environment variable {env_var}",

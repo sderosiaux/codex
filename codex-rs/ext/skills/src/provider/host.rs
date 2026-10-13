@@ -11,14 +11,11 @@ use crate::catalog::SkillPackageId;
 use crate::catalog::SkillProviderError;
 use crate::catalog::SkillReadResult;
 use crate::catalog::SkillResourceId;
-use crate::catalog::SkillSearchResult;
 use crate::catalog::SkillSourceKind;
 use crate::provider::SkillListQuery;
 use crate::provider::SkillProvider;
 use crate::provider::SkillProviderFuture;
-use crate::provider::SkillReadContext;
 use crate::provider::SkillReadRequest;
-use crate::provider::SkillSearchRequest;
 
 const HOST_AUTHORITY_ID: &str = "host";
 
@@ -48,15 +45,9 @@ impl SkillProvider for HostSkillProvider {
         })
     }
 
-    fn read<'a>(
-        &'a self,
-        request: SkillReadRequest<'a>,
-    ) -> SkillProviderFuture<'a, SkillReadResult> {
+    fn read(&self, request: SkillReadRequest) -> SkillProviderFuture<'_, SkillReadResult> {
         Box::pin(async move {
-            let SkillReadContext::Host {
-                host_snapshot: Some(host_snapshot),
-            } = request.context
-            else {
+            let Some(host_snapshot) = request.host_snapshot else {
                 return Err(SkillProviderError::new(
                     "host skill provider requires a host skills snapshot",
                 ));
@@ -90,10 +81,6 @@ impl SkillProvider for HostSkillProvider {
                 contents,
             })
         })
-    }
-
-    fn search(&self, _request: SkillSearchRequest) -> SkillProviderFuture<'_, SkillSearchResult> {
-        Box::pin(async { Ok(SkillSearchResult::default()) })
     }
 }
 

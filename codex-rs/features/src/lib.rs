@@ -97,9 +97,6 @@ pub enum Feature {
     SecretAuthStorage,
 
     // Experimental
-    /// Advertise enabled environment-backed tools and their shell parameters before the
-    /// executor is ready. Actual execution still requires a usable environment and its policy.
-    StableEnvironmentTools,
     /// Send per-content-entry classifications in internal Responses metadata.
     ContentItemKinds,
     /// Record model-attempted tool calls in internal Responses metadata.
@@ -123,8 +120,6 @@ pub enum Feature {
     PowerShellShellVersion,
     /// Keep policy-filtered shell snapshots entirely in executor memory.
     ShellSnapshotV2,
-    /// Allow turns to start while selected executors are still starting.
-    DeferredExecutor,
     /// Use the current working directory for turn diff display paths.
     CwdRelativeTurnDiffs,
     /// Enable runtime metrics snapshots via a manual reader.
@@ -168,8 +163,6 @@ pub enum Feature {
     IncrementalTools,
     /// Expose MCP model-visible namespaces without the legacy `mcp__` prefix.
     NonPrefixedMcpToolNames,
-    /// Discover selected-root plugin and skill manifests through one high-level exec-server RPC.
-    ExecutorCapabilityDiscovery,
     /// Skip host skill snapshots when no registered contributor requires them.
     SkipHostSkillDiscovery,
     /// Enable extension-backed image generation.
@@ -689,12 +682,6 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: false,
     },
     FeatureSpec {
-        id: Feature::DeferredExecutor,
-        key: "deferred_executor",
-        stage: Stage::UnderDevelopment,
-        default_enabled: false,
-    },
-    FeatureSpec {
         id: Feature::CwdRelativeTurnDiffs,
         key: "cwd_relative_turn_diffs",
         stage: Stage::UnderDevelopment,
@@ -709,12 +696,6 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::ExecutedToolCallMetadata,
         key: "executed_tool_call_metadata",
-        stage: Stage::UnderDevelopment,
-        default_enabled: false,
-    },
-    FeatureSpec {
-        id: Feature::StableEnvironmentTools,
-        key: "stable_environment_tools",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
     },
@@ -877,12 +858,6 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::NonPrefixedMcpToolNames,
         key: "non_prefixed_mcp_tool_names",
-        stage: Stage::UnderDevelopment,
-        default_enabled: false,
-    },
-    FeatureSpec {
-        id: Feature::ExecutorCapabilityDiscovery,
-        key: "executor_capability_discovery",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
     },

@@ -185,8 +185,7 @@ impl Stream for FileSystemReadStream {
     }
 }
 
-/// Abstract filesystem access used by components that may operate locally or via
-/// a remote environment.
+/// Filesystem access used by tools, skills, and AGENTS.md discovery.
 pub trait ExecutorFileSystem: Send + Sync {
     /// Resolves a path within this filesystem.
     fn canonicalize<'a>(&'a self, path: &'a PathUri) -> ExecutorFileSystemFuture<'a, PathUri>;

@@ -42,8 +42,8 @@ pub(crate) fn inject_session_env(env: &mut HashMap<String, String>, session_id: 
     );
 }
 
-/// Enables line-ending preservation for older standalone patch executables,
-/// including those provided by remote executors. Override inherited values so
+/// Enables line-ending preservation for older standalone patch executables.
+/// Override inherited values so
 /// they cannot restore the legacy normalization behavior.
 pub fn inject_apply_patch_env(env: &mut HashMap<String, String>) {
     env.retain(|key, _| !key.eq_ignore_ascii_case(CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR));

@@ -13,24 +13,3 @@ pub fn request_user_input_available_modes(features: &Features) -> Vec<ModeKind> 
         })
         .collect()
 }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToolEnvironmentMode {
-    None,
-    Single,
-    Multiple,
-}
-
-impl ToolEnvironmentMode {
-    pub fn from_count(count: usize) -> Self {
-        match count {
-            0 => Self::None,
-            1 => Self::Single,
-            _ => Self::Multiple,
-        }
-    }
-
-    pub fn has_environment(self) -> bool {
-        !matches!(self, Self::None)
-    }
-}

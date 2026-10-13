@@ -1,5 +1,4 @@
 use anyhow::Result;
-use anyhow::anyhow;
 use codex_config::types::McpServerEnvVar;
 use codex_protocol::shell_environment::is_non_inheritable_env_var;
 use http::HeaderMap;
@@ -74,42 +73,7 @@ pub(crate) fn create_env_for_mcp_server(
     Ok(env)
 }
 
-pub(crate) fn create_env_overlay_for_remote_mcp_server(
-    extra_env: Option<HashMap<OsString, OsString>>,
-    env_vars: &[McpServerEnvVar],
-) -> HashMap<OsString, OsString> {
-    // Remote stdio should inherit PATH/HOME/etc. from the executor side, not
-    // from the orchestrator process. Only forward variables explicitly named
-    // by the MCP config plus literal env overrides from that config.
-    let mut env: HashMap<OsString, OsString> = env_vars
-        .iter()
-        .filter(|var| !var.is_remote_source())
-        .filter_map(|var| env::var_os(var.name()).map(|value| (OsString::from(var.name()), value)))
-        .chain(extra_env.unwrap_or_default())
-        .collect();
-    env.retain(|name, _| {
-        name.to_str()
-            .is_none_or(|name| !is_non_inheritable_env_var(name))
-    });
-    env
-}
-
-pub(crate) fn remote_mcp_env_var_names(env_vars: &[McpServerEnvVar]) -> Vec<String> {
-    env_vars
-        .iter()
-        .filter(|var| var.is_remote_source())
-        .filter(|var| !is_non_inheritable_env_var(var.name()))
-        .map(|var| var.name().to_string())
-        .collect()
-}
-
 fn local_stdio_env_var_names(env_vars: &[McpServerEnvVar]) -> Result<impl Iterator<Item = &str>> {
-    if let Some(remote_var) = env_vars.iter().find(|var| var.is_remote_source()) {
-        return Err(anyhow!(
-            "env_vars entry `{}` uses source `remote`, which requires remote MCP stdio",
-            remote_var.name()
-        ));
-    }
     Ok(env_vars
         .iter()
         .map(McpServerEnvVar::name)

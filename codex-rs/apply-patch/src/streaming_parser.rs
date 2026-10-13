@@ -16,8 +16,6 @@ use crate::parser::UpdateFileChunk;
 use Hunk::*;
 use ParseError::*;
 
-const ENVIRONMENT_ID_MARKER: &str = "*** Environment ID:";
-
 #[derive(Debug, Default, Clone)]
 pub struct StreamingPatchParser {
     line_buffer: String,
@@ -29,7 +27,6 @@ pub struct StreamingPatchParser {
 struct StreamingParserState {
     mode: StreamingParserMode,
     hunks: Vec<Hunk>,
-    environment_id: Option<String>,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -46,10 +43,6 @@ enum StreamingParserMode {
 }
 
 impl StreamingPatchParser {
-    pub fn environment_id(&self) -> Option<&str> {
-        self.state.environment_id.as_deref()
-    }
-
     fn ensure_update_hunk_is_not_empty(&self, line: &str) -> Result<(), ParseError> {
         if let Some(UpdateFile { path, chunks, .. }) = self.state.hunks.last() {
             if chunks.is_empty()
@@ -82,23 +75,6 @@ impl StreamingPatchParser {
     }
 
     fn handle_hunk_headers_and_end_patch(&mut self, trimmed: &str) -> Result<bool, ParseError> {
-        if matches!(self.state.mode, StreamingParserMode::StartedPatch)
-            && let Some(environment_id) = trimmed.strip_prefix(ENVIRONMENT_ID_MARKER)
-        {
-            if self.state.environment_id.is_some() {
-                return Err(InvalidPatchError(
-                    "apply_patch environment_id cannot be specified more than once".to_string(),
-                ));
-            }
-            let environment_id = environment_id.trim();
-            if environment_id.is_empty() {
-                return Err(InvalidPatchError(
-                    "apply_patch environment_id cannot be empty".to_string(),
-                ));
-            }
-            self.state.environment_id = Some(environment_id.to_string());
-            return Ok(true);
-        }
         if trimmed == END_PATCH_MARKER {
             self.ensure_update_hunk_is_not_empty(trimmed)?;
             self.state.mode = StreamingParserMode::EndedPatch;

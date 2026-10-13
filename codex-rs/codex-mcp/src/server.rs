@@ -1,6 +1,5 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use crate::runtime::McpRuntimeContext;
 use codex_api::SharedAuthProvider;
@@ -10,7 +9,6 @@ use codex_config::McpServerOAuthConfig;
 use codex_config::McpServerTransportConfig;
 use codex_config::types::AuthKeyringBackendKind;
 use codex_config::types::OAuthCredentialsStoreMode;
-use codex_exec_server::Environment;
 use codex_login::CodexAuth;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_rmcp_client::McpOAuthRefreshMode;
@@ -19,43 +17,20 @@ use codex_rmcp_client::StoredOAuthTokens;
 use rmcp::model::ElicitationCapability;
 use tracing::warn;
 
-/// Authority to resolve environment-variable credentials, retained independently of
-/// executor capabilities so a reconnect cannot promote guest configuration to host access.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum McpCredentialPolicy {
-    /// Host-configured servers retain local and legacy remote credential resolution.
-    HostFallbackAllowed,
-    /// Executor-discovered names must never be looked up in the host environment.
-    ExecutorOnly,
-}
-
 /// MCP server after runtime additions have been applied.
 #[derive(Debug, Clone)]
 pub struct EffectiveMcpServer {
     config: McpServerConfig,
-    credential_policy: McpCredentialPolicy,
     requires_read_only_mcp_tools: bool,
 }
 
 impl EffectiveMcpServer {
     /// Constructs an effective server from host-owned configuration.
     pub fn from_host_config(config: McpServerConfig) -> Self {
-        Self::from_config_with_policy(config, McpCredentialPolicy::HostFallbackAllowed)
-    }
-
-    pub(crate) fn from_config_with_policy(
-        config: McpServerConfig,
-        credential_policy: McpCredentialPolicy,
-    ) -> Self {
         Self {
             config,
-            credential_policy,
             requires_read_only_mcp_tools: false,
         }
-    }
-
-    pub(crate) fn credential_policy(&self) -> McpCredentialPolicy {
-        self.credential_policy
     }
 
     pub(crate) fn with_read_only_mcp_tools(mut self, requires_read_only_mcp_tools: bool) -> Self {
@@ -117,15 +92,12 @@ pub(crate) fn has_explicit_http_authorization(config: &McpServerConfig) -> bool 
 #[derive(Clone)]
 pub(crate) struct McpServerConnectionIdentity {
     auth: McpServerAuth,
-    pub(crate) credential_policy: McpCredentialPolicy,
     transport: McpServerTransportConfig,
-    environment_id: String,
     oauth_store: Option<(OAuthCredentialsStoreMode, AuthKeyringBackendKind)>,
     oauth_refresh_mode: Option<McpOAuthRefreshMode>,
     oauth_config: Option<McpServerOAuthConfig>,
     oauth_credentials: Result<Option<StoredOAuthCredentialSnapshot>, String>,
     pub(crate) oauth_store_was_contended: bool,
-    resolved_environment: Result<Option<Arc<Environment>>, String>,
     local_stdio_fallback_cwd: Option<PathBuf>,
     referenced_environment_variables: Vec<(String, Option<OsString>)>,
     runtime_auth: Option<CodexAuth>,
@@ -143,7 +115,6 @@ impl McpServerConnectionIdentity {
         store_mode: OAuthCredentialsStoreMode,
         keyring_backend_kind: AuthKeyringBackendKind,
         oauth_refresh_mode: McpOAuthRefreshMode,
-        resolved_environment: &Result<Option<Arc<Environment>>, String>,
         runtime_context: &McpRuntimeContext,
         runtime_auth_provider: Option<&SharedAuthProvider>,
         auth: Option<&CodexAuth>,
@@ -159,7 +130,6 @@ impl McpServerConnectionIdentity {
         };
         let stored_oauth_url = if runtime_auth_provider.is_none()
             && !matches!(config.auth, McpServerAuth::EmaAuth)
-            && (!matches!(config.auth, McpServerAuth::ChatGpt) || config.is_local_environment())
         {
             match &config.transport {
                 McpServerTransportConfig::StreamableHttp {
@@ -173,13 +143,12 @@ impl McpServerConnectionIdentity {
                         name.eq_ignore_ascii_case("authorization") && valid_http_header_value(value)
                     })
                 }) && !env_http_headers.as_ref().is_some_and(|headers| {
-                    server.credential_policy() == McpCredentialPolicy::HostFallbackAllowed
-                        && headers.iter().any(|(name, env_var)| {
-                            name.eq_ignore_ascii_case("authorization")
-                                && std::env::var(env_var).is_ok_and(|value| {
-                                    !value.trim().is_empty() && valid_http_header_value(&value)
-                                })
-                        })
+                    headers.iter().any(|(name, env_var)| {
+                        name.eq_ignore_ascii_case("authorization")
+                            && std::env::var(env_var).is_ok_and(|value| {
+                                !value.trim().is_empty() && valid_http_header_value(&value)
+                            })
+                    })
                 }) =>
                 {
                     Some(url)
@@ -214,20 +183,16 @@ impl McpServerConnectionIdentity {
                 error.to_string()
             })
         });
-        let local_stdio_fallback_cwd = (config.is_local_environment()
-            && matches!(
-                config.transport,
-                McpServerTransportConfig::Stdio { cwd: None, .. }
-                    | McpServerTransportConfig::StreamableHttp {
-                        http_headers_helper: Some(_),
-                        ..
-                    }
-            ))
+        let local_stdio_fallback_cwd = matches!(
+            config.transport,
+            McpServerTransportConfig::Stdio { cwd: None, .. }
+                | McpServerTransportConfig::StreamableHttp {
+                    http_headers_helper: Some(_),
+                    ..
+                }
+        )
         .then(|| runtime_context.local_process_cwd());
-        let referenced_environment_variables = match server.credential_policy() {
-            McpCredentialPolicy::HostFallbackAllowed => referenced_environment_variables(config),
-            McpCredentialPolicy::ExecutorOnly => Vec::new(),
-        };
+        let referenced_environment_variables = referenced_environment_variables(config);
         let runtime_auth = runtime_auth_provider.and(auth).cloned();
         let runtime_auth_token = runtime_auth.as_ref().and_then(|auth| auth.get_token().ok());
         let oauth_store_was_contended = oauth_credentials
@@ -238,9 +203,7 @@ impl McpServerConnectionIdentity {
 
         Self {
             auth: config.auth.clone(),
-            credential_policy: server.credential_policy(),
             transport: config.transport.clone(),
-            environment_id: config.environment_id.clone(),
             oauth_store: stored_oauth_url
                 .is_some()
                 .then_some((store_mode, keyring_backend_kind)),
@@ -248,7 +211,6 @@ impl McpServerConnectionIdentity {
             oauth_config: stored_oauth_url.and(config.oauth.clone()),
             oauth_credentials,
             oauth_store_was_contended,
-            resolved_environment: resolved_environment.clone(),
             local_stdio_fallback_cwd,
             referenced_environment_variables,
             runtime_auth,
@@ -274,9 +236,7 @@ impl McpServerConnectionIdentity {
             (Some(_), None) | (None, Some(_)) => false,
         };
         self.auth == other.auth
-            && self.credential_policy == other.credential_policy
             && self.transport == other.transport
-            && self.environment_id == other.environment_id
             && self.oauth_store == other.oauth_store
             && self.oauth_refresh_mode == other.oauth_refresh_mode
             // Callback settings only affect a future login, not the live connection.
@@ -284,7 +244,6 @@ impl McpServerConnectionIdentity {
                 == other.oauth_config.as_ref().and_then(|oauth| oauth.client_id.as_ref())
             && self.oauth_config.as_ref().and_then(|oauth| oauth.client_secret.as_ref())
                 == other.oauth_config.as_ref().and_then(|oauth| oauth.client_secret.as_ref())
-            && same_resolved_environment(&self.resolved_environment, &other.resolved_environment)
             && self.local_stdio_fallback_cwd == other.local_stdio_fallback_cwd
             && self.referenced_environment_variables == other.referenced_environment_variables
             && same_runtime_auth
@@ -351,23 +310,10 @@ impl PartialEq for McpServerConnectionIdentity {
     }
 }
 
-fn same_resolved_environment(
-    left: &Result<Option<Arc<Environment>>, String>,
-    right: &Result<Option<Arc<Environment>>, String>,
-) -> bool {
-    match (left, right) {
-        (Ok(Some(left)), Ok(Some(right))) => Arc::ptr_eq(left, right),
-        (Ok(None), Ok(None)) => true,
-        (Err(left), Err(right)) => left == right,
-        (Ok(_), Ok(_)) | (Ok(_), Err(_)) | (Err(_), Ok(_)) => false,
-    }
-}
-
 fn referenced_environment_variables(config: &McpServerConfig) -> Vec<(String, Option<OsString>)> {
     let mut names = match &config.transport {
         McpServerTransportConfig::Stdio { env_vars, .. } => env_vars
             .iter()
-            .filter(|env_var| !env_var.is_remote_source())
             .map(|env_var| env_var.name().to_string())
             .collect::<Vec<_>>(),
         McpServerTransportConfig::StreamableHttp {
@@ -376,7 +322,6 @@ fn referenced_environment_variables(config: &McpServerConfig) -> Vec<(String, Op
             ..
         } => bearer_token_env_var
             .iter()
-            .filter(|name| config.is_local_environment() || std::env::var_os(name).is_some())
             .chain(env_http_headers.iter().flat_map(|headers| headers.values()))
             .cloned()
             .collect(),
@@ -421,7 +366,6 @@ impl McpServerOrigin {
 /// Semantic metadata that must survive after the server is launched.
 #[derive(Debug, Clone)]
 pub(crate) struct McpServerMetadata {
-    pub environment_id: String,
     pub pollutes_memory: bool,
     pub origin: Option<McpServerOrigin>,
     pub supports_parallel_tool_calls: bool,
@@ -431,7 +375,6 @@ impl From<&EffectiveMcpServer> for McpServerMetadata {
     fn from(server: &EffectiveMcpServer) -> Self {
         let config = server.config();
         Self {
-            environment_id: config.environment_id.clone(),
             pollutes_memory: true,
             origin: McpServerOrigin::from_transport(&config.transport),
             supports_parallel_tool_calls: config.supports_parallel_tool_calls,

@@ -28,7 +28,6 @@ use crate::responses_retry::ResponsesStreamRetryState;
 use crate::responses_retry::handle_response_stream_error;
 use crate::session::PreviousTurnSettings;
 use crate::session::TurnInput;
-use crate::session::daemon_recovery::RecordedTurnInput;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
@@ -89,7 +88,6 @@ use codex_protocol::user_input::UserInput;
 use codex_skills::collect_explicit_skill_mentions;
 use codex_skills_extension::HostSkillPrompts;
 use codex_skills_extension::InjectedHostSkillPrompts;
-use codex_skills_extension::validate_required_skills;
 use codex_tools::ToolName;
 use codex_utils_path_uri::PathUri;
 use codex_utils_stream_parser::AssistantTextChunk;
@@ -351,8 +349,6 @@ pub(crate) async fn run_turn(
             break;
         }
 
-        // Input and turn-start injections are recorded before recovery can continue this turn.
-        turn_context.extension_data.insert(RecordedTurnInput);
         let window_id = sess.current_window_id().await;
         super::rollout_budget::maybe_record_reminder(
             sess.as_ref(),
@@ -402,13 +398,6 @@ pub(crate) async fn run_turn(
 
             sess.record_step_world_state_if_changed(step_context.as_ref())
                 .await?;
-
-            validate_required_skills(
-                &sess.services.thread_extension_data,
-                &turn_context.extension_data,
-                step_context.environments.required_skills(),
-            )
-            .map_err(CodexErr::Fatal)?;
 
             // Keep the override after accepted input so history truncation removes them together.
             sess.record_reasoning_effort_override(step_context.as_ref())

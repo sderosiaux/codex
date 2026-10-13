@@ -1,8 +1,6 @@
 use std::sync::Arc;
 
-use codex_exec_server_protocol::ExecutorCapabilityDiscoverySnapshot;
 use codex_protocol::ThreadId;
-use codex_protocol::capabilities::SelectedCapabilityRoot;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use serde_json::Value;
@@ -17,10 +15,6 @@ pub struct WorldStateContributionInput<'a> {
     /// Resolved model metadata captured for this sampling step, retained across discovery.
     pub model_info: &'a ModelInfo,
     pub environments: &'a [TurnEnvironmentSelection],
-    /// Selected roots whose stable environments are ready in this sampling step.
-    pub ready_selected_capability_roots: &'a [SelectedCapabilityRoot],
-    /// Executor-materialized capability files shared by all consumers in this exact step.
-    pub executor_capability_discovery: Option<&'a ExecutorCapabilityDiscoverySnapshot>,
     /// Metrics bound to the captured model for this sampling step.
     pub extension_metrics: Option<Arc<dyn ExtensionMetrics>>,
     pub session_store: &'a ExtensionData,

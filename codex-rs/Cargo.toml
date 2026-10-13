@@ -4,7 +4,6 @@ members = [
     "agent-message-board-client",
     "agent-identity",
     "agent-roles",
-    "build-info",
     "async-utils",
     "apply-patch",
     "arg0",
@@ -25,7 +24,6 @@ members = [
     "http-client",
     "secrets",
     "file-system",
-    "exec-server-protocol",
     "exec-server",
     "ext/agent-message-board",
     "ext/extension-api",
@@ -44,7 +42,6 @@ members = [
     "response-debug-context",
     "otel",
     "tools",
-    "websocket-auth",
     "websocket-client",
     "workload-identity",
     "utils/absolute-path",
@@ -69,7 +66,6 @@ members = [
     "terminal-detection",
     "cli",
     "thread-store",
-    "uds",
     "model-provider",
 ]
 resolver = "2"
@@ -92,12 +88,10 @@ codex-aws-auth = { path = "aws-auth" }
 codex-apply-patch = { path = "apply-patch" }
 codex-arg0 = { path = "arg0" }
 codex-async-utils = { path = "async-utils" }
-codex-build-info = { path = "build-info" }
 codex-client = { path = "codex-client" }
 codex-collaboration-mode-templates = { path = "collaboration-mode-templates" }
 codex-home = { path = "codex-home" }
 codex-http-client = { path = "http-client" }
-codex-websocket-auth = { path = "websocket-auth" }
 codex-websocket-client = { path = "websocket-client" }
 codex-config = { path = "config" }
 codex-agent-message-board-client = { path = "agent-message-board-client" }
@@ -107,7 +101,6 @@ codex-core = { path = "core" }
 codex-core-api = { path = "core-api" }
 codex-diagnostics = { path = "diagnostics" }
 codex-file-system = { path = "file-system" }
-codex-exec-server-protocol = { path = "exec-server-protocol" }
 codex-exec-server = { path = "exec-server" }
 codex-extension-api = { path = "ext/extension-api" }
 codex-extension-items = { path = "ext/items" }
@@ -157,32 +150,20 @@ age = "0.12.1"
 anyhow = "1"
 arc-swap = "1.9.0"
 async-channel = "2.3.1"
-async-io = "2.6.0"
 aws-config = "1"
 aws-credential-types = "1"
 aws-sigv4 = "1"
 aws-smithy-runtime-api = { version = "1", features = ["client", "http-1x"] }
 aws-smithy-types = { version = "1", features = ["http-body-1-x"] }
 aws-types = "1"
-axum = { version = "0.8", default-features = false }
 base64 = "0.22.1"
 bitflags = "2.13.1"
-blake3 = "1.8.2"
 bm25 = "2.3.2"
 bytes = "1.10.1"
 caseless = "0.2.2"
 chardetng = "0.1.17"
 chrono = "0.4.43"
 clap = "4"
-clatter = { version = "2.2.0", default-features = false, features = [
-    "alloc",
-    "getrandom",
-    "use-25519",
-    "use-aes-gcm",
-    "use-rust-crypto-ml-kem",
-    "use-sha",
-] }
-constant_time_eq = "0.3.1"
 crypto_box = { version = "0.9.1", features = ["seal"] }
 derive_more = "2"
 dirs = "6"
@@ -262,7 +243,6 @@ sys-locale = "0.3.2"
 system-configuration = "0.7"
 tempfile = "3.23.0"
 thiserror = "2.0.17"
-time = "0.3.47"
 tiny_http = "0.12"
 tokio = "1"
 tokio-rustls = "0.26.4"
@@ -282,7 +262,6 @@ tree-sitter = "0.25.10"
 tree-sitter-bash = "0.25"
 ts-rs = "11"
 tungstenite = { version = "0.27.0", features = ["deflate", "proxy"] }
-uds_windows = "1.1.0"
 url = "2"
 urlencoding = "2.1"
 uuid = "1"

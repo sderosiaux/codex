@@ -67,21 +67,17 @@ async fn prepare_and_launch(
         .shell
         .as_ref()
         .unwrap_or(session_shell.as_ref());
-    let environment_is_remote = req.turn_environment.environment.is_remote();
     let snapshot_metrics =
         snapshot_metrics::SnapshotMetrics::start(req, &ctx.step_context.turn.config);
-    let shell_snapshot = if environment_is_remote {
-        None
-    } else {
-        // TODO(anp): Make shell snapshot lookup accept PathUri.
-        let native_cwd = req
-            .cwd
-            .to_abs_path()
-            .map_err(|err| ToolError::Rejected(err.to_string()))?;
-        req.turn_environment
-            .shell_snapshot(&native_cwd, base_command, &ctx.step_context.turn.config)
-            .await
-    };
+    // TODO(anp): Make shell snapshot lookup accept PathUri.
+    let native_cwd = req
+        .cwd
+        .to_abs_path()
+        .map_err(|err| ToolError::Rejected(err.to_string()))?;
+    let shell_snapshot = req
+        .turn_environment
+        .shell_snapshot(&native_cwd, base_command, &ctx.step_context.turn.config)
+        .await;
     let snapshot_wait = snapshot_metrics
         .as_ref()
         .map(|metrics| metrics.started_at.elapsed());
@@ -91,12 +87,7 @@ async fn prepare_and_launch(
     #[cfg(unix)]
     let runtime_path_prepends = {
         let mut runtime_path_prepends = RuntimePathPrepends::default();
-        if !environment_is_remote {
-            crate::tools::runtimes::apply_package_path_prepend(
-                &mut env,
-                &mut runtime_path_prepends,
-            );
-        }
+        crate::tools::runtimes::apply_package_path_prepend(&mut env, &mut runtime_path_prepends);
         runtime_path_prepends
     };
     #[cfg(not(unix))]
@@ -109,26 +100,23 @@ async fn prepare_and_launch(
     if ctx.session.enabled(Feature::LoginShellPackagePath)
         && req.shell.is_posix_login()
         && !req.explicit_env_overrides.contains_key("PATH")
-        && let Ok(info) = req.turn_environment.environment.info().await
-        && let Some(command_with_path_prepends) = req
-            .shell
-            .derive_exec_args_with_path_prepends(&req.hook_command, &info.prepend_path_dirs)
+        && let Some(command_with_path_prepends) = req.shell.derive_exec_args_with_path_prepends(
+            &req.hook_command,
+            &codex_exec_server::local_prepend_path_dirs(),
+        )
     {
         command = command_with_path_prepends;
     }
-    let mut snapshot_used = false;
-    if !environment_is_remote {
-        let wrapped = maybe_wrap_shell_lc_with_snapshot(
-            &command,
-            shell,
-            shell_snapshot_location.as_ref(),
-            &req.explicit_env_overrides,
-            &env,
-            &runtime_path_prepends,
-        );
-        snapshot_used = wrapped != command;
-        command = wrapped;
-    }
+    let wrapped = maybe_wrap_shell_lc_with_snapshot(
+        &command,
+        shell,
+        shell_snapshot_location.as_ref(),
+        &req.explicit_env_overrides,
+        &env,
+        &runtime_path_prepends,
+    );
+    let snapshot_used = wrapped != command;
+    command = wrapped;
     if let Some(metrics) = snapshot_metrics
         && let Some(wait) = snapshot_wait
     {

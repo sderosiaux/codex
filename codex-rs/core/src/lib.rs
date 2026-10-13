@@ -15,7 +15,6 @@ mod responses_metadata;
 mod responses_retry;
 pub(crate) mod session;
 pub use codex_protocol::turn_input::NotSubmittedReason;
-pub use codex_protocol::turn_input::RecoverTurnRequest;
 pub use codex_protocol::turn_input::StartIfIdleSubmission;
 pub use codex_protocol::turn_input::SteerSubmission;
 pub use codex_protocol::turn_input::TurnInput;
@@ -109,7 +108,6 @@ pub use thread_manager::StartThreadOptions;
 pub use thread_manager::ThreadManager;
 pub use thread_manager::ThreadShutdownReport;
 pub use thread_manager::build_models_manager;
-pub use tools::handlers::WaitForEnvironmentToolConfig;
 pub use web_search::web_search_action_detail;
 #[deprecated(note = "use ThreadManager")]
 pub type ConversationManager = ThreadManager;

@@ -124,7 +124,7 @@ pub(crate) async fn execute_user_shell_command(
 
     let Some((turn_environment, environment_shell)) = turn_context
         .initial_environments
-        .local()
+        .primary()
         .and_then(|environment| environment.shell.as_ref().map(|shell| (environment, shell)))
     else {
         send_user_shell_error(

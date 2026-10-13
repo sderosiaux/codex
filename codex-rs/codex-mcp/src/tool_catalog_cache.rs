@@ -7,7 +7,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
-use std::sync::Weak;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -15,7 +14,6 @@ use std::time::Duration;
 use codex_config::McpServerAuth;
 use codex_config::McpServerConfig;
 use codex_config::McpServerTransportConfig;
-use codex_exec_server::Environment;
 use codex_protocol::mcp::ClientMcpExtensions;
 use lru::LruCache;
 use rmcp::model::ElicitationCapability;
@@ -26,7 +24,6 @@ use tokio::time::Instant;
 use crate::McpProtocolMode;
 use crate::McpRuntimeContext;
 use crate::ToolInfo;
-use crate::server::McpCredentialPolicy;
 use crate::server::McpServerConnectionIdentity;
 use crate::server::has_explicit_http_authorization;
 
@@ -87,7 +84,6 @@ impl McpToolCatalogCache {
         server_name: &str,
         config: &McpServerConfig,
         runtime_context: &McpRuntimeContext,
-        resolved_environment: Option<&Arc<Environment>>,
         client_context: (&ElicitationCapability, &ClientMcpExtensions),
         connection_identity: Option<(&McpServerConnectionIdentity, McpProtocolMode)>,
     ) -> Option<McpToolCatalogCacheContext> {
@@ -95,7 +91,6 @@ impl McpToolCatalogCache {
             server_name,
             config,
             runtime_context,
-            resolved_environment,
             client_context,
             connection_identity,
         )?;
@@ -232,7 +227,6 @@ fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 struct ToolCatalogIdentity {
     server_name: String,
     transport: ToolCatalogTransportIdentity,
-    environment: Option<Weak<Environment>>,
     local_stdio_fallback_cwd: Option<PathBuf>,
 }
 
@@ -241,11 +235,6 @@ impl PartialEq for ToolCatalogIdentity {
         self.server_name == other.server_name
             && self.transport == other.transport
             && self.local_stdio_fallback_cwd == other.local_stdio_fallback_cwd
-            && match (&self.environment, &other.environment) {
-                (Some(environment), Some(other)) => Weak::ptr_eq(environment, other),
-                (None, None) => true,
-                _ => false,
-            }
     }
 }
 
@@ -256,10 +245,6 @@ impl Hash for ToolCatalogIdentity {
         self.server_name.hash(state);
         self.transport.hash(state);
         self.local_stdio_fallback_cwd.hash(state);
-        self.environment
-            .as_ref()
-            .map(|environment| Weak::as_ptr(environment) as usize)
-            .hash(state);
     }
 }
 
@@ -268,7 +253,6 @@ impl ToolCatalogIdentity {
         server_name: &str,
         config: &McpServerConfig,
         runtime_context: &McpRuntimeContext,
-        environment: Option<&Arc<Environment>>,
         client_context: (&ElicitationCapability, &ClientMcpExtensions),
         connection_identity: Option<(&McpServerConnectionIdentity, McpProtocolMode)>,
     ) -> Option<Self> {
@@ -277,7 +261,6 @@ impl ToolCatalogIdentity {
         Some(Self {
             server_name: server_name.to_string(),
             transport,
-            environment: environment.map(Arc::downgrade),
             local_stdio_fallback_cwd: matches!(
                 &config.transport,
                 McpServerTransportConfig::Stdio { cwd: None, .. }
@@ -325,10 +308,6 @@ impl ToolCatalogTransportIdentity {
             }
 
             let mut hasher = Sha1::new();
-            hasher.update(match connection_identity.credential_policy {
-                McpCredentialPolicy::HostFallbackAllowed => b"host-fallback".as_slice(),
-                McpCredentialPolicy::ExecutorOnly => b"executor-only".as_slice(),
-            });
             hasher.update(
                 serde_json::to_vec(&(
                     url,
@@ -340,7 +319,6 @@ impl ToolCatalogTransportIdentity {
                         .as_ref()
                         .map(|headers| headers.iter().collect::<BTreeMap<_, _>>()),
                     &config.auth,
-                    &config.environment_id,
                     protocol_mode.preferred_protocol_version().as_str(),
                     client_elicitation_capability,
                     client_mcp_extensions.iter().collect::<BTreeMap<_, _>>(),
@@ -355,12 +333,9 @@ impl ToolCatalogTransportIdentity {
             env_vars.dedup();
             for name in env_vars {
                 hasher.update(name.as_bytes());
-                if connection_identity.credential_policy == McpCredentialPolicy::HostFallbackAllowed
-                {
-                    let mut value_hasher = DefaultHasher::new();
-                    std::env::var_os(name).hash(&mut value_hasher);
-                    hasher.update(value_hasher.finish().to_le_bytes());
-                }
+                let mut value_hasher = DefaultHasher::new();
+                std::env::var_os(name).hash(&mut value_hasher);
+                hasher.update(value_hasher.finish().to_le_bytes());
             }
             return Some(Self::StreamableHttp {
                 fingerprint: hasher.finalize().into(),
@@ -376,13 +351,6 @@ impl ToolCatalogTransportIdentity {
         else {
             return None;
         };
-        if env_vars
-            .iter()
-            .any(codex_config::McpServerEnvVar::is_remote_source)
-        {
-            return None;
-        }
-
         let mut hasher = Sha1::new();
         let env = env.as_ref().map(|env| {
             env.iter()
@@ -396,7 +364,6 @@ impl ToolCatalogTransportIdentity {
                 env,
                 env_vars,
                 cwd,
-                &config.environment_id,
                 client_elicitation_capability,
                 client_mcp_extensions.iter().collect::<BTreeMap<_, _>>(),
             ))

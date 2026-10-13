@@ -1,11 +1,8 @@
 mod discovery;
-mod environment;
 mod host;
 mod host_merge;
 mod metadata;
 
-pub(crate) use environment::load_environment_skills_from_discovery;
-pub(crate) use environment::load_environment_skills_from_root;
 pub(crate) use host::HostSkillRoot;
 pub(crate) use host::HostSkillRootSnapshot;
 pub(crate) use host::load_host_skill_root;

@@ -10,11 +10,9 @@ use codex_protocol::protocol::SkillScope;
 use codex_skills::SkillMetadata;
 use codex_skills_extension::HostSkillsLoadInput;
 use codex_skills_extension::InjectedHostSkillPrompts;
-use codex_skills_extension::SkillInvocationLocation;
 use codex_skills_extension::detect_implicit_skill_invocation;
 use codex_skills_extension::record_skill_turn_usage;
 use codex_utils_absolute_path::AbsolutePathBuf;
-use codex_utils_path_uri::PathUri;
 use std::collections::HashSet;
 use tokio::sync::Mutex;
 
@@ -96,34 +94,27 @@ pub(crate) async fn maybe_emit_implicit_skill_invocation(
     sess: &Session,
     turn_context: &TurnContext,
     command: &str,
-    workdir: &PathUri,
     native_workdir: Option<&AbsolutePathBuf>,
-    environment_id: &str,
 ) {
+    let Some(native_workdir) = native_workdir else {
+        return;
+    };
     let Some(invocation) = detect_implicit_skill_invocation(
         turn_context.extension_data.as_ref(),
-        environment_id,
         command,
-        workdir,
         native_workdir,
     ) else {
         return;
     };
     let skill_name = invocation.skill_name.clone();
-    let (skill_resource, seen_key) = match &invocation.location {
-        SkillInvocationLocation::Host { path, scope } => {
-            let skill_scope = match scope {
-                SkillScope::User => "user",
-                SkillScope::Repo => "repo",
-                SkillScope::System => "system",
-                SkillScope::Admin => "admin",
-            };
-            let skill_path = path.inferred_native_path_string();
-            let seen_key = format!("{skill_scope}:{skill_path}:{skill_name}");
-            (skill_path, seen_key)
-        }
-        SkillInvocationLocation::Resource { id, .. } => (id.clone(), format!("resource:{id}")),
+    let skill_scope = match invocation.scope {
+        SkillScope::User => "user",
+        SkillScope::Repo => "repo",
+        SkillScope::System => "system",
+        SkillScope::Admin => "admin",
     };
+    let skill_resource = invocation.path.inferred_native_path_string();
+    let seen_key = format!("{skill_scope}:{skill_resource}:{skill_name}");
     let inserted = {
         let skill_invocations = turn_context
             .extension_data
@@ -139,10 +130,7 @@ pub(crate) async fn maybe_emit_implicit_skill_invocation(
         .skill_invocation(SkillInvocationEvent {
             turn_id: &turn_context.sub_id,
             skill_name: &skill_name,
-            scope: match &invocation.location {
-                SkillInvocationLocation::Host { scope, .. } => Some(*scope),
-                SkillInvocationLocation::Resource { scope, .. } => *scope,
-            },
+            scope: Some(invocation.scope),
             invocation_type: SkillInvocationType::Implicit,
         });
     let skill_name_tag = sanitize_metric_tag_value(skill_name.as_str());

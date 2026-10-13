@@ -293,8 +293,6 @@ impl McpConnectionSet {
                     .tool_timeout_sec
                     .unwrap_or(DEFAULT_TOOL_TIMEOUT),
             );
-            let resolved_environment =
-                runtime_context.resolve_server_environment(&server_name, &configured_config);
             let runtime_auth_provider =
                 chatgpt_auth_provider_for_server(&server, static_chatgpt_auth_provider.clone());
             let connection_identity = McpServerConnectionIdentity::new(
@@ -303,7 +301,6 @@ impl McpConnectionSet {
                 store_mode,
                 keyring_backend_kind,
                 oauth_refresh_mode,
-                &resolved_environment,
                 &runtime_context,
                 runtime_auth_provider.as_ref(),
                 auth,
@@ -440,17 +437,14 @@ impl McpConnectionSet {
             let cancel_token = startup_cancellation_token.child_token();
             let tool_catalog_cache_context = if server.requires_read_only_mcp_tools() {
                 None
-            } else if let Ok(environment) = resolved_environment.as_ref() {
+            } else {
                 tool_catalog_cache.context(
                     &server_name,
                     &configured_config,
                     &runtime_context,
-                    environment.as_ref(),
                     (&client_elicitation_capability, &client_mcp_extensions),
                     Some((&connection_identity, protocol_mode)),
                 )
-            } else {
-                None
             };
             let has_runtime_auth = runtime_auth_provider.is_some();
             let async_managed_client = AsyncManagedClient::new(
@@ -464,7 +458,6 @@ impl McpConnectionSet {
                 elicitation_requests.clone(),
                 tool_catalog_cache_context,
                 runtime_context.clone(),
-                resolved_environment,
                 runtime_auth_provider,
                 client_elicitation_capability.clone(),
                 client_mcp_extensions.clone(),
@@ -801,7 +794,6 @@ impl McpConnectionSet {
         &self,
         server: &str,
         tool: &str,
-        environment_id: Option<&str>,
         arguments: Option<serde_json::Value>,
         meta: Option<serde_json::Value>,
         requested_timeout: Option<Duration>,
@@ -811,14 +803,6 @@ impl McpConnectionSet {
             .servers
             .get(server)
             .ok_or_else(|| anyhow!("unknown MCP server '{server}'"))?;
-        if let Some(environment_id) = environment_id
-            && view.metadata.environment_id != environment_id
-        {
-            bail!(
-                "MCP server `{server}` is running in environment `{}`, expected `{environment_id}`",
-                view.metadata.environment_id
-            );
-        }
         if !view.tool_filter.allows(tool) {
             return Err(anyhow!(
                 "tool '{tool}' is disabled for MCP server '{server}'"

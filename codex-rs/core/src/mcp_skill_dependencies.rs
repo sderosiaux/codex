@@ -125,22 +125,17 @@ async fn install_mcp_dependencies(
 
     let (_, runtime_context) = sess.runtime_mcp_config_and_context(config).await;
     for (name, server_config) in &added {
-        let http_client = match runtime_context.resolve_http_client(name, server_config) {
+        let http_client = match runtime_context.http_client_for_server(server_config) {
             Ok(http_client) => http_client,
             Err(err) => {
                 warn!("failed to resolve MCP dependency runtime for {name}: {err}");
                 continue;
             }
         };
-        let discovery_timeout = if server_config.is_local_environment() {
-            OAuthDiscoveryTimeout::LOCAL
-        } else {
-            OAuthDiscoveryTimeout::Requested
-        };
         let login_support = oauth_login_support(
             &server_config.transport,
             Arc::clone(&http_client),
-            discovery_timeout,
+            OAuthDiscoveryTimeout::LOCAL,
             StreamableHttpRedirectMode::Legacy,
         )
         .await;
@@ -268,7 +263,6 @@ fn mcp_dependency_to_server_config(
                 env_http_headers: None,
                 http_headers_helper: None,
             },
-            environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
             enabled: true,
             required: false,
             startup_readiness: Default::default(),
@@ -308,7 +302,6 @@ fn mcp_dependency_to_server_config(
                 env_vars: Vec::new(),
                 cwd: None,
             },
-            environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
             enabled: true,
             required: false,
             startup_readiness: Default::default(),

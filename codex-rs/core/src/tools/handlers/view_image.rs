@@ -38,7 +38,6 @@ impl Default for ViewImageHandler {
             options: ViewImageToolOptions {
                 can_request_original_image_detail: false,
                 unified_image_budget: false,
-                include_environment_id: false,
             },
         }
     }
@@ -58,8 +57,6 @@ const VIEW_IMAGE_INVALID_MESSAGE: &str =
 #[derive(Deserialize)]
 struct ViewImageArgs {
     path: String,
-    #[serde(default)]
-    environment_id: Option<String>,
     detail: Option<String>,
 }
 
@@ -125,11 +122,7 @@ impl ViewImageHandler {
             }
         };
 
-        let ViewImageArgs {
-            path,
-            environment_id,
-            detail,
-        } = parse_arguments(&arguments)?;
+        let ViewImageArgs { path, detail } = parse_arguments(&arguments)?;
         // Keep accepting previously supported detail hints after they disappear from the schema.
         let detail = match detail.as_deref() {
             None => None,
@@ -142,11 +135,8 @@ impl ViewImageHandler {
             }
         };
 
-        let turn_environment = resolve_tool_environment(
-            &step_context,
-            environment_id.as_deref(),
-            "view_image is unavailable in this session",
-        )?;
+        let turn_environment =
+            resolve_tool_environment(&step_context, "view_image is unavailable in this session")?;
         let path_uri = turn_environment.cwd().join(&path).map_err(|err| {
             FunctionCallError::RespondToModel(format!(
                 "unable to resolve image path `{path}` against environment cwd `{}`: {err}",

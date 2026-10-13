@@ -10,77 +10,25 @@ use crate::HostSkillsSnapshot;
 use crate::SkillsExtensionConfig;
 use crate::catalog::SkillCatalog;
 use crate::provider::SkillListQuery;
-use crate::render::AvailableSkillsRender;
-use crate::render::PreparedSkillCatalog;
-use crate::render::RenderedSkillCatalogs;
 use crate::render::SkillCatalogRenderPolicy;
 use crate::render::SkillMetadataBudget;
-use crate::render::render_prepared_skill_catalogs;
+use crate::render::render_available_skills;
 use crate::render::skill_metadata_budget;
 use crate::render_observability::CatalogSurface;
 use crate::render_observability::record_catalog_render;
 use crate::sources::SkillProviders;
 use crate::state::EmittedCatalogBudgetWarnings;
-use crate::state::ExecutorSkillsStepState;
 use crate::state::HostSkillsCatalogInWorldState;
 use crate::state::HostSkillsStepState;
 use crate::state::SkillsThreadState;
 use crate::world_state::CatalogRenderCallback;
-use crate::world_state::executor_skills_world_state_section;
 use crate::world_state::host_skills_world_state_section;
 
 type CatalogWarningEmitter = Arc<dyn Fn(String) + Send + Sync>;
 
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum CatalogKind {
-    Executor,
-    Host,
-}
-
-impl CatalogKind {
-    fn metrics_surface(self) -> CatalogSurface {
-        match self {
-            Self::Executor => CatalogSurface::ExecutorWorldState,
-            Self::Host => CatalogSurface::HostWorldState,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Eq, PartialEq)]
-pub(crate) enum CatalogStatus {
-    Unavailable,
-    Enabled,
-}
-
-struct CatalogContribution {
-    catalog: SkillCatalog,
-    status: CatalogStatus,
-}
-
-impl CatalogContribution {
-    fn unavailable() -> Self {
-        Self {
-            catalog: SkillCatalog::default(),
-            status: CatalogStatus::Unavailable,
-        }
-    }
-}
-
-pub(crate) struct CatalogContributions {
-    executor: CatalogContribution,
-    host: CatalogContribution,
-}
-
-pub(crate) struct RenderedCatalogContribution {
-    kind: CatalogKind,
-    pub(crate) status: CatalogStatus,
-    rendered: Option<AvailableSkillsRender>,
-}
-
 pub(crate) struct CatalogContext<'a> {
     providers: &'a SkillProviders,
     input: WorldStateContributionInput<'a>,
-    thread_state: Arc<SkillsThreadState>,
     config: SkillsExtensionConfig,
     metadata_budget: SkillMetadataBudget,
     include_usage: bool,
@@ -116,7 +64,6 @@ impl<'a> CatalogContext<'a> {
         Some(Self {
             providers,
             input,
-            thread_state,
             config,
             metadata_budget,
             include_usage,
@@ -124,120 +71,42 @@ impl<'a> CatalogContext<'a> {
         })
     }
 
-    pub(crate) async fn discover_catalogs(&self) -> CatalogContributions {
-        let query = SkillListQuery {
-            turn_id: self.input.turn_id.to_string(),
-            executor_roots: self.input.ready_selected_capability_roots.to_vec(),
-            resolved_executor_roots: Vec::new(),
-            host_snapshot: None,
-            include_host_skills: false,
-            include_bundled_skills: self.config.bundled_skills_enabled,
-            executor_capability_discovery: self.input.executor_capability_discovery.cloned(),
-        };
-
-        let (executor, host) = futures::join!(
-            self.discover_executor_catalog(query),
-            self.discover_host_catalog(),
-        );
-
-        CatalogContributions { executor, host }
-    }
-
-    async fn discover_executor_catalog(&self, query: SkillListQuery) -> CatalogContribution {
-        let catalog = self
-            .thread_state
-            .refresh_executor_catalog(self.providers, query)
-            .await;
-        self.input
-            .turn_store
-            .insert(ExecutorSkillsStepState(catalog.clone()));
-
-        CatalogContribution {
-            catalog,
-            status: CatalogStatus::Enabled,
-        }
-    }
-
-    async fn discover_host_catalog(&self) -> CatalogContribution {
-        let Some(host_snapshot) = self
+    /// Lists the host catalog, or `None` when host skills are unavailable for this turn.
+    pub(crate) async fn discover_host_catalog(&self) -> Option<SkillCatalog> {
+        let host_snapshot = self
             .input
             .turn_store
             .get::<HostSkillsSnapshot>()
-            .filter(|_| self.providers.has_host_provider())
-        else {
-            return CatalogContribution::unavailable();
-        };
-
-        let needs_catalog =
-            self.config.include_instructions || self.config.shadow_selection_enabled;
-        let catalog = if needs_catalog {
-            let catalog = self
-                .providers
-                .list_host_for_turn(SkillListQuery {
-                    turn_id: self.input.turn_id.to_string(),
-                    executor_roots: Vec::new(),
-                    resolved_executor_roots: Vec::new(),
-                    host_snapshot: Some(host_snapshot),
-                    include_host_skills: true,
-                    include_bundled_skills: false,
-                    executor_capability_discovery: None,
-                })
-                .await;
-            self.input
-                .turn_store
-                .insert(HostSkillsStepState(catalog.clone()));
-            catalog
-        } else {
-            SkillCatalog::default()
-        };
-
-        CatalogContribution {
-            catalog,
-            status: CatalogStatus::Enabled,
+            .filter(|_| self.providers.has_host_provider())?;
+        if !self.config.include_instructions {
+            return Some(SkillCatalog::default());
         }
-    }
-
-    pub(crate) fn render_catalogs(
-        &self,
-        catalogs: CatalogContributions,
-    ) -> [RenderedCatalogContribution; 2] {
-        let rendered = if self.config.include_instructions {
-            render_prepared_skill_catalogs(
-                &PreparedSkillCatalog::new(
-                    &catalogs.executor.catalog,
-                    SkillCatalogRenderPolicy::ExtensionCompatible,
-                ),
-                &PreparedSkillCatalog::new(
-                    &catalogs.host.catalog,
-                    SkillCatalogRenderPolicy::CoreCompatible,
-                ),
-                self.metadata_budget,
-                self.include_usage,
-            )
-        } else {
-            RenderedSkillCatalogs::default()
-        };
-
-        [
-            (CatalogKind::Executor, catalogs.executor, rendered.executor),
-            (CatalogKind::Host, catalogs.host, rendered.host),
-        ]
-        .map(|(kind, catalog, rendered)| RenderedCatalogContribution {
-            kind,
-            status: catalog.status,
-            rendered,
-        })
+        let catalog = self
+            .providers
+            .list_host_for_turn(SkillListQuery {
+                turn_id: self.input.turn_id.to_string(),
+                host_snapshot: Some(host_snapshot),
+                include_host_skills: true,
+            })
+            .await;
+        self.input.turn_store.insert(HostSkillsStepState);
+        Some(catalog)
     }
 
     pub(crate) fn build_world_state_section(
         &self,
-        catalog: RenderedCatalogContribution,
+        catalog: &SkillCatalog,
     ) -> WorldStateSectionContribution {
-        let RenderedCatalogContribution {
-            kind,
-            status,
-            rendered,
-        } = catalog;
+        let include_instructions = self.config.include_instructions;
+        let rendered = include_instructions
+            .then(|| {
+                render_available_skills(
+                    catalog,
+                    SkillCatalogRenderPolicy::CoreCompatible,
+                    self.metadata_budget,
+                )
+            })
+            .flatten();
         let budget = self.metadata_budget;
         let report = rendered
             .as_ref()
@@ -246,18 +115,17 @@ impl<'a> CatalogContext<'a> {
         let body = rendered
             .and_then(|rendered| rendered.into_fragment(self.include_usage))
             .map(|fragment| fragment.body());
-        let include_instructions = self.config.include_instructions;
         let metrics = self.input.extension_metrics.clone();
         let warning_emitter = Arc::clone(&self.warning_emitter);
         let render_report = report.clone();
         let on_render: CatalogRenderCallback = Box::new(move || {
-            if !include_instructions || status != CatalogStatus::Enabled {
+            if !include_instructions {
                 return;
             }
 
             record_catalog_render(
                 metrics.as_deref(),
-                kind.metrics_surface(),
+                CatalogSurface::HostWorldState,
                 budget,
                 &render_report,
             );
@@ -266,19 +134,7 @@ impl<'a> CatalogContext<'a> {
             }
         });
 
-        match kind {
-            CatalogKind::Executor => executor_skills_world_state_section(
-                body,
-                include_instructions,
-                self.input
-                    .previous_world_state
-                    .and_then(|state| state.get(crate::world_state::SKILLS_WORLD_STATE_ID)),
-                on_render,
-            ),
-            CatalogKind::Host => {
-                self.input.turn_store.insert(HostSkillsCatalogInWorldState);
-                host_skills_world_state_section(body, include_instructions, &report, on_render)
-            }
-        }
+        self.input.turn_store.insert(HostSkillsCatalogInWorldState);
+        host_skills_world_state_section(body, include_instructions, &report, on_render)
     }
 }

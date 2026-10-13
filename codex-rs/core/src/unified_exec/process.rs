@@ -66,15 +66,6 @@ impl Drop for OutputTaskGuard {
     }
 }
 
-/// Controls whether process exit can start the collectors' bounded output drain.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum OutputDrainPolicy {
-    /// Match direct local execution when descendants retain inherited output pipes.
-    BoundedAfterExit,
-    /// Remote foreground output may still be buffered or in transit after exit.
-    WaitForOutputClosure,
-}
-
 /// Transport-specific process handle used by unified exec.
 enum ProcessHandle {
     Local(Box<ExecCommandSession>),
@@ -291,16 +282,12 @@ impl UnifiedExecProcess {
         Ok(managed)
     }
 
-    pub(super) fn from_exec_server_started(
-        started: StartedExecProcess,
-        output_drain_policy: OutputDrainPolicy,
-    ) -> Self {
+    pub(super) fn from_exec_server_started(started: StartedExecProcess) -> Self {
         let process_handle = ProcessHandle::ExecServer(Arc::clone(&started.process));
         let mut managed = Self::new(process_handle);
         let output_handles = managed.output_handles().clone();
         managed.output_task = Some(Self::spawn_exec_server_output_task(
             started,
-            output_drain_policy,
             output_handles,
             managed.output_tx.clone(),
             managed.state_tx.clone(),
@@ -310,7 +297,6 @@ impl UnifiedExecProcess {
 
     fn spawn_exec_server_output_task(
         started: StartedExecProcess,
-        output_drain_policy: OutputDrainPolicy,
         output_handles: OutputHandles,
         output_tx: broadcast::Sender<Vec<u8>>,
         state_tx: watch::Sender<ProcessState>,
@@ -345,12 +331,9 @@ impl UnifiedExecProcess {
                         break;
                     }
                 };
-                let event_seq = event.as_ref().and_then(|event| match event {
-                    ExecProcessEvent::Output(chunk) => Some(chunk.seq),
-                    ExecProcessEvent::Exited { seq, .. } | ExecProcessEvent::Closed { seq } => {
-                        Some(*seq)
-                    }
-                    ExecProcessEvent::Failed(_) => None,
+                let event_seq = event.as_ref().map(|event| match event {
+                    ExecProcessEvent::Output(chunk) => chunk.seq,
+                    ExecProcessEvent::Exited { seq, .. } | ExecProcessEvent::Closed { seq } => *seq,
                 });
                 if event.is_none() || event_seq.is_some_and(|seq| seq > last_seq.saturating_add(1))
                 {
@@ -401,7 +384,8 @@ impl UnifiedExecProcess {
                         let state = state_tx.borrow().clone();
                         let _ = state_tx.send_replace(state.exited(exit_code));
                     }
-                    if exited && output_drain_policy == OutputDrainPolicy::BoundedAfterExit {
+                    // Descendants may retain inherited output pipes; drain a bounded tail after exit.
+                    if exited {
                         cancellation_token.cancel();
                     }
                     if closed {
@@ -436,22 +420,12 @@ impl UnifiedExecProcess {
                         last_seq = seq;
                         let state = state_tx.borrow().clone();
                         let _ = state_tx.send_replace(state.exited(Some(exit_code)));
-                        if output_drain_policy == OutputDrainPolicy::BoundedAfterExit {
-                            cancellation_token.cancel();
-                        }
+                        cancellation_token.cancel();
                     }
                     ExecProcessEvent::Closed { seq } => {
                         if seq <= last_seq {
                             continue;
                         }
-                        output_closed.store(true, Ordering::Release);
-                        output_closed_notify.notify_waiters();
-                        cancellation_token.cancel();
-                        break;
-                    }
-                    ExecProcessEvent::Failed(message) => {
-                        let state = state_tx.borrow().clone();
-                        let _ = state_tx.send_replace(state.failed(message));
                         output_closed.store(true, Ordering::Release);
                         output_closed_notify.notify_waiters();
                         cancellation_token.cancel();

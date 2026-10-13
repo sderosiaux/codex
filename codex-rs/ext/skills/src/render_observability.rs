@@ -13,7 +13,6 @@ use crate::render::SkillRenderReport;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CatalogSurface {
     ThreadContext,
-    ExecutorWorldState,
     HostWorldState,
     TurnInput,
 }
@@ -22,7 +21,6 @@ impl CatalogSurface {
     fn as_str(self) -> &'static str {
         match self {
             Self::ThreadContext => "thread_context",
-            Self::ExecutorWorldState => "executor_world_state",
             Self::HostWorldState => "host_world_state",
             Self::TurnInput => "turn_input",
         }

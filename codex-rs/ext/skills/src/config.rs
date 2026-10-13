@@ -9,6 +9,4 @@ pub struct SkillsExtensionConfig {
     pub max_context_tokens: Option<NonZeroUsize>,
     /// Whether bundled skills are eligible for discovery.
     pub bundled_skills_enabled: bool,
-    /// Whether cheap skill selectors run in shadow mode without changing prompt contents.
-    pub shadow_selection_enabled: bool,
 }

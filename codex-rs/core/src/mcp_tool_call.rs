@@ -180,7 +180,7 @@ async fn execute_mcp_tool_call(
                         &sess.session_id().to_string(),
                         originating_call,
                     );
-                    Ok((None, request_meta))
+                    Ok((arguments_value.clone(), request_meta))
                 })
                 .await
                 .map_err(|error| format!("tool call error: {error:?}"))?;

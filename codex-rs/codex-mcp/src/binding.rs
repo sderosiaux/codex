@@ -236,10 +236,6 @@ impl PreparedMcpCall {
             .map(super::server::McpServerOrigin::as_str)
     }
 
-    pub fn server_environment_id(&self) -> &str {
-        &self.server_metadata.environment_id
-    }
-
     pub fn server_pollutes_memory(&self) -> bool {
         self.server_metadata.pollutes_memory
     }

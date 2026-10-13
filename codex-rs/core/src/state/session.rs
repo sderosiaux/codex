@@ -8,7 +8,6 @@ use super::AdditionalContextStore;
 use super::auto_compact_window::AutoCompactWindow;
 use super::auto_compact_window::AutoCompactWindowIds;
 use super::auto_compact_window::AutoCompactWindowSnapshot;
-use crate::TurnStartOptions;
 use crate::context_manager::ContextManager;
 use crate::context_manager::HistoryReplacement;
 use crate::session::PreviousTurnSettings;
@@ -201,21 +200,6 @@ impl SessionState {
 
     pub(crate) fn reference_context_item(&self) -> Option<TurnContextItem> {
         self.history.reference_context_item()
-    }
-
-    pub(crate) fn recovered_turn_start_options(&self, turn_id: &str) -> TurnStartOptions {
-        self.turn_attribution
-            .as_ref()
-            .filter(|attribution| attribution.turn_id == turn_id)
-            .map(TurnAttribution::start_options)
-            .unwrap_or_else(|| TurnStartOptions {
-                // Older rollouts only persisted the root on the model-context record.
-                root_turn_id: self
-                    .reference_context_item()
-                    .filter(|context| context.turn_id.as_deref() == Some(turn_id))
-                    .and_then(|context| context.root_turn_id),
-                ..Default::default()
-            })
     }
 
     // Token/rate limit helpers

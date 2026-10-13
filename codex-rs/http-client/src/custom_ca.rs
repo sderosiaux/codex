@@ -17,28 +17,6 @@
 //! Its production contract is narrow: produce a transport configuration whose root store contains
 //! every parseable certificate block from the configured PEM bundle, or fail early with a precise
 //! error before the caller starts network traffic.
-//!
-//! In this module's test setup, a hermetic test is one whose result depends only on the CA file
-//! and environment variables that the test chose for itself. That matters here because the normal
-//! reqwest client-construction path is not hermetic enough for environment-sensitive tests:
-//!
-//! - on macOS seatbelt runs, `reqwest::Client::builder().build()` can panic inside
-//!   `system-configuration` while probing platform proxy settings, which means the process can die
-//!   before the custom-CA code reports success or a structured error. That matters in practice
-//!   because Codex itself commonly runs spawned test processes under seatbelt, so this is not just
-//!   a hypothetical CI edge case.
-//! - child processes inherit CA-related environment variables by default, which lets developer
-//!   shell state or CI configuration affect a test unless the test scrubs those variables first
-//!
-//! The tests in this crate therefore stay split across two layers:
-//!
-//! - unit tests in this module cover env-selection logic without constructing a real client
-//! - subprocess integration tests under `tests/` cover real client construction through
-//!   [`build_reqwest_client_for_subprocess_tests`], which disables reqwest proxy autodetection so
-//!   the tests can observe custom-CA success and failure directly, including one TLS handshake
-//!   through a local HTTPS server
-//! - those subprocess tests also scrub inherited CA environment variables before launch so their
-//!   result depends only on the test fixtures and env vars set by the test itself
 
 use std::env;
 use std::fs;
@@ -206,20 +184,6 @@ pub fn maybe_build_rustls_client_config_with_custom_ca()
 pub fn build_rustls_client_config_with_custom_ca()
 -> Result<Arc<ClientConfig>, BuildCustomCaTransportError> {
     build_rustls_client_config_with_env(&ProcessEnv)
-}
-
-/// Builds a reqwest client for spawned subprocess tests that exercise CA behavior.
-///
-/// This is the test-only client-construction path used by the subprocess coverage in `tests/`.
-/// The module-level docs explain the hermeticity problem in full; this helper only addresses the
-/// reqwest proxy-discovery panic side of that problem by disabling proxy autodetection. The tests
-/// still scrub inherited CA environment variables themselves. Normal production callers should use
-/// [`build_reqwest_client_with_custom_ca`] so test-only proxy behavior does not leak into
-/// ordinary client construction.
-pub fn build_reqwest_client_for_subprocess_tests(
-    builder: reqwest::ClientBuilder,
-) -> Result<reqwest::Client, BuildCustomCaTransportError> {
-    build_reqwest_client_with_env(&ProcessEnv, builder.no_proxy())
 }
 
 fn maybe_build_rustls_client_config_with_env(

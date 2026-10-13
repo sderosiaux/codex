@@ -261,9 +261,6 @@
             "defer_mailbox_preemption": {
               "type": "boolean"
             },
-            "deferred_executor": {
-              "type": "boolean"
-            },
             "deferred_tool_world_state": {
               "type": "boolean"
             },
@@ -271,9 +268,6 @@
               "type": "boolean"
             },
             "executed_tool_call_metadata": {
-              "type": "boolean"
-            },
-            "executor_capability_discovery": {
               "type": "boolean"
             },
             "fast_mode": {
@@ -380,9 +374,6 @@
             },
             "sleep_tool": {
               "$ref": "#/definitions/FeatureToml_for_SleepToolConfigToml"
-            },
-            "stable_environment_tools": {
-              "type": "boolean"
             },
             "standalone_web_search": {
               "type": "boolean"
@@ -1059,9 +1050,6 @@
           "additionalProperties": false,
           "properties": {
             "name": {
-              "type": "string"
-            },
-            "source": {
               "type": "string"
             }
           },
@@ -1778,10 +1766,6 @@
           },
           "type": "array"
         },
-        "environment_id": {
-          "default": null,
-          "type": "string"
-        },
         "http_headers": {
           "additionalProperties": {
             "type": "string"
@@ -2438,9 +2422,6 @@
         "defer_mailbox_preemption": {
           "type": "boolean"
         },
-        "deferred_executor": {
-          "type": "boolean"
-        },
         "deferred_tool_world_state": {
           "type": "boolean"
         },
@@ -2448,9 +2429,6 @@
           "type": "boolean"
         },
         "executed_tool_call_metadata": {
-          "type": "boolean"
-        },
-        "executor_capability_discovery": {
           "type": "boolean"
         },
         "fast_mode": {
@@ -2557,9 +2535,6 @@
         },
         "sleep_tool": {
           "$ref": "#/definitions/FeatureToml_for_SleepToolConfigToml"
-        },
-        "stable_environment_tools": {
-          "type": "boolean"
         },
         "standalone_web_search": {
           "type": "boolean"

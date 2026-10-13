@@ -8,11 +8,7 @@ use serde_json::json;
 
 use crate::render::SkillRenderReport;
 
-pub(crate) const SKILLS_WORLD_STATE_ID: &str = "skills";
 pub(crate) const HOST_SKILLS_WORLD_STATE_ID: &str = "host_skills";
-const NO_EXECUTOR_SKILLS_BODY: &str =
-    "\n## Skills update\nNo selected-environment skills are currently available.\n";
-const HIDDEN_EXECUTOR_SKILLS_BODY: &str = "\n## Skills update\nSelected-environment skills are not listed automatically. Explicit skill mentions can still be resolved when available.\n";
 const NO_HOST_SKILLS_BODY: &str =
     "\n## Host skills update\nNo host skills are currently available.\n";
 const HIDDEN_HOST_SKILLS_BODY: &str = "\n## Host skills update\nHost skills are not listed automatically. Explicit skill mentions can still be resolved when available.\n";
@@ -25,89 +21,6 @@ pub(crate) type CatalogRenderCallback = Box<dyn Fn() + Send + Sync>;
 struct CatalogSnapshot {
     body: Option<String>,
     include_instructions: bool,
-}
-
-pub(crate) fn executor_skills_world_state_section(
-    body: Option<String>,
-    include_instructions: bool,
-    previous_snapshot: Option<&serde_json::Value>,
-    on_render: CatalogRenderCallback,
-) -> WorldStateSectionContribution {
-    // Remember display history, not execution authority. Discovery still determines `body`
-    // on every step, including when no selected-environment skills are available.
-    let last_available_fingerprint = previous_snapshot
-        .filter(|_| body.is_none() && include_instructions)
-        .and_then(|previous| {
-            previous
-                .get("body")
-                .and_then(serde_json::Value::as_str)
-                .map(|body| blake3::hash(body.as_bytes()).to_hex().to_string())
-                .or_else(|| {
-                    previous
-                        .get("lastAvailableFingerprint")
-                        .and_then(serde_json::Value::as_str)
-                        .map(str::to_string)
-                })
-        });
-    let snapshot = json!({
-        "body": body,
-        "includeInstructions": include_instructions,
-        "lastAvailableFingerprint": last_available_fingerprint,
-    });
-    let retained_body = body.clone();
-    let contribution = WorldStateSectionContribution::new(SKILLS_WORLD_STATE_ID, move |previous| {
-            if let PreviousWorldStateSection::Known(previous) = &previous
-                && previous.get("includeInstructions").and_then(serde_json::Value::as_bool)
-                    == Some(include_instructions)
-            {
-                if previous.get("body").and_then(serde_json::Value::as_str) == body.as_deref() {
-                    return (Some(snapshot.clone()), None);
-                }
-                if let Some(body) = body.as_deref()
-                    && previous.get("lastAvailableFingerprint").and_then(serde_json::Value::as_str)
-                        == Some(blake3::hash(body.as_bytes()).to_hex().as_str())
-                {
-                    return (
-                        Some(snapshot.clone()),
-                        Some(RenderedWorldStateFragment::new(
-                            "developer",
-                            (SKILLS_INSTRUCTIONS_OPEN_TAG, SKILLS_INSTRUCTIONS_CLOSE_TAG),
-                            "\n## Skills update\nThe previously listed selected-environment skills are available again.\n",
-                        )),
-                    );
-                }
-            }
-
-            let body = match body.as_deref() {
-                Some(body) => body,
-                None if matches!(previous, PreviousWorldStateSection::Absent) => {
-                    return (Some(snapshot.clone()), None);
-                }
-                None if !include_instructions => HIDDEN_EXECUTOR_SKILLS_BODY,
-                None => NO_EXECUTOR_SKILLS_BODY,
-            };
-            on_render();
-            (
-                Some(snapshot.clone()),
-                Some(RenderedWorldStateFragment::new(
-                    "developer",
-                    (SKILLS_INSTRUCTIONS_OPEN_TAG, SKILLS_INSTRUCTIONS_CLOSE_TAG),
-                    body,
-                )),
-            )
-    })
-    .with_legacy_matcher(|role, text| {
-        role == "developer"
-            && text.trim_start().starts_with(SKILLS_INSTRUCTIONS_OPEN_TAG)
-            && text.trim_end().ends_with(SKILLS_INSTRUCTIONS_CLOSE_TAG)
-    });
-    // A short availability update is valid only while the actual catalog remains in history.
-    match retained_body {
-        Some(body) => contribution.with_retained_fragment_matcher(move |role, text| {
-            role == "developer" && text.contains(&body)
-        }),
-        None => contribution,
-    }
 }
 
 fn skills_world_state_section(

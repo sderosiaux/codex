@@ -22,7 +22,6 @@ use codex_login::auth::AgentIdentityAuthPolicy;
 use codex_model_provider::SharedModelProvider;
 use codex_prompts::render_model_instructions;
 use codex_protocol::SessionId;
-use codex_protocol::capabilities::SelectedCapabilityRoot;
 use codex_protocol::config_types::ShellEnvironmentPolicy;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::protocol::EnvironmentConfig;
@@ -30,7 +29,6 @@ use codex_protocol::protocol::HookCompletedEvent;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadSource;
-use codex_protocol::protocol::TurnEnvironmentRequests;
 use codex_protocol::protocol::TurnEnvironmentSelections;
 use codex_skills::SkillError;
 use codex_utils_git_discovery::GitRootDiscovery;
@@ -53,7 +51,6 @@ pub(crate) struct Session {
     /// The set of enabled features should be invariant for the lifetime of the
     /// session.
     pub(super) features: Features,
-    pub(super) isolation: codex_extension_api::SessionIsolation,
     pub(crate) tool_policy: Arc<codex_extension_api::ToolPolicy>,
     pub(super) multi_agent_version: OnceLock<MultiAgentVersion>,
     /// Owns invalidation and serializes refreshes without blocking captured calls.
@@ -134,7 +131,6 @@ impl SessionConfiguration {
             allow_login_shell: self.allow_login_shell,
             workspace_roots: Vec::new(),
             shell_environment_policy: self.shell_environment_policy.clone(),
-            selected_capability_roots: Vec::new(),
         }
     }
 
@@ -188,12 +184,9 @@ impl SessionConfiguration {
         environment_selections: Vec<TurnEnvironmentSelection>,
     ) -> CodexThreadSettingsOverrides {
         CodexThreadSettingsOverrides {
-            environments: Some(TurnEnvironmentRequests::new(
+            environments: Some(TurnEnvironmentSelections::new(
                 self.legacy_fallback_cwd.clone(),
-                environment_selections
-                    .into_iter()
-                    .map(TurnEnvironmentSelection::into_request)
-                    .collect(),
+                environment_selections,
             )),
             runtime_workspace_roots: Some(self.runtime_workspace_roots.clone()),
             summary: self.step_settings.reasoning_summary,
@@ -205,15 +198,7 @@ impl SessionConfiguration {
         }
     }
 
-    pub(super) fn validate(&self, environments: &[TurnEnvironmentSelection]) -> CodexResult<()> {
-        super::environment::validate_environment_configs(environments)
-    }
-
-    pub(super) fn apply(
-        &self,
-        updates: &SessionSettingsUpdate,
-        current_environments: &[TurnEnvironmentSelection],
-    ) -> CodexResult<Self> {
+    pub(super) fn apply(&self, updates: &SessionSettingsUpdate) -> CodexResult<Self> {
         let mut next_configuration = self.clone();
         if let Some(turn_extension_init) = &updates.turn_extension_init {
             next_configuration.turn_extension_init = turn_extension_init.clone();
@@ -240,13 +225,6 @@ impl SessionConfiguration {
         if let Some(app_server_client_version) = updates.app_server_client_version.clone() {
             next_configuration.app_server_client_version = Some(app_server_client_version);
         }
-        let next_environments = updates
-            .environments
-            .as_ref()
-            .map_or(current_environments, |environments| {
-                environments.environments.as_slice()
-            });
-        super::environment::validate_environment_configs(next_environments)?;
         next_configuration.step_settings =
             Arc::new(self.step_settings.apply(&updates.step_settings));
         Ok(next_configuration)
@@ -588,10 +566,6 @@ impl Session {
             config.current_time_reminder.as_ref(),
             external_time_provider,
         )?;
-        let selected_capability_roots = thread_extension_init
-            .get::<Vec<SelectedCapabilityRoot>>()
-            .map(|roots| roots.as_ref().clone())
-            .unwrap_or_default();
         thread_extension_init.insert(codex_extension_api::ThreadOriginator(
             session_configuration.originator.clone(),
         ));
@@ -633,7 +607,6 @@ impl Session {
                             provenance: base_instructions_provenance.clone(),
                         },
                         dynamic_tools: session_configuration.dynamic_tools.clone(),
-                        selected_capability_roots: selected_capability_roots.clone(),
                         multi_agent_version: initial_multi_agent_version,
                         history_mode: session_configuration.history_mode,
                         subagent_history_start_ordinal: None,
@@ -693,8 +666,7 @@ impl Session {
             .unwrap_or_else(|| session_configuration.cwd().to_path_buf());
         let auth_and_mcp_fut = async move {
             let auth = mcp_auth.await;
-            let mcp_config = mcp_manager_for_mcp
-                .runtime_config_for_step(&config_for_mcp, environment_selections);
+            let mcp_config = mcp_manager_for_mcp.runtime_config_for_step(&config_for_mcp);
             (auth, mcp_config)
         }
         .instrument(info_span!(
@@ -847,18 +819,16 @@ impl Session {
             } else {
                 ShellSnapshot::disabled()
             };
-            let inherited_environments = inherited_environments.unwrap_or_default();
             let turn_environments = Arc::new(ThreadEnvironments::new(
                 environment_manager,
                 default_shell.clone(),
                 ThreadEnvironmentDefaults::new(session_configuration.inferred_environment_config()),
                 shell_snapshot,
-                inherited_environments.clone(),
-                config.features.enabled(Feature::DeferredExecutor),
+                inherited_environments.unwrap_or_default(),
             ));
             turn_environments.update_selections(environment_selections);
             session_configuration.environments = turn_environments.selections();
-            let resolved_environments = turn_environments.snapshot().await;
+            let resolved_environments = turn_environments.snapshot();
             let agents_md_manager = Arc::new(AgentsMdManager::new(instructions));
             let skill_warmup = warm_skills_for_session_init(
                 Arc::clone(&config),
@@ -903,8 +873,7 @@ impl Session {
 
             // Hooks and extensions share one stable thread-owned MCP runtime handle.
             let mcp_runtime = Arc::new(McpRuntime::empty(mcp_config.prefix_mcp_tool_names));
-            let hooks_config =
-                build_hooks_config(&config, resolved_environments.single_local_environment());
+            let hooks_config = build_hooks_config(&config, resolved_environments.primary());
             let (hooks, async_hook_results) = Hooks::new(
                 hooks_config,
                 thread_id,
@@ -972,7 +941,6 @@ impl Session {
                 // TODO(jif): extract session to share between sub-agents
                 session_extension_data,
                 thread_extension_data,
-                selected_capability_roots,
                 client_mcp_extensions,
                 local_agent_runtime,
                 agent_control,
@@ -1030,7 +998,6 @@ impl Session {
                 state: Mutex::new(state),
                 thread_settings_persistence: Semaphore::new(/*permits*/ 1),
                 features: config.features.clone(),
-                isolation,
                 tool_policy,
                 multi_agent_version,
                 mcp_refresh: McpRefresh::new(),
@@ -1075,24 +1042,20 @@ impl Session {
             for event in events {
                 sess.send_event_raw(event).await;
             }
-            turn_environments.start_connection_event_forwarding(tx_event.clone());
 
             let startup_auth_changed = mcp_auth_changes.has_changed().unwrap_or(false);
             if startup_auth_changed {
                 mcp_auth_changes.mark_unchanged();
             }
             let latest_auth = sess.services.auth_manager.auth().await;
-            let resolved_environment_selections = resolved_environments.all_selections();
-            let mcp_config = if startup_auth_changed
-                || mcp_auth_changes.has_changed().unwrap_or(false)
-                || resolved_environment_selections.as_slice() != environment_selections
-            {
-                sess.services
-                    .mcp_manager
-                    .runtime_config_for_step(config.as_ref(), &resolved_environment_selections)
-            } else {
-                mcp_config
-            };
+            let mcp_config =
+                if startup_auth_changed || mcp_auth_changes.has_changed().unwrap_or(false) {
+                    sess.services
+                        .mcp_manager
+                        .runtime_config_for_step(config.as_ref())
+                } else {
+                    mcp_config
+                };
             sess.install_initial_mcp_runtime(
                 &session_configuration,
                 latest_auth,
@@ -1102,10 +1065,6 @@ impl Session {
             )
             .await?;
             sess.start_mcp_prewarm_worker(mcp_prewarm_rx, mcp_auth_changes);
-            sess.follow_inherited_environment_configurations(
-                &inherited_environments,
-                &session_configuration.environments,
-            );
             sess.schedule_startup_prewarm(super::startup_prewarm::PrewarmInput::Base)
                 .await;
             let session_start_source = match &initial_history {

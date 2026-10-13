@@ -21,10 +21,6 @@ impl McpRuntime {
         runtime_context: &McpRuntimeContext,
     ) -> anyhow::Result<(Arc<McpConfig>, McpServerStatusSnapshot)> {
         let current = self.current.load_full();
-        let runtime_context = runtime_context.clone().with_selected_environments(
-            Arc::clone(&current.environment_selections),
-            current.ready_environments.clone(),
-        );
         let config = Arc::clone(
             current
                 .config
@@ -38,7 +34,7 @@ impl McpRuntime {
             config.mcp_oauth_credentials_store_mode,
             config.auth_keyring_backend_kind,
             current.auth.as_ref(),
-            &runtime_context,
+            runtime_context,
         )
         .await;
         let snapshot = collect_mcp_server_status_snapshot_from_manager(

@@ -43,11 +43,7 @@ impl<'a> PreparedSkillCatalog<'a> {
         CatalogLines::aliased(&self.entries, self.policy, self.alias_plan.as_ref())
     }
 
-    pub(crate) fn render(
-        &self,
-        budget: SkillMetadataBudget,
-        include_skills_usage_instructions: bool,
-    ) -> Option<AvailableSkillsRender> {
+    pub(crate) fn render(&self, budget: SkillMetadataBudget) -> Option<AvailableSkillsRender> {
         if self.entries.is_empty() {
             return None;
         }
@@ -58,17 +54,10 @@ impl<'a> PreparedSkillCatalog<'a> {
             SkillPromptKind::Unaliased,
             self.policy,
         );
-        let selected = if let Some(aliased) = build_aliased_catalog(
-            self.aliased(),
-            self.policy,
-            budget,
-            include_skills_usage_instructions,
-        ) && aliased_render_is_better(
-            &aliased,
-            &absolute,
-            budget,
-            include_skills_usage_instructions,
-        ) {
+        let selected = if let Some(aliased) =
+            build_aliased_catalog(self.aliased(), self.policy, budget)
+            && aliased_render_is_better(&aliased, &absolute, budget)
+        {
             aliased
         } else {
             absolute

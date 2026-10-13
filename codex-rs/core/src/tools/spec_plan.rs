@@ -22,7 +22,6 @@ use crate::tools::handlers::SleepHandler;
 use crate::tools::handlers::TestSyncHandler;
 use crate::tools::handlers::ToolSearchHandlerCache;
 use crate::tools::handlers::ViewImageHandler;
-use crate::tools::handlers::WaitForEnvironmentHandler;
 use crate::tools::handlers::WriteStdinHandler;
 use crate::tools::handlers::extension_tools::ExtensionToolAdapter;
 use crate::tools::handlers::multi_agents::CloseAgentHandler;
@@ -69,7 +68,6 @@ use codex_protocol::protocol::MultiAgentVersion;
 use codex_tools::ResponsesApiNamespaceTool;
 use codex_tools::TOOL_SEARCH_TOOL_NAME;
 use codex_tools::ToolCall as ExtensionToolCall;
-use codex_tools::ToolEnvironmentMode;
 use codex_tools::ToolExecutor;
 use codex_tools::ToolExposures;
 use codex_tools::ToolName;
@@ -93,9 +91,14 @@ struct CoreToolPlanContext<'a> {
     model_info: &'a ModelInfo,
     environments: &'a TurnEnvironmentSnapshot,
     mcp: &'a codex_mcp::McpBinding,
-    wait_for_environment_tool_config: Option<&'a Arc<crate::WaitForEnvironmentToolConfig>>,
     default_agent_type_description: &'a str,
     wait_agent_timeouts: WaitAgentTimeoutOptions,
+}
+
+/// Responses Lite models get `tool_search` as a namespaced function call that the
+/// router cannot dispatch, so they see every tool directly instead of deferring.
+fn deferred_tools_supported(model_info: &ModelInfo) -> bool {
+    model_info.supports_search_tool && !model_info.use_responses_lite
 }
 
 #[instrument(level = "trace", skip_all)]
@@ -110,16 +113,11 @@ pub(crate) fn build_tool_router(
 ) -> CodexResult<ToolRouter> {
     let default_agent_type_description =
         crate::agent::role::spawn_tool_spec::build(&std::collections::BTreeMap::new());
-    let wait_for_environment_tool_config = session
-        .services
-        .thread_extension_data
-        .get::<crate::WaitForEnvironmentToolConfig>();
     let context = CoreToolPlanContext {
         turn_context,
         model_info,
         environments,
         mcp,
-        wait_for_environment_tool_config: wait_for_environment_tool_config.as_ref(),
         default_agent_type_description: &default_agent_type_description,
         wait_agent_timeouts: wait_agent_timeout_options(turn_context),
     };
@@ -129,7 +127,7 @@ pub(crate) fn build_tool_router(
     let registered_mcp_tools = session.services.mcp_handler_cache.append_mcp_tools(
         mcp,
         &mcp.config().mcp_server_catalog,
-        model_info.supports_search_tool,
+        deferred_tools_supported(model_info),
         &mut registry,
     );
     apply_mcp_tool_exposure_policy(model_info, mcp, &registered_mcp_tools, &mut registry);
@@ -191,12 +189,13 @@ fn apply_mcp_tool_exposure_policy(
             continue;
         };
         let exposures = ToolExposures::ALL.difference(*omitted_exposures);
-        let exposures =
-            if model_info.supports_search_tool && exposures.contains(ToolExposures::DEFERRED) {
-                exposures.difference(ToolExposures::DIRECT)
-            } else {
-                exposures.difference(ToolExposures::DEFERRED)
-            };
+        let exposures = if deferred_tools_supported(model_info)
+            && exposures.contains(ToolExposures::DEFERRED)
+        {
+            exposures.difference(ToolExposures::DIRECT)
+        } else {
+            exposures.difference(ToolExposures::DEFERRED)
+        };
 
         tool.exposure = match (
             exposures.contains(ToolExposures::DIRECT),
@@ -240,7 +239,7 @@ pub(crate) fn finalize_tool_router(
     let model_messages = ResolvedModelMessages::from_model(model_info);
     hosted_specs.retain(|spec| registry.tool_policy.allows(&ToolName::plain(spec.name())));
     let tool_search_name = ToolName::plain(TOOL_SEARCH_TOOL_NAME);
-    let search_enabled = model_info.supports_search_tool
+    let search_enabled = deferred_tools_supported(model_info)
         && registry.tool_policy.allows(&tool_search_name)
         && registry.entries().any(|tool| {
             tool.runtime.tool_name() != tool_search_name
@@ -580,19 +579,8 @@ fn standalone_web_search_enabled(turn_context: &TurnContext, model_info: &ModelI
                 .enabled(Feature::StandaloneWebSearch))
 }
 
-fn tool_environment_mode(context: &CoreToolPlanContext<'_>) -> ToolEnvironmentMode {
-    let count = if context
-        .turn_context
-        .config
-        .features
-        .enabled(Feature::StableEnvironmentTools)
-    {
-        // Keep selectors stable as selected attachments change readiness.
-        context.environments.environments.len()
-    } else {
-        context.environments.turn_environments().count()
-    };
-    ToolEnvironmentMode::from_count(count)
+fn has_environment(context: &CoreToolPlanContext<'_>) -> bool {
+    context.environments.primary().is_some()
 }
 
 fn should_include_windows_shell_guidance(environments: &TurnEnvironmentSnapshot) -> bool {
@@ -618,27 +606,20 @@ fn should_include_windows_shell_guidance(environments: &TurnEnvironmentSnapshot)
 fn add_shell_tools(context: &CoreToolPlanContext<'_>, registry: &mut ToolRegistry) {
     let turn_context = context.turn_context;
     let features = &turn_context.config.features;
-    let environment_mode = tool_environment_mode(context);
-    let stable_environment_tools = features.enabled(Feature::StableEnvironmentTools);
-    let advertise_environment_tools =
-        stable_environment_tools || environment_mode.has_environment();
-    if !advertise_environment_tools
+    if !has_environment(context)
         || !features.enabled(Feature::ShellTool)
         || matches!(context.model_info.shell_type, ConfigShellToolType::Disabled)
     {
         return;
     }
 
-    let include_environment_id = matches!(environment_mode, ToolEnvironmentMode::Multiple);
     let options = ExecCommandHandlerOptions {
-        include_login_parameter: stable_environment_tools
-            || context
-                .environments
-                .turn_environments()
-                .any(|environment| environment.config().allow_login_shell),
+        include_login_parameter: context
+            .environments
+            .turn_environments()
+            .any(|environment| environment.config().allow_login_shell),
         include_shell_parameter: true,
         allow_tty: features.enabled(Feature::UnifiedExecTty),
-        include_environment_id,
         include_windows_shell_guidance: should_include_windows_shell_guidance(context.environments),
     };
     registry.add(ExecCommandHandler::new(options));
@@ -665,25 +646,10 @@ fn add_mcp_resource_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
 fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut ToolRegistry) {
     let turn_context = context.turn_context;
     let features = &turn_context.config.features;
-    let environment_mode = tool_environment_mode(context);
-    let stable_environment_tools = features.enabled(Feature::StableEnvironmentTools);
-    let advertise_environment_tools =
-        stable_environment_tools || environment_mode.has_environment();
+    let advertise_environment_tools = has_environment(context);
 
     if turn_context.config.update_plan_enabled {
         registry.add(PlanHandler);
-    }
-
-    if features.enabled(Feature::DeferredExecutor) {
-        registry.add(
-            context
-                .wait_for_environment_tool_config
-                .map(Arc::as_ref)
-                .map_or_else(
-                    WaitForEnvironmentHandler::default,
-                    WaitForEnvironmentHandler::new,
-                ),
-        );
     }
 
     if turn_context.config.experimental_request_user_input_enabled {
@@ -768,8 +734,7 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
     }
 
     if advertise_environment_tools && context.model_info.apply_patch_tool_type.is_some() {
-        let include_environment_id = matches!(environment_mode, ToolEnvironmentMode::Multiple);
-        registry.add(ApplyPatchHandler::new(include_environment_id));
+        registry.add(ApplyPatchHandler);
     }
 
     if context
@@ -782,7 +747,6 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
     }
 
     if advertise_environment_tools && features.enabled(Feature::ViewImage) {
-        let include_environment_id = matches!(environment_mode, ToolEnvironmentMode::Multiple);
         registry.add(ViewImageHandler::new(ViewImageToolOptions {
             can_request_original_image_detail: can_request_original_image_detail(
                 context.model_info,
@@ -791,7 +755,6 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
                 &turn_context.config.features,
                 context.model_info,
             ),
-            include_environment_id,
         }));
     }
 }
@@ -895,7 +858,7 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
         } else {
             let agent_type_description =
                 agent_type_description(turn_context, context.default_agent_type_description);
-            let exposure = if context.model_info.supports_search_tool {
+            let exposure = if deferred_tools_supported(context.model_info) {
                 ToolExposure::Deferred
             } else {
                 ToolExposure::Direct

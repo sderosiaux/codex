@@ -24,7 +24,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use codex_protocol::ThreadId;
-use codex_protocol::capabilities::SelectedCapabilityRoot;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::mcp::McpAttribution;
 use codex_protocol::mcp::McpAttributionStatus;
@@ -409,12 +408,6 @@ impl InitialHistory {
                 _ => None,
             }),
         }
-    }
-
-    pub fn get_selected_capability_roots(&self) -> Vec<SelectedCapabilityRoot> {
-        self.get_session_meta()
-            .map(|meta| meta.selected_capability_roots.clone())
-            .unwrap_or_default()
     }
 
     pub fn get_multi_agent_version(&self) -> Option<MultiAgentVersion> {

@@ -18,16 +18,14 @@ use std::time::Duration;
 
 use arc_swap::ArcSwap;
 use async_channel::Sender;
-use codex_exec_server::Environment;
-use codex_exec_server::EnvironmentManager;
 use codex_exec_server::HttpClient;
 use codex_exec_server::RouteAwareHttpClient;
+use codex_http_client::HttpClientFactory;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_protocol::mcp::CallToolResult;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::protocol::Event;
-use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_rmcp_client::ElicitationResponse;
 use codex_rmcp_client::with_http_headers_helper;
 use rmcp::model::ReadResourceRequestParams;
@@ -88,8 +86,6 @@ struct PublishedMcpRuntime {
     config: Option<Arc<McpConfig>>,
     auth: Option<CodexAuth>,
     auth_token: Option<String>,
-    environment_selections: Arc<[TurnEnvironmentSelection]>,
-    ready_environments: HashMap<String, Arc<Environment>>,
     cached_binding: Mutex<Option<CachedMcpBinding>>,
 }
 
@@ -176,8 +172,6 @@ impl McpRuntime {
                 config: None,
                 auth: None,
                 auth_token: None,
-                environment_selections: Arc::default(),
-                ready_environments: HashMap::new(),
                 cached_binding: Mutex::new(None),
             }),
             reconnect_pending: AtomicBool::new(false),
@@ -211,8 +205,6 @@ impl McpRuntime {
         let config = Arc::clone(&input.config);
         let auth = input.auth.clone();
         let auth_token = auth.as_ref().and_then(|auth| auth.get_token().ok());
-        let environment_selections = Arc::clone(&input.runtime_context.environment_selections);
-        let ready_environments = input.runtime_context.ready_environments.clone();
         let connections = Arc::new(
             McpConnectionSet::new(
                 previous,
@@ -227,8 +219,6 @@ impl McpRuntime {
             config: Some(config),
             auth,
             auth_token,
-            environment_selections,
-            ready_environments,
             cached_binding: Mutex::new(None),
         }));
         let _ = publish.send(true);
@@ -372,24 +362,6 @@ impl McpRuntime {
         self.current.load().config.clone()
     }
 
-    /// Whether this publication uses the same selections and currently ready environment handles.
-    pub fn current_environments_match(
-        &self,
-        selections: &[TurnEnvironmentSelection],
-        ready_environments: &HashMap<String, Arc<Environment>>,
-    ) -> bool {
-        let current = self.current.load();
-        current.config.is_some()
-            && current.environment_selections.as_ref() == selections
-            && current.ready_environments.len() == ready_environments.len()
-            && ready_environments.iter().all(|(id, environment)| {
-                current
-                    .ready_environments
-                    .get(id)
-                    .is_some_and(|published| Arc::ptr_eq(published, environment))
-            })
-    }
-
     pub fn elicitations_auto_deny(&self) -> bool {
         self.elicitation_router.auto_deny()
     }
@@ -422,7 +394,6 @@ impl McpRuntime {
         &self,
         server: &str,
         tool: &str,
-        environment_id: Option<&str>,
         arguments: Option<serde_json::Value>,
         meta: Option<serde_json::Value>,
         requested_timeout: Option<Duration>,
@@ -432,7 +403,6 @@ impl McpRuntime {
             .call_tool(
                 server,
                 tool,
-                environment_id,
                 arguments,
                 meta,
                 requested_timeout,
@@ -494,24 +464,14 @@ impl McpRuntime {
     }
 }
 
-/// Runtime context used when resolving per-server MCP environments.
-///
-/// `McpConfig` describes what servers exist. This value carries the canonical
-/// environment registry, captured thread selections, and the host-local cwd used by MCP processes.
+/// Host-local process cwd and HTTP client used to start MCP servers.
 #[derive(Clone)]
 pub struct McpRuntimeContext {
-    environment_manager: Arc<EnvironmentManager>,
-    environment_selections: Arc<[TurnEnvironmentSelection]>,
-    ready_environments: HashMap<String, Arc<Environment>>,
     local_process_cwd: PathBuf,
     local_http_client: Arc<dyn HttpClient>,
 }
 
 /// Applies the local HTTP headers helper configured for an MCP server.
-///
-/// Callers retain ownership of selecting the underlying HTTP transport. This
-/// function centralizes the helper-specific policy checks and decoration used
-/// by both MCP runtime startup and standalone OAuth login.
 pub fn apply_http_headers_helper(
     client: Arc<dyn HttpClient>,
     config: &codex_config::McpServerConfig,
@@ -525,102 +485,33 @@ pub fn apply_http_headers_helper(
     else {
         return Ok(client);
     };
-    if !config.is_local_environment() {
-        return Err("HTTP headers helpers can only run in the local environment".to_string());
-    }
     with_http_headers_helper(client, url, command, local_process_cwd)
         .map_err(|error| error.to_string())
 }
 
 impl McpRuntimeContext {
-    pub fn new(environment_manager: Arc<EnvironmentManager>, local_process_cwd: PathBuf) -> Self {
-        let local_http_client = Arc::new(
-            RouteAwareHttpClient::new(environment_manager.http_client_factory().clone())
-                .with_tls_backend_fallback(),
-        );
+    pub fn new(http_client_factory: HttpClientFactory, local_process_cwd: PathBuf) -> Self {
+        let local_http_client =
+            Arc::new(RouteAwareHttpClient::new(http_client_factory).with_tls_backend_fallback());
         Self {
-            environment_manager,
-            environment_selections: Arc::default(),
-            ready_environments: HashMap::new(),
             local_process_cwd,
             local_http_client,
         }
-    }
-
-    /// Pins all captured selections and the concrete handles for environments already ready.
-    pub fn with_selected_environments(
-        mut self,
-        environment_selections: Arc<[TurnEnvironmentSelection]>,
-        ready_environments: HashMap<String, Arc<Environment>>,
-    ) -> Self {
-        self.environment_selections = environment_selections;
-        self.ready_environments = ready_environments;
-        self
     }
 
     pub(crate) fn local_process_cwd(&self) -> PathBuf {
         self.local_process_cwd.clone()
     }
 
-    pub(crate) fn local_http_client(&self) -> Arc<dyn HttpClient> {
-        Arc::clone(&self.local_http_client)
-    }
-
-    pub(crate) fn resolve_server_environment(
+    pub fn http_client_for_server(
         &self,
-        server_name: &str,
-        config: &codex_config::McpServerConfig,
-    ) -> Result<Option<Arc<Environment>>, String> {
-        // Resolve `"local"` through the shared registry when available. Local
-        // HTTP is the one current exception: it can use the ambient HTTP client
-        // even when no local Environment is configured.
-        if let Some(environment) = self
-            .ready_environments
-            .get(&config.environment_id)
-            .cloned()
-            .or_else(|| {
-                self.environment_manager
-                    .get_environment(&config.environment_id)
-            })
-        {
-            return Ok(Some(environment));
-        }
-
-        if config.is_local_environment() {
-            return match config.transport {
-                codex_config::McpServerTransportConfig::Stdio { .. } => Err(format!(
-                    "local stdio MCP server `{server_name}` requires a local environment"
-                )),
-                codex_config::McpServerTransportConfig::StreamableHttp { .. } => Ok(None),
-            };
-        }
-
-        Err(format!(
-            "MCP server `{server_name}` references unknown environment id `{}`",
-            config.environment_id
-        ))
-    }
-
-    /// Resolves local MCP's specialized HTTP capability or the selected remote capability.
-    pub fn resolve_http_client(
-        &self,
-        server_name: &str,
         config: &codex_config::McpServerConfig,
     ) -> Result<Arc<dyn HttpClient>, String> {
-        let environment = self.resolve_server_environment(server_name, config)?;
-        self.http_client_for_server(config, environment.as_ref())
-    }
-
-    pub(crate) fn http_client_for_server(
-        &self,
-        config: &codex_config::McpServerConfig,
-        environment: Option<&Arc<Environment>>,
-    ) -> Result<Arc<dyn HttpClient>, String> {
-        let client = match environment {
-            Some(environment) if environment.is_remote() => environment.get_http_client(),
-            Some(_) | None => self.local_http_client(),
-        };
-        apply_http_headers_helper(client, config, self.local_process_cwd())
+        apply_http_headers_helper(
+            Arc::clone(&self.local_http_client),
+            config,
+            self.local_process_cwd(),
+        )
     }
 }
 

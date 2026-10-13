@@ -8,15 +8,12 @@ use std::sync::Arc;
 pub enum SkillSourceKind {
     /// Codex-hosted skills: bundled, user, and repo skills.
     Host,
-    /// Skills owned by an execution environment.
-    Executor,
 }
 
 impl SkillSourceKind {
     fn as_str(&self) -> &str {
         match self {
             Self::Host => "host",
-            Self::Executor => "executor",
         }
     }
 }
@@ -47,18 +44,7 @@ impl SkillAuthority {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SkillPackageId(pub String);
 
-impl SkillPackageId {
-    pub(crate) fn relative_resource_path<'a>(&self, resource: &'a str) -> Option<&'a str> {
-        let relative = resource
-            .strip_prefix(self.0.trim_end_matches('/'))?
-            .strip_prefix('/')?;
-        (!relative.is_empty()
-            && relative
-                .split('/')
-                .all(|segment| !matches!(segment, "" | "." | "..")))
-        .then_some(relative)
-    }
-}
+impl SkillPackageId {}
 
 /// Opaque resource id inside a skill package, optionally bound to the
 /// environment path that owns its contents.
@@ -113,38 +99,6 @@ impl SkillResourceId {
 
     pub fn as_str(&self) -> &str {
         &self.id
-    }
-
-    pub(crate) fn bind_environment_package_resource(
-        &self,
-        package: &SkillPackageId,
-        resource: impl Into<String>,
-    ) -> Option<Self> {
-        let resource = resource.into();
-        let relative = package.relative_resource_path(&resource)?;
-        let environment = self.environment_path.as_ref()?;
-        let path = environment.package_root.join(relative).ok()?;
-        path.starts_with(&environment.package_root).then(|| Self {
-            id: resource,
-            environment_path: Some(EnvironmentSkillResource {
-                environment_id: environment.environment_id.clone(),
-                package_root: environment.package_root.clone(),
-                path,
-                contents: None,
-            }),
-        })
-    }
-
-    pub(crate) fn environment_path(&self) -> Option<(&str, &PathUri)> {
-        self.environment_path
-            .as_ref()
-            .map(|resource| (resource.environment_id.as_str(), &resource.path))
-    }
-
-    pub(crate) fn environment_contents(&self) -> Option<&str> {
-        self.environment_path
-            .as_ref()
-            .and_then(|resource| resource.contents.as_deref())
     }
 }
 

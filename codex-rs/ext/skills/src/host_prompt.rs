@@ -79,7 +79,6 @@ impl HostSkillsSnapshot {
                         name: skill.name.clone(),
                         path: skill.path_to_skills_md.inferred_native_path_string(),
                         contents,
-                        resource_access: None,
                     }));
                     prompts.injected.push(skill.clone());
                 }

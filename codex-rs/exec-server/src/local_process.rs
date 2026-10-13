@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use crate::process_telemetry::ProcessTelemetry;
 use crate::process_telemetry::ProcessTelemetryEvent;
-use codex_exec_server_protocol::JSONRPCErrorError;
+use crate::rpc::HandlerError;
 use codex_protocol::config_types::EnvironmentVariablePattern;
 use codex_protocol::config_types::ShellEnvironmentPolicy;
 use codex_protocol::shell_environment;
@@ -20,7 +20,6 @@ use opentelemetry::trace::SpanContext;
 use opentelemetry::trace::TraceContextExt;
 use tokio::sync::Mutex;
 use tokio::sync::Notify;
-use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tracing::Instrument;
 use tracing::instrument::WithSubscriber;
@@ -37,11 +36,7 @@ use crate::StartedExecProcess;
 use crate::exec_request::prepare_exec_request;
 use crate::process::ExecProcessEventLog;
 use crate::protocol::ByteChunk;
-use crate::protocol::EXEC_CLOSED_METHOD;
-use crate::protocol::ExecClosedNotification;
 use crate::protocol::ExecEnvPolicy;
-use crate::protocol::ExecExitedNotification;
-use crate::protocol::ExecOutputDeltaNotification;
 use crate::protocol::ExecOutputStream;
 use crate::protocol::ExecParams;
 use crate::protocol::ExecResponse;
@@ -56,8 +51,6 @@ use crate::protocol::TerminateResponse;
 use crate::protocol::WriteParams;
 use crate::protocol::WriteResponse;
 use crate::protocol::WriteStatus;
-use crate::rpc::RpcNotificationSender;
-use crate::rpc::RpcServerOutboundMessage;
 use crate::rpc::internal_error;
 use crate::rpc::invalid_params;
 use crate::rpc::invalid_request;
@@ -70,7 +63,6 @@ const RETAINED_OUTPUT_BYTES_PER_PROCESS: usize = 1024 * 1024;
 // Each process/read chunk needs four JSON values. Keep retained replay below the
 // shared 256K-value JSON-RPC decoder budget even when output arrives in tiny chunks.
 const RETAINED_OUTPUT_CHUNKS_PER_PROCESS: usize = 50_000;
-const NOTIFICATION_CHANNEL_CAPACITY: usize = 256;
 const PROCESS_EVENT_CHANNEL_CAPACITY: usize = 256;
 const RETAINED_STDIN_WRITE_IDS_PER_PROCESS: usize = 4096;
 static NEXT_LOCAL_STDIN_WRITE_ID: AtomicU64 = AtomicU64::new(1);
@@ -133,7 +125,6 @@ enum ProcessEntry {
 }
 
 struct Inner {
-    notifications: std::sync::RwLock<Option<RpcNotificationSender>>,
     processes: Mutex<HashMap<ProcessId, ProcessEntry>>,
     #[cfg(unix)]
     shell_snapshots: crate::shell_snapshot::ShellSnapshotCache,
@@ -154,24 +145,14 @@ struct LocalExecProcess {
 
 impl Default for LocalProcess {
     fn default() -> Self {
-        let (outgoing_tx, mut outgoing_rx) =
-            mpsc::channel::<RpcServerOutboundMessage>(NOTIFICATION_CHANNEL_CAPACITY);
-        tokio::spawn(async move { while outgoing_rx.recv().await.is_some() {} });
-        Self::new(
-            RpcNotificationSender::new(outgoing_tx),
-            ExecServerTelemetry::default(),
-        )
+        Self::new(ExecServerTelemetry)
     }
 }
 
 impl LocalProcess {
-    pub(crate) fn new(
-        notifications: RpcNotificationSender,
-        telemetry: ExecServerTelemetry,
-    ) -> Self {
+    pub(crate) fn new(telemetry: ExecServerTelemetry) -> Self {
         Self {
             inner: Arc::new(Inner {
-                notifications: std::sync::RwLock::new(Some(notifications)),
                 processes: Mutex::new(HashMap::new()),
                 #[cfg(unix)]
                 shell_snapshots: crate::shell_snapshot::ShellSnapshotCache::default(),
@@ -180,39 +161,11 @@ impl LocalProcess {
         }
     }
 
-    pub(crate) async fn shutdown(&self) {
-        let remaining = {
-            let mut processes = self.inner.processes.lock().await;
-            processes
-                .drain()
-                .filter_map(|(_, process)| match process {
-                    ProcessEntry::Starting(_) => None,
-                    ProcessEntry::Running(process) => Some(process),
-                })
-                .collect::<Vec<_>>()
-        };
-        for mut process in remaining {
-            if let Some(metrics) = process.metrics.take() {
-                metrics.finish("terminated");
-            }
-            process.session.terminate();
-        }
-    }
-
-    pub(crate) fn set_notification_sender(&self, notifications: Option<RpcNotificationSender>) {
-        let mut notification_sender = self
-            .inner
-            .notifications
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *notification_sender = notifications;
-    }
-
     async fn start_process(
         &self,
         params: ExecParams,
         mut telemetry: ProcessTelemetry,
-    ) -> Result<(ExecResponse, watch::Sender<u64>, ExecProcessEventLog), JSONRPCErrorError> {
+    ) -> Result<(ExecResponse, watch::Sender<u64>, ExecProcessEventLog), HandlerError> {
         telemetry.launch_context = telemetry.launch_context.filter(SpanContext::is_valid);
         let metadata = params.metadata.as_ref();
         telemetry.thread_id = metadata
@@ -382,20 +335,7 @@ impl LocalProcess {
         Ok((ExecResponse { process_id }, wake_tx, events))
     }
 
-    pub(crate) async fn exec(
-        &self,
-        params: ExecParams,
-        telemetry: ProcessTelemetry,
-    ) -> Result<ExecResponse, JSONRPCErrorError> {
-        self.start_process(params, telemetry)
-            .await
-            .map(|(response, _, _)| response)
-    }
-
-    pub(crate) async fn exec_read(
-        &self,
-        params: ReadParams,
-    ) -> Result<ReadResponse, JSONRPCErrorError> {
+    pub(crate) async fn exec_read(&self, params: ReadParams) -> Result<ReadResponse, HandlerError> {
         let after_seq = params.after_seq.unwrap_or(0);
         let max_bytes = params.max_bytes.unwrap_or(usize::MAX);
         let wait = Duration::from_millis(params.wait_ms.unwrap_or(0));
@@ -471,7 +411,7 @@ impl LocalProcess {
     pub(crate) async fn exec_write(
         &self,
         params: WriteParams,
-    ) -> Result<WriteResponse, JSONRPCErrorError> {
+    ) -> Result<WriteResponse, HandlerError> {
         let _input_bytes = params.chunk.0.len();
         if params.write_id.is_empty() {
             return Err(invalid_params("writeId must not be empty".to_string()));
@@ -534,7 +474,7 @@ impl LocalProcess {
     pub(crate) async fn signal_process(
         &self,
         params: SignalParams,
-    ) -> Result<SignalResponse, JSONRPCErrorError> {
+    ) -> Result<SignalResponse, HandlerError> {
         {
             let process_map = self.inner.processes.lock().await;
             match process_map.get(&params.process_id) {
@@ -557,7 +497,7 @@ impl LocalProcess {
     pub(crate) async fn terminate_process(
         &self,
         params: TerminateParams,
-    ) -> Result<TerminateResponse, JSONRPCErrorError> {
+    ) -> Result<TerminateResponse, HandlerError> {
         let running = {
             let mut process_map = self.inner.processes.lock().await;
             match process_map.get_mut(&params.process_id) {
@@ -591,7 +531,6 @@ fn child_env(params: &ExecParams) -> HashMap<String, String> {
         }
         None => params.env.clone(),
     };
-    env.remove(crate::CODEX_EXEC_SERVER_EXIT_ON_STDIN_CLOSE_ENV_VAR);
     env.retain(|name, _| !shell_environment::is_non_inheritable_env_var(name));
     apply_exec_metadata(&mut env, params.metadata.as_ref());
     env
@@ -805,7 +744,7 @@ fn pty_process_signal(signal: ProcessSignal) -> PtyProcessSignal {
     }
 }
 
-fn map_handler_error(error: JSONRPCErrorError) -> ExecServerError {
+fn map_handler_error(error: HandlerError) -> ExecServerError {
     ExecServerError::Server {
         code: error.code,
         message: error.message,
@@ -822,7 +761,7 @@ async fn stream_output(
     while let Some(chunk) = receiver.recv().await {
         let _chunk_len = chunk.len();
         let chunk = ByteChunk::from(chunk);
-        let notification = {
+        {
             let mut processes = inner.processes.lock().await;
             let Some(entry) = processes.get_mut(&process_id) else {
                 break;
@@ -845,22 +784,9 @@ async fn stream_output(
                     process.retained_bytes.saturating_sub(evicted.chunk.0.len());
             }
             let _ = process.wake_tx.send(seq);
-            process
-                .events
-                .publish(ExecProcessEvent::Output(output.clone()));
-            ExecOutputDeltaNotification {
-                process_id: process_id.clone(),
-                seq,
-                stream,
-                chunk: output.chunk,
-            }
-        };
-        output_notify.notify_waiters();
-        if let Some(notifications) = notification_sender(&inner) {
-            let _ = notifications
-                .notify(crate::protocol::EXEC_OUTPUT_DELTA_METHOD, &notification)
-                .await;
+            process.events.publish(ExecProcessEvent::Output(output));
         }
+        output_notify.notify_waiters();
     }
 
     finish_output_stream(process_id, inner).await;
@@ -897,7 +823,7 @@ fn watch_exit(
                 });
             }
         }
-        let notification = {
+        {
             let mut processes = inner.processes.lock().await;
             if let Some(ProcessEntry::Running(process)) = processes.get_mut(&process_id) {
                 let seq = process.next_seq;
@@ -911,23 +837,9 @@ fn watch_exit(
                 process
                     .events
                     .publish(ExecProcessEvent::Exited { seq, exit_code });
-                Some(ExecExitedNotification {
-                    process_id: process_id.clone(),
-                    seq,
-                    exit_code,
-                })
-            } else {
-                None
             }
-        };
-        output_notify.notify_waiters();
-        if let Some(notification) = notification
-            && let Some(notifications) = notification_sender(&inner)
-        {
-            let _ = notifications
-                .notify(crate::protocol::EXEC_EXITED_METHOD, &notification)
-                .await;
         }
+        output_notify.notify_waiters();
 
         maybe_emit_closed(process_id, Arc::clone(&inner)).await;
     }
@@ -950,7 +862,7 @@ async fn finish_output_stream(process_id: ProcessId, inner: Arc<Inner>) {
 }
 
 async fn maybe_emit_closed(process_id: ProcessId, inner: Arc<Inner>) {
-    let (notification, output_notify) = {
+    let output_notify = {
         let mut processes = inner.processes.lock().await;
         let Some(ProcessEntry::Running(process)) = processes.get_mut(&process_id) else {
             return;
@@ -965,13 +877,7 @@ async fn maybe_emit_closed(process_id: ProcessId, inner: Arc<Inner>) {
         process.next_seq += 1;
         let _ = process.wake_tx.send(seq);
         process.events.publish(ExecProcessEvent::Closed { seq });
-        (
-            ExecClosedNotification {
-                process_id: process_id.clone(),
-                seq,
-            },
-            Arc::clone(&process.output_notify),
-        )
+        Arc::clone(&process.output_notify)
     };
 
     output_notify.notify_waiters();
@@ -989,18 +895,4 @@ async fn maybe_emit_closed(process_id: ProcessId, inner: Arc<Inner>) {
             Entry::Vacant(_) => {}
         }
     });
-
-    if let Some(notifications) = notification_sender(&inner) {
-        let _ = notifications
-            .notify(EXEC_CLOSED_METHOD, &notification)
-            .await;
-    }
-}
-
-fn notification_sender(inner: &Inner) -> Option<RpcNotificationSender> {
-    inner
-        .notifications
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone()
 }

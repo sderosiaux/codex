@@ -119,11 +119,7 @@ pub(super) async fn spawn_review_thread(
         client_id: None,
     }];
     let tc = Arc::new(review_turn_context);
-    if tc
-        .initial_environments
-        .single_local_environment_cwd()
-        .is_some()
-    {
+    if tc.initial_environments.primary_cwd().is_some() {
         tc.turn_metadata_state
             .spawn_git_enrichment_task(Arc::clone(&sess.services.git_root_discovery));
     }

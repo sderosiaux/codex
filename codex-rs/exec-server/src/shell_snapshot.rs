@@ -11,7 +11,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
-use codex_exec_server_protocol::JSONRPCErrorError;
+use crate::rpc::HandlerError;
 use codex_protocol::config_types::ShellEnvironmentPolicyInherit;
 use codex_protocol::shell_environment;
 use codex_protocol::shell_environment::CODEX_THREAD_ID_ENV_VAR;
@@ -79,7 +79,7 @@ struct ShellSnapshot {
 }
 
 // Keep a bounded metric label alongside the original RPC error.
-type CaptureResult = Result<ShellSnapshot, (&'static str, JSONRPCErrorError)>;
+type CaptureResult = Result<ShellSnapshot, (&'static str, HandlerError)>;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CapturePurpose {
@@ -102,7 +102,7 @@ impl ShellSnapshotCache {
         prepared: &mut PreparedExecRequest,
         telemetry: &ExecServerTelemetry,
         purpose: CapturePurpose,
-    ) -> Result<Option<File>, JSONRPCErrorError> {
+    ) -> Result<Option<File>, HandlerError> {
         let Some(request) = params.shell_snapshot.as_ref() else {
             return Ok(None);
         };

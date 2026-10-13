@@ -6,8 +6,6 @@ use std::path::PathBuf;
 
 use codex_apply_patch::CODEX_CORE_APPLY_PATCH_ARG1;
 use codex_async_utils::THREAD_STACK_SIZE_BYTES;
-#[cfg(unix)]
-use codex_exec_server::CODEX_ARG0_EXEC_HELPER_ARG1;
 use codex_install_context::InstallContext;
 use codex_utils_home_dir::find_codex_home;
 #[cfg(unix)]
@@ -65,10 +63,6 @@ pub fn arg0_dispatch() -> Option<Arg0PathEntryGuard> {
     }
 
     let argv1 = args.next().unwrap_or_default();
-    #[cfg(unix)]
-    if argv1 == CODEX_ARG0_EXEC_HELPER_ARG1 {
-        codex_exec_server::run_arg0_exec_helper_main();
-    }
     if argv1 == CODEX_CORE_APPLY_PATCH_ARG1 {
         let patch_arg = args.next().and_then(|s| s.to_str().map(str::to_owned));
         let exit_code = match patch_arg {

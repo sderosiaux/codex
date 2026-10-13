@@ -21,6 +21,7 @@ use crate::context::MultiAgentRoleInstructions;
 use crate::context::MultiAgentUsageHint;
 use crate::context::world_state::IncrementalToolsHint;
 use crate::context::world_state::PersistentModeState;
+use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::session::multi_agents::resolve_usage_hints;
 use crate::tasks::InterruptedTurnHistoryMarker;
 use crate::thread_manager::StartThreadOptions;
@@ -321,9 +322,6 @@ impl LocalAgentControl {
                             continue;
                         }
                         EnvironmentConfigState::Ready(config) => config,
-                        EnvironmentConfigState::Pending | EnvironmentConfigState::Failed(_) => {
-                            return Err(invalid_environment("configuration is not ready"));
-                        }
                     };
                     if child_config != owner_config {
                         return Err(invalid_environment(
@@ -505,13 +503,10 @@ impl LocalAgentControl {
         let mut start_options = StartThreadOptions {
             session_source: session_source.clone(),
             thread_source: session_source.as_ref().map(|_| ThreadSource::Subagent),
-            environments: options.environments.as_ref().map(|snapshot| {
-                snapshot
-                    .inheritable_selections()
-                    .into_iter()
-                    .map(codex_protocol::protocol::TurnEnvironmentSelection::into_request)
-                    .collect()
-            }),
+            environments: options
+                .environments
+                .as_ref()
+                .map(TurnEnvironmentSnapshot::selections),
             inherited_environments,
             ..StartThreadOptions::new(config.clone())
         };

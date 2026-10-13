@@ -7,7 +7,6 @@ use crate::context::world_state::AgentsMdState;
 use crate::context::world_state::BaseInstructionsState;
 use crate::context::world_state::CollaborationModeState;
 use crate::context::world_state::ContextWindowGuidanceState;
-use crate::context::world_state::EnvironmentsInstructionsState;
 use crate::context::world_state::EnvironmentsState;
 use crate::context::world_state::ModelCatalogState;
 use crate::context::world_state::ModelInstructionsState;
@@ -61,10 +60,7 @@ impl Session {
         let settings = &step_context.settings;
         let model_info = settings.model_info.as_ref();
         let model_messages = ResolvedModelMessages::from_model(model_info);
-        tracing::trace!(
-            selected_capability_root_count = step_context.selected_capability_roots.len(),
-            "building step world state"
-        );
+        tracing::trace!("building step world state");
         let model_instructions = render_model_instructions(model_info);
         let model_instructions = if !turn_context.config.update_plan_enabled
             && turn_context.config.model_catalog.is_none()
@@ -219,13 +215,6 @@ impl Session {
                 .with_subagents(environment_subagents),
             );
         }
-        world_state.add_section(EnvironmentsInstructionsState::new(
-            turn_context.config.include_environment_context
-                && turn_context
-                    .config
-                    .features
-                    .enabled(Feature::DeferredExecutor),
-        ));
         if turn_context
             .config
             .features
@@ -236,12 +225,7 @@ impl Session {
                 Arc::clone(&extension_metrics),
             ));
         }
-        let environments = step_context.environments.to_selections();
-        let ready_selected_capability_roots = step_context
-            .selected_capability_roots
-            .iter()
-            .map(|root| root.selected_root().clone())
-            .collect::<Vec<_>>();
+        let environments = step_context.environments.selections();
         let previous_world_state = self.state.lock().await.history.world_state_checkpoint();
         for contributor in self.services.extensions.context_contributors() {
             for section in contributor
@@ -250,10 +234,6 @@ impl Session {
                     turn_id: turn_context.sub_id.as_str(),
                     model_info: &step_context.settings.model_info,
                     environments: &environments,
-                    ready_selected_capability_roots: &ready_selected_capability_roots,
-                    executor_capability_discovery: step_context
-                        .executor_capability_discovery
-                        .as_deref(),
                     extension_metrics: Some(Arc::clone(&extension_metrics)),
                     session_store: &self.services.session_extension_data,
                     thread_store: &self.services.thread_extension_data,

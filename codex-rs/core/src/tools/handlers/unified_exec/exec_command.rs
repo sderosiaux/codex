@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::sync::Arc;
 
 use crate::function_tool::FunctionCallError;
@@ -23,13 +22,12 @@ use crate::unified_exec::UnifiedExecProcessManager;
 use codex_features::Feature;
 use codex_otel::SessionTelemetry;
 use codex_otel::TOOL_CALL_UNIFIED_EXEC_METRIC;
-use codex_shell_command::shell_detect::detect_shell_type;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 use codex_utils_string::truncate_middle_chars;
 
 use super::super::shell_spec::CommandToolOptions;
-use super::super::shell_spec::create_exec_command_tool_with_environment_id;
+use super::super::shell_spec::create_exec_command_tool;
 use super::ExecCommandArgs;
 use super::ExecCommandEnvironmentArgs;
 use super::get_command;
@@ -43,7 +41,6 @@ pub(crate) struct ExecCommandHandlerOptions {
     pub(crate) include_login_parameter: bool,
     pub(crate) include_shell_parameter: bool,
     pub(crate) allow_tty: bool,
-    pub(crate) include_environment_id: bool,
     pub(crate) include_windows_shell_guidance: bool,
 }
 
@@ -58,7 +55,6 @@ impl Default for ExecCommandHandler {
                 include_login_parameter: false,
                 include_shell_parameter: true,
                 allow_tty: true,
-                include_environment_id: false,
                 include_windows_shell_guidance: cfg!(windows),
             },
         }
@@ -77,11 +73,10 @@ impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
     }
 
     fn spec(&self) -> ToolSpec {
-        let spec = create_exec_command_tool_with_environment_id(
+        let spec = create_exec_command_tool(
             CommandToolOptions {
                 include_login_parameter: self.options.include_login_parameter,
             },
-            self.options.include_environment_id,
             self.options.include_shell_parameter,
             self.options.include_windows_shell_guidance,
         );
@@ -141,11 +136,8 @@ impl ExecCommandHandler {
             call_id.clone(),
         );
         let environment_args: ExecCommandEnvironmentArgs = parse_arguments(&arguments)?;
-        let turn_environment = resolve_tool_environment(
-            &step_context,
-            environment_args.environment_id.as_deref(),
-            "unified exec is unavailable in this session",
-        )?;
+        let turn_environment =
+            resolve_tool_environment(&step_context, "unified exec is unavailable in this session")?;
         let native_environment_cwd = turn_environment.cwd().clone();
         let cwd = environment_args
             .workdir
@@ -164,7 +156,7 @@ impl ExecCommandHandler {
         let native_cwd = cwd.to_abs_path().ok().filter(|_| {
             cwd.infer_path_convention() == Some(codex_utils_path_uri::PathConvention::native())
         });
-        let mut args: ExecCommandArgs = parse_arguments(&arguments)?;
+        let args: ExecCommandArgs = parse_arguments(&arguments)?;
         if args.tty && !session.features().enabled(Feature::UnifiedExecTty) {
             return Err(FunctionCallError::RespondToModel(
                 "TTY execution is disabled by config; omit `tty` or set it to false.".to_string(),
@@ -175,37 +167,14 @@ impl ExecCommandHandler {
             session.as_ref(),
             context.step_context.turn.as_ref(),
             &hook_command,
-            &cwd,
             native_cwd.as_ref(),
-            &turn_environment.selection.environment_id,
         )
         .await;
-        // Remote environments may use a different OS and must build commands with their native
-        // shell; fall back to the session shell when the environment did not report one.
         let shell = turn_environment
             .shell
             .clone()
             .map(Arc::new)
             .unwrap_or_else(|| session.user_shell());
-        // TODO(anp): Resolve requested shells in remote environments instead of restricting
-        // commands to the reported default shell.
-        if environment.is_remote()
-            && let Some(requested_shell) = args.shell.take()
-        {
-            let Some(remote_shell) = turn_environment.shell.as_ref() else {
-                return Err(FunctionCallError::RespondToModel(format!(
-                    "environment `{}` does not report a shell",
-                    turn_environment.selection.environment_id
-                )));
-            };
-            if detect_shell_type(Path::new(&requested_shell)) != Some(remote_shell.shell_type) {
-                return Err(FunctionCallError::RespondToModel(format!(
-                    "environment `{}` only supports `{}`",
-                    turn_environment.selection.environment_id,
-                    remote_shell.name()
-                )));
-            }
-        }
         let resolved_command =
             get_command(&args, shell, turn_environment.config().allow_login_shell)
                 .map_err(FunctionCallError::RespondToModel)?;

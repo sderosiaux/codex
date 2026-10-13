@@ -17,11 +17,10 @@ pub(super) struct SnapshotMetrics {
 
 impl SnapshotMetrics {
     pub(super) fn start(req: &UnifiedExecRequest, config: &Config) -> Option<Self> {
-        // Executor snapshots emit at their own selection boundary. Disabled,
-        // remote legacy, and non-login invocations are outside this denominator.
+        // Executor snapshots emit at their own selection boundary. Disabled and
+        // non-login invocations are outside this denominator.
         if !cfg!(unix)
             || req.shell_snapshot.is_some()
-            || req.turn_environment.environment.is_remote()
             || !config.features.enabled(Feature::ShellSnapshot)
             || !req.shell.is_posix_login()
             || req.cwd != req.turn_environment.selection.cwd

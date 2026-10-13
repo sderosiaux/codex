@@ -40,10 +40,7 @@ impl Session {
         let session = Arc::clone(self);
         Some(AbortOnDropHandle::new(tokio::spawn(async move {
             for environment in environments.turn_environments() {
-                // Remote starts cannot cancel an in-flight capture. Leave them and deferred
-                // environments on the normal lazy capture path.
-                if environment.environment.is_remote()
-                    || !environment.shell_snapshot_v2_supported
+                if !environment.shell_snapshot_v2_supported
                     || !environment.config().allow_login_shell
                 {
                     continue;

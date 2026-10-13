@@ -17,7 +17,6 @@ use crate::ResponseItemId;
 use crate::SanitizedGitUrl;
 use crate::SessionId;
 use crate::ThreadId;
-use crate::capabilities::SelectedCapabilityRoot;
 use crate::config_types::CollaborationMode;
 use crate::config_types::ModeKind;
 use crate::config_types::Personality;
@@ -71,8 +70,6 @@ pub use crate::elicitation::ElicitationAction;
 use crate::elicitation::ElicitationRequestEvent;
 pub use crate::environment::EnvironmentConfig;
 pub use crate::environment::EnvironmentConfigState;
-pub use crate::environment::TurnEnvironmentRequest;
-pub use crate::environment::TurnEnvironmentRequests;
 pub use crate::environment::TurnEnvironmentSelection;
 pub use crate::environment::TurnEnvironmentSelections;
 pub use crate::legacy_events::HasLegacyEvent;
@@ -134,9 +131,9 @@ pub struct W3cTraceContext {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TurnSettingsUpdate {
     /// Replaces the selection for subsequent steps, without changing future turns.
-    /// Environments may inherit the running turn's defaults or provide their own configuration,
-    /// which can be pending. An already-selected environment with its own cannot switch back.
-    pub environments: Option<Vec<TurnEnvironmentRequest>>,
+    /// Environments may inherit the running turn's defaults or provide their own configuration.
+    /// An already-selected environment with its own cannot switch back.
+    pub environments: Option<Vec<TurnEnvironmentSelection>>,
     pub model: Option<String>,
     /// `None` preserves the selection; `Some(None)` clears it.
     pub effort: Option<Option<ReasoningEffortConfig>>,
@@ -165,7 +162,7 @@ pub enum TurnSettingsUpdateOutcome {
 #[debug("ThreadSettingsOverrides {{ model: {model:?}, effort: {effort:?} }}")]
 pub struct ThreadSettingsOverrides {
     /// Updated fallback `cwd` and environments supplied together as a complete pair.
-    pub environments: Option<TurnEnvironmentRequests>,
+    pub environments: Option<TurnEnvironmentSelections>,
 
     /// Updated top-level runtime workspace roots for default environments.
     /// Explicit environment requests own their workspace roots separately.
@@ -238,14 +235,6 @@ pub enum Op {
     TurnInput {
         request: Box<TurnInputRequest>,
         mode: TurnInputMode,
-        reply: oneshot::Sender<CodexResult<TurnInputSubmission>>,
-    },
-
-    /// Resume an interrupted regular turn.
-    #[debug("RecoverTurn {{ requested_settings: {thread_settings:?} }}")]
-    RecoverTurn {
-        thread_settings: ThreadSettingsOverrides,
-        start_options: TurnStartOptions,
         reply: oneshot::Sender<CodexResult<TurnInputSubmission>>,
     },
 
@@ -521,7 +510,6 @@ impl Op {
             Self::InterruptIfNoPendingInput { .. } => "interrupt_if_no_pending_input",
             Self::CleanBackgroundTerminals => "clean_background_terminals",
             Self::TurnInput { .. } => "turn_input",
-            Self::RecoverTurn { .. } => "recover_turn",
             Self::ThreadSettings { .. } => "thread_settings",
             Self::TurnSettings { .. } => "turn_settings",
             Self::InterAgentCommunication { .. } => "inter_agent_communication",
@@ -545,11 +533,6 @@ pub struct Event {
     pub id: String,
     /// Payload
     pub msg: EventMsg,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
-pub struct EnvironmentConnectionEvent {
-    pub environment_id: String,
 }
 
 /// Response event from the agent
@@ -626,12 +609,6 @@ pub enum EventMsg {
 
     /// Ack the client's configure message.
     SessionConfigured(SessionConfiguredEvent),
-
-    /// A selected environment completed its connection handshake.
-    EnvironmentConnected(EnvironmentConnectionEvent),
-
-    /// A selected environment lost its established connection.
-    EnvironmentDisconnected(EnvironmentConnectionEvent),
 
     /// Updated long-running goal metadata for the thread.
     ThreadGoalUpdated(ThreadGoalUpdatedEvent),
@@ -2220,9 +2197,6 @@ pub struct SessionMeta {
         skip_serializing_if = "Option::is_none"
     )]
     pub dynamic_tools: Option<Vec<DynamicToolSpec>>,
-    /// Capability roots selected for this thread by the hosting platform.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub selected_capability_roots: Vec<SelectedCapabilityRoot>,
     #[serde(default)]
     pub history_mode: ThreadHistoryMode,
     /// Exclusive prefix of another paginated rollout inherited by this thread.
@@ -2265,7 +2239,6 @@ impl Default for SessionMeta {
             model_provider: None,
             base_instructions: None,
             dynamic_tools: None,
-            selected_capability_roots: Vec::new(),
             history_mode: ThreadHistoryMode::default(),
             history_base: None,
             subagent_history_start_ordinal: None,

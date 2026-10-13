@@ -6,7 +6,6 @@ use crate::context::ContextualUserFragment;
 use crate::context::environment_context::FileSystemContext;
 use crate::context::environment_context::push_xml_escaped_text;
 use crate::environment_selection::TurnEnvironmentSnapshot;
-use crate::environment_selection::TurnEnvironmentState;
 use crate::session::turn_context::TurnContext;
 use crate::shell::ShellType;
 use codex_features::Feature;
@@ -47,7 +46,7 @@ impl EnvironmentsState {
             .config
             .features
             .enabled(Feature::PowerShellShellVersion)
-            && let Some(environment) = environments.single_local_environment()
+            && let Some(environment) = environments.primary()
             && let Some(shell) = environment.shell.as_ref()
             && shell.shell_type == ShellType::PowerShell
         {
@@ -116,8 +115,6 @@ impl WorldStateSection for EnvironmentsState {
                         id.clone(),
                         EnvironmentSnapshot {
                             cwd: environment.cwd.inferred_native_path_string(),
-                            status: environment.status,
-                            error: environment.error.clone(),
                             shell: environment.shell.clone(),
                             is_primary: self.environments.len() > 1 && environment.is_primary,
                         },
@@ -316,20 +313,6 @@ fn push_environment_values(rendered: &mut String, environment: &EnvironmentState
     rendered.push_str("<cwd>");
     push_xml_escaped_text(rendered, &environment.cwd.inferred_native_path_string());
     rendered.push_str("</cwd>\n");
-    if environment.status == EnvironmentStatus::Starting {
-        rendered.push_str(indent);
-        rendered.push_str("<status>starting</status>\n");
-    }
-    if environment.status == EnvironmentStatus::Failed {
-        rendered.push_str(indent);
-        rendered.push_str("<status>failed</status>\n");
-    }
-    if let Some(error) = &environment.error {
-        rendered.push_str(indent);
-        rendered.push_str("<error>");
-        push_xml_escaped_text(rendered, error);
-        rendered.push_str("</error>\n");
-    }
     if let Some(shell) = &environment.shell {
         rendered.push_str(indent);
         rendered.push_str("<shell>");
@@ -354,9 +337,7 @@ fn push_optional_element(rendered: &mut String, name: &str, value: Option<&str>)
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct EnvironmentState {
     cwd: PathUri,
-    status: EnvironmentStatus,
     shell: Option<String>,
-    error: Option<String>,
     is_primary: bool,
 }
 
@@ -374,10 +355,7 @@ pub(crate) struct EnvironmentsSnapshot {
 #[derive(Deserialize, Serialize)]
 struct EnvironmentSnapshot {
     cwd: String,
-    status: EnvironmentStatus,
     shell: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     is_primary: bool,
 }
@@ -385,8 +363,6 @@ struct EnvironmentSnapshot {
 impl EnvironmentSnapshot {
     fn has_same_diff_value(&self, other: &Self) -> bool {
         self.cwd == other.cwd
-            && self.status == other.status
-            && self.error == other.error
             && self.is_primary == other.is_primary
             && self
                 .shell
@@ -394,14 +370,6 @@ impl EnvironmentSnapshot {
                 .zip(other.shell.as_ref())
                 .is_none_or(|(current, previous)| current == previous)
     }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum EnvironmentStatus {
-    Starting,
-    Available,
-    Failed,
 }
 
 async fn powershell_version(shell_path: &Path) -> Option<String> {
@@ -445,7 +413,7 @@ async fn powershell_version(shell_path: &Path) -> Option<String> {
 }
 
 fn environment_states(snapshot: &TurnEnvironmentSnapshot) -> BTreeMap<String, EnvironmentState> {
-    let mut environments = snapshot
+    snapshot
         .turn_environments()
         .enumerate()
         .map(|(index, environment)| {
@@ -453,8 +421,6 @@ fn environment_states(snapshot: &TurnEnvironmentSnapshot) -> BTreeMap<String, En
                 environment.selection.environment_id.clone(),
                 EnvironmentState {
                     cwd: environment.cwd().clone(),
-                    status: EnvironmentStatus::Available,
-                    error: None,
                     shell: environment
                         .shell
                         .as_ref()
@@ -463,51 +429,11 @@ fn environment_states(snapshot: &TurnEnvironmentSnapshot) -> BTreeMap<String, En
                 },
             )
         })
-        .collect::<BTreeMap<_, _>>();
-    for environment in snapshot.starting() {
-        environments
-            .entry(environment.selection.environment_id.clone())
-            .or_insert_with(|| EnvironmentState {
-                cwd: environment.selection.cwd.clone(),
-                status: EnvironmentStatus::Starting,
-                error: None,
-                shell: None,
-                is_primary: false,
-            });
-    }
-    // Bound the additional model context even when many selected environments fail.
-    const MAX_ERROR_BYTES: usize = 256;
-    const MAX_TOTAL_ERROR_BYTES: usize = 512;
-    let mut remaining_error_bytes = MAX_TOTAL_ERROR_BYTES;
-    for environment in &snapshot.environments {
-        if let TurnEnvironmentState::Failed {
-            selection, error, ..
-        } = environment
-        {
-            let detail = error
-                [..error.floor_char_boundary(remaining_error_bytes.min(MAX_ERROR_BYTES))]
-                .to_string();
-            remaining_error_bytes -= detail.len();
-            environments.insert(
-                selection.environment_id.clone(),
-                EnvironmentState {
-                    cwd: selection.cwd.clone(),
-                    status: EnvironmentStatus::Failed,
-                    shell: None,
-                    error: (!detail.is_empty()).then_some(detail),
-                    is_primary: false,
-                },
-            );
-        }
-    }
-    environments
+        .collect()
 }
 
 fn is_legacy_single(environments: &BTreeMap<String, EnvironmentState>) -> bool {
     environments.len() == 1
-        && environments
-            .values()
-            .all(|environment| environment.status == EnvironmentStatus::Available)
 }
 
 fn environment_context_markers() -> (&'static str, &'static str) {

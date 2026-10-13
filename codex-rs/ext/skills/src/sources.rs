@@ -4,12 +4,10 @@ use std::sync::Arc;
 use crate::catalog::SkillCatalog;
 use crate::catalog::SkillProviderError;
 use crate::catalog::SkillReadResult;
-use crate::catalog::SkillSearchResult;
 use crate::catalog::SkillSourceKind;
 use crate::provider::SkillListQuery;
 use crate::provider::SkillProvider;
 use crate::provider::SkillReadRequest;
-use crate::provider::SkillSearchRequest;
 
 #[derive(Clone)]
 pub struct SkillProviderSource {
@@ -35,14 +33,9 @@ impl SkillProviderSource {
         Self::new(SkillSourceKind::Host, label, provider)
     }
 
-    pub fn executor(label: impl Into<String>, provider: Arc<dyn SkillProvider>) -> Self {
-        Self::new(SkillSourceKind::Executor, label, provider)
-    }
-
     fn should_list(&self, query: &SkillListQuery) -> bool {
         match &self.kind {
             SkillSourceKind::Host => query.include_host_skills,
-            SkillSourceKind::Executor => !query.executor_roots.is_empty(),
         }
     }
 
@@ -82,12 +75,6 @@ impl SkillProviders {
         self
     }
 
-    pub fn with_executor_provider(mut self, provider: Arc<dyn SkillProvider>) -> Self {
-        self.sources
-            .push(SkillProviderSource::executor("executor", provider));
-        self
-    }
-
     pub(crate) fn has_host_provider(&self) -> bool {
         self.sources
             .iter()
@@ -96,11 +83,6 @@ impl SkillProviders {
 
     pub(crate) async fn list_for_turn(&self, query: SkillListQuery) -> SkillCatalog {
         self.list_matching(&query, |source| source.should_list(&query))
-            .await
-    }
-
-    pub(crate) async fn list_executor_for_turn(&self, query: SkillListQuery) -> SkillCatalog {
-        self.list_matching(&query, |source| source.kind == SkillSourceKind::Executor)
             .await
     }
 
@@ -129,7 +111,7 @@ impl SkillProviders {
 
     pub(crate) async fn read(
         &self,
-        request: SkillReadRequest<'_>,
+        request: SkillReadRequest,
     ) -> Result<SkillReadResult, SkillProviderError> {
         let mut last_error = None;
         for source in self
@@ -138,31 +120,6 @@ impl SkillProviders {
             .filter(|source| source.owns_kind(&request.authority.kind))
         {
             match source.provider.read(request.clone()).await {
-                Ok(result) => return Ok(result),
-                Err(err) => last_error = Some(err),
-            }
-        }
-
-        match last_error {
-            Some(err) => Err(err),
-            None => Err(SkillProviderError::new(format!(
-                "{} skill provider is not configured",
-                request.authority.kind
-            ))),
-        }
-    }
-
-    pub async fn search(
-        &self,
-        request: SkillSearchRequest,
-    ) -> Result<SkillSearchResult, SkillProviderError> {
-        let mut last_error = None;
-        for source in self
-            .sources
-            .iter()
-            .filter(|source| source.owns_kind(&request.authority.kind))
-        {
-            match source.provider.search(request.clone()).await {
                 Ok(result) => return Ok(result),
                 Err(err) => last_error = Some(err),
             }

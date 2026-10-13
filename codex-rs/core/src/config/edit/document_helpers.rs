@@ -106,9 +106,6 @@ fn serialize_mcp_server_table(config: &McpServerConfig) -> anyhow::Result<TomlTa
     if !config.enabled {
         entry["enabled"] = value(false);
     }
-    if !config.is_local_environment() {
-        entry["environment_id"] = value(config.environment_id.clone());
-    }
     if config.required {
         entry["required"] = value(true);
     }
@@ -255,12 +252,9 @@ fn array_from_env_vars(env_vars: &[McpServerEnvVar]) -> TomlItem {
     for env_var in env_vars {
         match env_var {
             McpServerEnvVar::Name(name) => array.push(name.clone()),
-            McpServerEnvVar::Config { name, source } => {
+            McpServerEnvVar::Config { name } => {
                 let mut table = InlineTable::new();
                 table.insert("name", name.clone().into());
-                if let Some(source) = source {
-                    table.insert("source", source.clone().into());
-                }
                 array.push(table);
             }
         }

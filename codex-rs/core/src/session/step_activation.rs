@@ -1,13 +1,11 @@
 //! Restricted updates to a running turn's immutable settings snapshots.
 
 use super::environment::ensure_configs_stay_owner_provided;
-use super::environment::validate_environment_configs;
 use super::session::Session;
 use super::step_settings::ResolvedStepSettings;
 use super::step_settings::StepSettingsUpdate;
 use crate::environment_selection::validate_environment_ids_and_cwds;
 use codex_features::Feature;
-use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::protocol::TurnSettingsUpdate;
 use codex_protocol::protocol::TurnSettingsUpdateOutcome;
 use std::sync::Arc;
@@ -57,20 +55,12 @@ impl Session {
             return TurnSettingsUpdateOutcome::TargetUnavailable;
         };
         let TurnSettingsUpdate {
-            environments: environment_requests,
+            environments,
             model,
             effort,
             summary,
             service_tier,
         } = update;
-        let environments = environment_requests.map(|requests| {
-            requests
-                .into_iter()
-                .map(|request| {
-                    TurnEnvironmentSelection::new(request, &self.services.selected_capability_roots)
-                })
-                .collect::<Vec<_>>()
-        });
         let update = StepSettingsUpdate {
             model,
             effort,
@@ -90,10 +80,6 @@ impl Session {
             None
         };
 
-        // Validate the environment configuration supplied in the update.
-        let environment_config_validation =
-            environments.as_deref().map(validate_environment_configs);
-
         // Confirm the task we originally targeted is still running.
         let active = self.active_turn.lock().await;
         let Some(task) = active.as_ref().and_then(|active| active.task.as_ref()) else {
@@ -109,12 +95,11 @@ impl Session {
             return TurnSettingsUpdateOutcome::TargetUnavailable;
         }
 
-        // Environment configuration can arrive before its executor connects. If this update
-        // omits environments, use what the running turn's manager knows now.
+        // If this update omits environments, use what the running turn's manager knows now.
         let current_environments = self.services.turn_environments.selections();
         let proposed = environments.as_deref().unwrap_or(&current_environments);
         let validation = (|| {
-            if let Some(configs) = environment_config_validation {
+            if environments.is_some() {
                 validate_environment_ids_and_cwds(
                     &self.services.turn_environments.environment_manager(),
                     proposed
@@ -124,7 +109,6 @@ impl Session {
                 .map_err(|error| error.to_string())?;
                 ensure_configs_stay_owner_provided(&current_environments, proposed)
                     .map_err(|error| error.to_string())?;
-                configs.map_err(|error| error.to_string())?;
             }
             Ok::<_, String>(())
         })();

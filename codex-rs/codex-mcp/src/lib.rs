@@ -15,7 +15,6 @@ pub use tool_catalog_cache::McpToolCatalogCache;
 pub use tools::ToolInfo;
 
 pub use catalog::McpCatalogBuilder;
-pub use catalog::McpEnvironmentAuthority;
 pub use catalog::McpServerConflict;
 pub use catalog::McpServerConflictAction;
 pub use catalog::McpServerRegistration;
@@ -59,7 +58,6 @@ mod client_tool_catalog;
 pub(crate) mod connection_manager;
 pub(crate) mod elicitation;
 mod ema_auth;
-mod executor_environment_http_client;
 pub(crate) mod mcp;
 mod openai_docs_source_attribution;
 mod pagination;
